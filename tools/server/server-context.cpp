@@ -2957,7 +2957,7 @@ private:
             }
 
             llama_set_embeddings(ctx_tgt, slot_batched->need_embd());
-            llama_set_embeddings_pre_norm(ctx_tgt, slot_batched->need_embd_pre_norm(), true);
+            llama_set_embeddings_pre_norm(ctx_tgt, slot_batched->need_embd_pre_norm(), false);
         }
 
         if (batch.n_tokens == 0) {

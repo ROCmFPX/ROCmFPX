@@ -963,7 +963,9 @@ float * llama_context::get_embeddings_pre_norm_ith(int32_t i) {
         }
 
         const uint32_t n_embd = model.hparams.n_embd_out();
+
         if (!cparams.embeddings_pre_norm_masked) {
+            // unmasked: pre-norm rows are stored densely, indexed by raw token position.
             if (i < 0 || (size_t)(i + 1) * n_embd > embd_pre_norm.size) {
                 throw std::runtime_error(format("out of range [0, %zu)", embd_pre_norm.size / n_embd));
             }
@@ -1173,7 +1175,7 @@ void llama_context::set_embeddings(bool value) {
 void llama_context::set_embeddings_pre_norm(bool value, bool masked) {
     LLAMA_LOG_DEBUG("%s: value = %d, masked = %d\n", __func__, value, masked);
 
-    cparams.embeddings_pre_norm = value;
+    cparams.embeddings_pre_norm        = value;
     cparams.embeddings_pre_norm_masked = masked;
 }
 
@@ -2026,19 +2028,21 @@ int llama_context::decode(const llama_batch & batch_inp) {
         // extract pre-norm embeddings (hidden state before the final output norm)
         extract_layer_inputs(res, n_tokens_prev, ubatch.n_tokens);
         // only meaningful in LLAMA_POOLING_TYPE_NONE (per-token); other pooling modes are ignored.
-        if (embd_pre_norm.data && t_h_pre_norm && n_outputs > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
-            ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
-            GGML_ASSERT(backend_h != nullptr);
-
+        {
             const bool masked    = cparams.embeddings_pre_norm_masked;
-            const int64_t n_rows = masked ? n_outputs      : (int64_t) ubatch.n_tokens;
-            const int64_t offset = masked ? n_outputs_prev : n_tokens_prev;
+            const int64_t n_rows = masked ? n_outputs       : (int64_t) ubatch.n_tokens;
+            const int64_t offset = masked ? n_outputs_prev  : n_tokens_prev;
 
-            const uint32_t n_embd = hparams.n_embd_out();
-            float * embd_pre_norm_out = embd_pre_norm.data + offset*n_embd;
+            if (embd_pre_norm.data && t_h_pre_norm && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+                ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
+                GGML_ASSERT(backend_h != nullptr);
 
-            GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_pre_norm.size);
-            ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_rows*n_embd*sizeof(float));
+                const uint32_t n_embd = hparams.n_embd_out();
+                float * embd_pre_norm_out = embd_pre_norm.data + offset*n_embd;
+
+                GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_pre_norm.size);
+                ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_rows*n_embd*sizeof(float));
+            }
         }
 
         // Copy backend sampling output if this ubatch produced any sampling tensors.
@@ -2154,6 +2158,12 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
         if (enabled) {
             embd_layer_inp_float_count += (size_t) n_embd * n_batch;
         }
+    }
+
+    if (has_embd_pre_norm && !cparams.embeddings_pre_norm_masked) {
+        // unmasked: pre-norm row exists for every token in the batch, not just
+        // those flagged via batch.logits[i] -> size by token count instead.
+        embd_pre_norm.size = (size_t) n_embd * n_batch;
     }
 
     // Allocate backend sampling output buffers if there are backend samplers configured.

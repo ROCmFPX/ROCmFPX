@@ -152,9 +152,7 @@ struct common_speculative_impl {
     virtual bool need_embd() const = 0;
 
     // true if this implementation requires the target context to extract pre-norm embeddings
-    virtual bool need_embd_pre_norm() const {
-        return false;
-    }
+    virtual bool need_embd_pre_norm() const { return false; }
 };
 
 static void common_speculative_batch_add_one_seq(
@@ -940,8 +938,8 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             std::strcmp(arch_dft, "gemma4_assistant") == 0 ||
             std::strcmp(arch_dft, "gemma4-assistant") == 0;
 
-        llama_set_embeddings_pre_norm(ctx_tgt, true, !full_hidden_rows);
-        llama_set_embeddings_pre_norm(ctx_dft, true, !full_hidden_rows);
+        llama_set_embeddings_pre_norm(ctx_tgt, true, /*masked*/ false);
+        llama_set_embeddings_pre_norm(ctx_dft, true, full_hidden_rows ? /*masked*/ false : /*masked*/ true);
         llama_set_mtp_source(ctx_dft, ctx_tgt);
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
