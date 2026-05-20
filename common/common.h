@@ -305,6 +305,8 @@ struct common_params_speculative_draft {
     float p_split = 0.1f;  // speculative decoding split probability
     float p_min   = 0.75f; // minimum speculative decoding probability (greedy) // TODO: change default to 0.0f
 
+    bool backend_sampling = true; // offload draft sampling to the backend (default: on)
+
     common_params_model mparams;
 
     llama_context * ctx_tgt = nullptr;
