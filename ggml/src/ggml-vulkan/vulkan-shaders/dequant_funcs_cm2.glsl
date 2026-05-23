@@ -697,6 +697,45 @@ float16_t dequantFuncMXFP4(const in decodeBufMXFP4 bl, const in uint blockCoords
 }
 #endif
 
+#if defined(DATA_A_ROCMFP4)
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFP4 {
+   block_rocmfp4 block;
+};
+
+float16_t dequantFuncROCMFP4(const in decodeBufROCMFP4 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const uint iqs = idx & 0xF;
+    const uint shift = (idx & 0x10) >> 2;
+    const uint sub = idx >> 4;
+    const float d = ue4m3_to_fp32(bl.block.e[sub]);
+    uint32_t qs = bl.block.qs[iqs];
+    qs >>= shift;
+    qs &= 0xF;
+    float16_t ret = float16_t(float(kvalues_rocmfp4[qs]) * d);
+    return ret;
+}
+#endif
+
+#if defined(DATA_A_ROCMFP4_FAST)
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFP4Fast {
+   block_rocmfp4_fast block;
+};
+
+float16_t dequantFuncROCMFP4Fast(const in decodeBufROCMFP4Fast bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const uint iqs = idx & 0xF;
+    const uint shift = (idx & 0x10) >> 2;
+    const float d = ue4m3_to_fp32(bl.block.e);
+    uint32_t qs = bl.block.qs[iqs];
+    qs >>= shift;
+    qs &= 0xF;
+    float16_t ret = float16_t(float(kvalues_rocmfp4[qs]) * d);
+    return ret;
+}
+#endif
+
 #if defined(DATA_A_NVFP4)
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufNVFP4 {
    block_nvfp4 block;
@@ -761,6 +800,10 @@ float16_t dequantFuncNVFP4(const in decodeBufNVFP4 bl, const in uint blockCoords
 #define dequantFuncA dequantFuncIQ4_NL
 #elif defined(DATA_A_MXFP4)
 #define dequantFuncA dequantFuncMXFP4
+#elif defined(DATA_A_ROCMFP4)
+#define dequantFuncA dequantFuncROCMFP4
+#elif defined(DATA_A_ROCMFP4_FAST)
+#define dequantFuncA dequantFuncROCMFP4Fast
 #elif defined(DATA_A_NVFP4)
 #define dequantFuncA dequantFuncNVFP4
 #elif defined(DATA_A_F32)
