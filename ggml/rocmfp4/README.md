@@ -149,6 +149,9 @@ Current status:
   35B A3B short guard fell to `92.7 tok/s`, below the `100.0 tok/s` floor.
   Disabling internal sampler timing with `sparams.no_perf = true` was also
   tested and rejected after the same short guard dropped to `96.2 tok/s`.
+  Skipping the per-draft `common_sampler_reset()` in the MTP path was rejected
+  after the 35B A3B short guard dropped to `68.3 tok/s`; that reset remains
+  required to preserve the expected sampler/logit state for this helper.
   Retesting the internal MTP sampler candidate count on the 35B A3B
   reasoning-on profile rejected both directions around the promoted `top_k=10`
   setting: `top_k=5` fell to `77.3 tok/s` sustained and `top_k=20` fell to

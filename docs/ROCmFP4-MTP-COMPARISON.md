@@ -877,6 +877,7 @@ Rejected internal MTP top-k implementation checks on the same promoted profile:
 | `std::partial_sort_copy` into a sampler-owned top-k buffer | 104.4 | 90.2 | not promoted; same-session promoted build measured `104.1` / `90.2`, so this added buffer/clone complexity without a sustained decode gain |
 | Fill only top-token probability in the normal MTP path | 92.7 | not run | rejected; preserving only `data[0].p` and leaving full top-k probabilities for debug logging failed the 35B A3B short guard floor |
 | Disable internal MTP sampler timing with `sparams.no_perf = true` | 96.2 | not run | rejected; the speculative draft timer already covers this path, but disabling sampler timing still regressed the 35B A3B short guard below the `100.0 tok/s` floor |
+| Skip per-draft MTP `common_sampler_reset()` | 68.3 | not run | rejected; the reset is required to preserve the expected sampler/logit state for the top-k probability helper |
 
 Rejected CPU/reference-path checks from the same optimization pass:
 
