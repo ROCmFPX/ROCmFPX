@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <float.h>
 #include <math.h>
-#include <string.h>
 
 // ROCmFP4 stores a signed integer FP4-like codebook at half-scale. It is
 // E2M1-derived, but the largest magnitude is retuned from 12 to 10 after
@@ -18,33 +17,93 @@ static const int8_t rocmfp4_codebook[16] = {
 };
 
 static inline int8_t rocmfp4_decode(uint8_t q) {
+    q &= 0x0f;
+    const int mag3 = q & 0x07;
+    const int mag = mag3 <= 4 ? mag3 : 2*mag3 - 4;
+    return (q & 0x08) ? -mag : mag;
+}
+
+static inline int8_t rocmfp4_decode_table(uint8_t q) {
     return rocmfp4_codebook[q & 0x0f];
 }
 
+// Finite unsigned E4M3 scale bytes decoded to the half-scale values used by
+// ROCmFP4. Keeping this as a table avoids rebuilding identical FP32 values for
+// every candidate during exhaustive scale search.
+#define ROCMFP4_SCALE_SUB(M) ((M) * 0x1p-10f)
+#define ROCMFP4_SCALE_E1(M)  ((8 + (M)) * 0x1p-10f)
+#define ROCMFP4_SCALE_E2(M)  ((8 + (M)) * 0x1p-9f)
+#define ROCMFP4_SCALE_E3(M)  ((8 + (M)) * 0x1p-8f)
+#define ROCMFP4_SCALE_E4(M)  ((8 + (M)) * 0x1p-7f)
+#define ROCMFP4_SCALE_E5(M)  ((8 + (M)) * 0x1p-6f)
+#define ROCMFP4_SCALE_E6(M)  ((8 + (M)) * 0x1p-5f)
+#define ROCMFP4_SCALE_E7(M)  ((8 + (M)) * 0x1p-4f)
+#define ROCMFP4_SCALE_E8(M)  ((8 + (M)) * 0x1p-3f)
+#define ROCMFP4_SCALE_E9(M)  ((8 + (M)) * 0x1p-2f)
+#define ROCMFP4_SCALE_E10(M) ((8 + (M)) * 0x1p-1f)
+#define ROCMFP4_SCALE_E11(M) ((8 + (M)) * 0x1p0f)
+#define ROCMFP4_SCALE_E12(M) ((8 + (M)) * 0x1p1f)
+#define ROCMFP4_SCALE_E13(M) ((8 + (M)) * 0x1p2f)
+#define ROCMFP4_SCALE_E14(M) ((8 + (M)) * 0x1p3f)
+#define ROCMFP4_SCALE_E15(M) ((8 + (M)) * 0x1p4f)
+
+static const float rocmfp4_scale_ue4m3_half[127] = {
+    ROCMFP4_SCALE_SUB(0), ROCMFP4_SCALE_SUB(1), ROCMFP4_SCALE_SUB(2), ROCMFP4_SCALE_SUB(3),
+    ROCMFP4_SCALE_SUB(4), ROCMFP4_SCALE_SUB(5), ROCMFP4_SCALE_SUB(6), ROCMFP4_SCALE_SUB(7),
+    ROCMFP4_SCALE_E1(0),  ROCMFP4_SCALE_E1(1),  ROCMFP4_SCALE_E1(2),  ROCMFP4_SCALE_E1(3),
+    ROCMFP4_SCALE_E1(4),  ROCMFP4_SCALE_E1(5),  ROCMFP4_SCALE_E1(6),  ROCMFP4_SCALE_E1(7),
+    ROCMFP4_SCALE_E2(0),  ROCMFP4_SCALE_E2(1),  ROCMFP4_SCALE_E2(2),  ROCMFP4_SCALE_E2(3),
+    ROCMFP4_SCALE_E2(4),  ROCMFP4_SCALE_E2(5),  ROCMFP4_SCALE_E2(6),  ROCMFP4_SCALE_E2(7),
+    ROCMFP4_SCALE_E3(0),  ROCMFP4_SCALE_E3(1),  ROCMFP4_SCALE_E3(2),  ROCMFP4_SCALE_E3(3),
+    ROCMFP4_SCALE_E3(4),  ROCMFP4_SCALE_E3(5),  ROCMFP4_SCALE_E3(6),  ROCMFP4_SCALE_E3(7),
+    ROCMFP4_SCALE_E4(0),  ROCMFP4_SCALE_E4(1),  ROCMFP4_SCALE_E4(2),  ROCMFP4_SCALE_E4(3),
+    ROCMFP4_SCALE_E4(4),  ROCMFP4_SCALE_E4(5),  ROCMFP4_SCALE_E4(6),  ROCMFP4_SCALE_E4(7),
+    ROCMFP4_SCALE_E5(0),  ROCMFP4_SCALE_E5(1),  ROCMFP4_SCALE_E5(2),  ROCMFP4_SCALE_E5(3),
+    ROCMFP4_SCALE_E5(4),  ROCMFP4_SCALE_E5(5),  ROCMFP4_SCALE_E5(6),  ROCMFP4_SCALE_E5(7),
+    ROCMFP4_SCALE_E6(0),  ROCMFP4_SCALE_E6(1),  ROCMFP4_SCALE_E6(2),  ROCMFP4_SCALE_E6(3),
+    ROCMFP4_SCALE_E6(4),  ROCMFP4_SCALE_E6(5),  ROCMFP4_SCALE_E6(6),  ROCMFP4_SCALE_E6(7),
+    ROCMFP4_SCALE_E7(0),  ROCMFP4_SCALE_E7(1),  ROCMFP4_SCALE_E7(2),  ROCMFP4_SCALE_E7(3),
+    ROCMFP4_SCALE_E7(4),  ROCMFP4_SCALE_E7(5),  ROCMFP4_SCALE_E7(6),  ROCMFP4_SCALE_E7(7),
+    ROCMFP4_SCALE_E8(0),  ROCMFP4_SCALE_E8(1),  ROCMFP4_SCALE_E8(2),  ROCMFP4_SCALE_E8(3),
+    ROCMFP4_SCALE_E8(4),  ROCMFP4_SCALE_E8(5),  ROCMFP4_SCALE_E8(6),  ROCMFP4_SCALE_E8(7),
+    ROCMFP4_SCALE_E9(0),  ROCMFP4_SCALE_E9(1),  ROCMFP4_SCALE_E9(2),  ROCMFP4_SCALE_E9(3),
+    ROCMFP4_SCALE_E9(4),  ROCMFP4_SCALE_E9(5),  ROCMFP4_SCALE_E9(6),  ROCMFP4_SCALE_E9(7),
+    ROCMFP4_SCALE_E10(0), ROCMFP4_SCALE_E10(1), ROCMFP4_SCALE_E10(2), ROCMFP4_SCALE_E10(3),
+    ROCMFP4_SCALE_E10(4), ROCMFP4_SCALE_E10(5), ROCMFP4_SCALE_E10(6), ROCMFP4_SCALE_E10(7),
+    ROCMFP4_SCALE_E11(0), ROCMFP4_SCALE_E11(1), ROCMFP4_SCALE_E11(2), ROCMFP4_SCALE_E11(3),
+    ROCMFP4_SCALE_E11(4), ROCMFP4_SCALE_E11(5), ROCMFP4_SCALE_E11(6), ROCMFP4_SCALE_E11(7),
+    ROCMFP4_SCALE_E12(0), ROCMFP4_SCALE_E12(1), ROCMFP4_SCALE_E12(2), ROCMFP4_SCALE_E12(3),
+    ROCMFP4_SCALE_E12(4), ROCMFP4_SCALE_E12(5), ROCMFP4_SCALE_E12(6), ROCMFP4_SCALE_E12(7),
+    ROCMFP4_SCALE_E13(0), ROCMFP4_SCALE_E13(1), ROCMFP4_SCALE_E13(2), ROCMFP4_SCALE_E13(3),
+    ROCMFP4_SCALE_E13(4), ROCMFP4_SCALE_E13(5), ROCMFP4_SCALE_E13(6), ROCMFP4_SCALE_E13(7),
+    ROCMFP4_SCALE_E14(0), ROCMFP4_SCALE_E14(1), ROCMFP4_SCALE_E14(2), ROCMFP4_SCALE_E14(3),
+    ROCMFP4_SCALE_E14(4), ROCMFP4_SCALE_E14(5), ROCMFP4_SCALE_E14(6), ROCMFP4_SCALE_E14(7),
+    ROCMFP4_SCALE_E15(0), ROCMFP4_SCALE_E15(1), ROCMFP4_SCALE_E15(2), ROCMFP4_SCALE_E15(3),
+    ROCMFP4_SCALE_E15(4), ROCMFP4_SCALE_E15(5), ROCMFP4_SCALE_E15(6),
+};
+
+#undef ROCMFP4_SCALE_SUB
+#undef ROCMFP4_SCALE_E1
+#undef ROCMFP4_SCALE_E2
+#undef ROCMFP4_SCALE_E3
+#undef ROCMFP4_SCALE_E4
+#undef ROCMFP4_SCALE_E5
+#undef ROCMFP4_SCALE_E6
+#undef ROCMFP4_SCALE_E7
+#undef ROCMFP4_SCALE_E8
+#undef ROCMFP4_SCALE_E9
+#undef ROCMFP4_SCALE_E10
+#undef ROCMFP4_SCALE_E11
+#undef ROCMFP4_SCALE_E12
+#undef ROCMFP4_SCALE_E13
+#undef ROCMFP4_SCALE_E14
+#undef ROCMFP4_SCALE_E15
+
 static inline float rocmfp4_ue4m3_to_fp32_half(uint8_t e) {
-    // Unsigned E4M3 scale. Return half the raw value because the codebook
-    // stores half-scale integer levels (e.g. 10 represents 5.0 raw-scale units).
-    if (e == 0 || e == 0x7f || e == 0xff) {
-        return 0.0f;
-    }
-
-    const int exp = (e >> 3) & 0x0f;
-    const int man = e & 0x07;
-    if (exp == 0) {
-        return (float) man * (1.0f / 1024.0f);
-    }
-
-    const uint32_t bits = ((uint32_t) exp + 119u) << 23 | ((uint32_t) man << 20);
-    float result;
-    memcpy(&result, &bits, sizeof(float));
-    return result;
+    return e <= 0x7e ? rocmfp4_scale_ue4m3_half[e] : 0.0f;
 }
 
-static inline uint8_t rocmfp4_best_index_scaled(float x, float inv_scale_half) {
-    if (!isfinite(x)) {
-        return 0;
-    }
-
+static inline uint8_t rocmfp4_best_index_scaled_finite(float x, float inv_scale_half) {
     // Exact nearest-neighbor thresholds for Codebook10:
     //   0, +/-1, +/-2, +/-3, +/-4, +/-6, +/-8, +/-10
     // Ties intentionally choose the lower-magnitude code, matching the former
@@ -77,12 +136,12 @@ static inline uint8_t rocmfp4_best_index_scaled(float x, float inv_scale_half) {
     return neg ? 15 : 7;
 }
 
-static uint8_t rocmfp4_best_index(float x, float scale_half) {
-    if (!(scale_half > 0.0f) || !isfinite(scale_half)) {
+static inline uint8_t rocmfp4_best_index_scaled(float x, float inv_scale_half) {
+    if (!isfinite(x)) {
         return 0;
     }
 
-    return rocmfp4_best_index_scaled(x, 1.0f / scale_half);
+    return rocmfp4_best_index_scaled_finite(x, inv_scale_half);
 }
 
 static inline bool rocmfp4_scale_is_valid(uint8_t e) {
@@ -91,8 +150,8 @@ static inline bool rocmfp4_scale_is_valid(uint8_t e) {
     return e <= 0x7e;
 }
 
-static float rocmfp4_block_mse_for_scale(
-        const float * x, int n, const float * quant_weights, float sigma2, int e, float best_err) {
+static float rocmfp4_block_mse_for_scale_unweighted(
+        const float * x, int n, int e, float best_err) {
     const float scale_half = rocmfp4_ue4m3_to_fp32_half((uint8_t) e);
     const float inv_scale_half = 1.0f / scale_half;
     float err = 0.0f;
@@ -102,21 +161,99 @@ static float rocmfp4_block_mse_for_scale(
         const float y = (float) rocmfp4_decode(q) * scale_half;
         const float d = x[i] - y;
 
-        float w = 1.0f;
-        if (quant_weights) {
-            // Match llama.cpp's imatrix weighting style for Q4_0: calibration
-            // importance is scaled by row energy so large activations remain protected.
-            const float qw = quant_weights[i];
-            w = isfinite(qw) && qw > 0.0f ? qw * sqrtf(sigma2 + x[i]*x[i]) : 0.0f;
-        }
-
-        err += w*d*d;
+        err += d*d;
         if (err > best_err) {
             return err;
         }
     }
 
     return err;
+}
+
+static float rocmfp4_block_mse_for_scale_unweighted_finite(
+        const float * x, int n, int e, float best_err) {
+    const float scale_half = rocmfp4_ue4m3_to_fp32_half((uint8_t) e);
+    const float inv_scale_half = 1.0f / scale_half;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        const uint8_t q = rocmfp4_best_index_scaled_finite(x[i], inv_scale_half);
+        const float y = (float) rocmfp4_decode(q) * scale_half;
+        const float d = x[i] - y;
+
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+static float rocmfp4_block_mse_for_scale_weighted(
+        const float * x, int n, const float * mse_weights, int e, float best_err) {
+    const float scale_half = rocmfp4_ue4m3_to_fp32_half((uint8_t) e);
+    const float inv_scale_half = 1.0f / scale_half;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        const uint8_t q = rocmfp4_best_index_scaled(x[i], inv_scale_half);
+        const float y = (float) rocmfp4_decode(q) * scale_half;
+        const float d = x[i] - y;
+
+        err += mse_weights[i]*d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+static float rocmfp4_block_mse_for_scale_weighted_finite(
+        const float * x, int n, const float * mse_weights, int e, float best_err) {
+    const float scale_half = rocmfp4_ue4m3_to_fp32_half((uint8_t) e);
+    const float inv_scale_half = 1.0f / scale_half;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        const uint8_t q = rocmfp4_best_index_scaled_finite(x[i], inv_scale_half);
+        const float y = (float) rocmfp4_decode(q) * scale_half;
+        const float d = x[i] - y;
+
+        err += mse_weights[i]*d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+static void rocmfp4_prepare_mse_weights(
+        float * dst, const float * x, int n, const float * quant_weights, float sigma2,
+        float * max_abs, float * max_abs_weight, bool * all_finite) {
+    *max_abs = 0.0f;
+    *max_abs_weight = 0.0f;
+    *all_finite = true;
+
+    for (int i = 0; i < n; ++i) {
+        const float qw = quant_weights[i];
+        const float ax = fabsf(x[i]);
+        const float weight = isfinite(qw) && qw > 0.0f ? qw * sqrtf(sigma2 + x[i]*x[i]) : 0.0f;
+        *all_finite = *all_finite && isfinite(x[i]);
+
+        if (ax > *max_abs) {
+            *max_abs = ax;
+            *max_abs_weight = weight;
+        } else if (ax == *max_abs && weight > *max_abs_weight) {
+            *max_abs_weight = weight;
+        }
+
+        // Match llama.cpp's imatrix weighting style for Q4_0: calibration
+        // importance is scaled by row energy so large activations remain protected.
+        dst[i] = weight;
+    }
 }
 
 static int rocmfp4_nearest_scale_ue4m3(float target_scale_half) {
@@ -147,26 +284,90 @@ static int rocmfp4_nearest_scale_ue4m3(float target_scale_half) {
     return (target_scale_half - lo_scale <= hi_scale - target_scale_half) ? lo - 1 : lo;
 }
 
-static uint8_t rocmfp4_choose_scale_ue4m3_exhaustive(
-        const float * x, int n, const float * quant_weights, float sigma2, float max_abs) {
+static uint8_t rocmfp4_choose_scale_ue4m3_exhaustive_unweighted(
+        const float * x, int n, float max_abs, bool all_finite) {
     const int start_e = rocmfp4_nearest_scale_ue4m3(max_abs / 10.0f);
 
     int best_e = 0;
     float best_err = FLT_MAX;
+    bool lower_done = false;
 
     for (int delta = 0; delta <= 125; ++delta) {
-        const int candidates[2] = { start_e - delta, start_e + delta };
-        for (int ci = 0; ci < 2; ++ci) {
-            const int e = candidates[ci];
-            if (e < 1 || e > 126 || (delta == 0 && ci == 1)) {
-                continue;
+        const int e0 = start_e - delta;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale_half = rocmfp4_ue4m3_to_fp32_half((uint8_t) e0);
+            const float clip_delta = max_abs - 10.0f*scale_half;
+            if (clip_delta > 0.0f && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = all_finite ?
+                    rocmfp4_block_mse_for_scale_unweighted_finite(x, n, e0, best_err) :
+                    rocmfp4_block_mse_for_scale_unweighted(x, n, e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = e0;
+                }
             }
+        }
 
-            const float err = rocmfp4_block_mse_for_scale(x, n, quant_weights, sigma2, e, best_err);
-            if (err < best_err || (err == best_err && e < best_e)) {
+        const int e1 = start_e + delta;
+        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+            const float err = all_finite ?
+                rocmfp4_block_mse_for_scale_unweighted_finite(x, n, e1, best_err) :
+                rocmfp4_block_mse_for_scale_unweighted(x, n, e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
                 best_err = err;
-                best_e = e;
+                best_e = e1;
             }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
+        }
+    }
+
+    return (uint8_t) best_e;
+}
+
+static uint8_t rocmfp4_choose_scale_ue4m3_exhaustive_weighted(
+        const float * x, int n, const float * mse_weights, float max_abs, float max_abs_weight, bool all_finite) {
+    const int start_e = rocmfp4_nearest_scale_ue4m3(max_abs / 10.0f);
+
+    int best_e = 0;
+    float best_err = FLT_MAX;
+    bool lower_done = false;
+
+    for (int delta = 0; delta <= 125; ++delta) {
+        const int e0 = start_e - delta;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale_half = rocmfp4_ue4m3_to_fp32_half((uint8_t) e0);
+            const float clip_delta = max_abs - 10.0f*scale_half;
+            if (max_abs_weight > 0.0f && clip_delta > 0.0f && max_abs_weight*clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = all_finite ?
+                    rocmfp4_block_mse_for_scale_weighted_finite(x, n, mse_weights, e0, best_err) :
+                    rocmfp4_block_mse_for_scale_weighted(x, n, mse_weights, e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = e0;
+                }
+            }
+        }
+
+        const int e1 = start_e + delta;
+        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+            const float err = all_finite ?
+                rocmfp4_block_mse_for_scale_weighted_finite(x, n, mse_weights, e1, best_err) :
+                rocmfp4_block_mse_for_scale_weighted(x, n, mse_weights, e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
+                best_err = err;
+                best_e = e1;
+            }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
         }
     }
 
@@ -174,17 +375,34 @@ static uint8_t rocmfp4_choose_scale_ue4m3_exhaustive(
 }
 
 static uint8_t rocmfp4_choose_scale_ue4m3(const float * x, int n, const float * quant_weights, float sigma2) {
+    if (quant_weights) {
+        assert(n <= QK_ROCMFP4);
+        float mse_weights_buf[QK_ROCMFP4];
+        float weighted_max_abs;
+        float max_abs_weight;
+        bool all_finite;
+        rocmfp4_prepare_mse_weights(mse_weights_buf, x, n, quant_weights, sigma2, &weighted_max_abs, &max_abs_weight, &all_finite);
+        if (!(weighted_max_abs > 0.0f) || !isfinite(weighted_max_abs)) {
+            return 0;
+        }
+        return rocmfp4_choose_scale_ue4m3_exhaustive_weighted(x, n, mse_weights_buf, weighted_max_abs, max_abs_weight, all_finite);
+    }
+
     float max_abs = 0.0f;
+    bool all_finite = true;
     for (int i = 0; i < n; ++i) {
-        const float xi = x[i];
-        max_abs = fmaxf(max_abs, fabsf(xi));
+        all_finite = all_finite && isfinite(x[i]);
+        const float ax = fabsf(x[i]);
+        if (ax > max_abs) {
+            max_abs = ax;
+        }
     }
 
     if (!(max_abs > 0.0f) || !isfinite(max_abs)) {
         return 0;
     }
 
-    return rocmfp4_choose_scale_ue4m3_exhaustive(x, n, quant_weights, sigma2, max_abs);
+    return rocmfp4_choose_scale_ue4m3_exhaustive_unweighted(x, n, max_abs, all_finite);
 }
 
 static void rocmfp4_quantize_row_q4_0_weighted(
@@ -210,7 +428,6 @@ static void rocmfp4_quantize_row_q4_0_weighted(
 
         y[ib].e[0] = e0;
         y[ib].e[1] = e1;
-        memset(y[ib].qs, 0, sizeof(y[ib].qs));
 
         for (int j = 0; j < QK_ROCMFP4/2; ++j) {
             const uint8_t q0 = rocmfp4_best_index_scaled(xb[j],                 inv_scale_half0);
@@ -239,7 +456,6 @@ static void rocmfp4_quantize_row_q4_0_fast_weighted(
         const float inv_scale_half = scale_half > 0.0f ? 1.0f / scale_half : 0.0f;
 
         y[ib].e = e;
-        memset(y[ib].qs, 0, sizeof(y[ib].qs));
 
         for (int j = 0; j < QK_ROCMFP4/2; ++j) {
             const uint8_t q0 = rocmfp4_best_index_scaled(xb[j],                 inv_scale_half);
@@ -264,7 +480,6 @@ void rocmfp4_quantize_row_q4_0_ref(const float * GGML_RESTRICT x, block_rocmfp4 
 
         y[ib].e[0] = e0;
         y[ib].e[1] = e1;
-        memset(y[ib].qs, 0, sizeof(y[ib].qs));
 
         for (int j = 0; j < QK_ROCMFP4/2; ++j) {
             const uint8_t q0 = rocmfp4_best_index_scaled(xb[j],                 inv_scale_half0);
@@ -285,7 +500,6 @@ void rocmfp4_quantize_row_q4_0_fast_ref(const float * GGML_RESTRICT x, block_roc
         const float inv_scale_half = scale_half > 0.0f ? 1.0f / scale_half : 0.0f;
 
         y[ib].e = e;
-        memset(y[ib].qs, 0, sizeof(y[ib].qs));
 
         for (int j = 0; j < QK_ROCMFP4/2; ++j) {
             const uint8_t q0 = rocmfp4_best_index_scaled(xb[j],                 inv_scale_half);
@@ -422,8 +636,9 @@ void rocmfp4_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const 
         int sumi1 = 0;
 
         for (int j = 0; j < QK_ROCMFP4/2; ++j) {
-            sumi0 += rocmfp4_decode(x[ib].qs[j] & 0x0f) * y[ib].qs[j];
-            sumi1 += rocmfp4_decode(x[ib].qs[j] >> 4)   * y[ib].qs[j + QK_ROCMFP4/2];
+            const uint8_t q = x[ib].qs[j];
+            sumi0 += rocmfp4_decode_table(q)      * y[ib].qs[j];
+            sumi1 += rocmfp4_decode_table(q >> 4) * y[ib].qs[j + QK_ROCMFP4/2];
         }
 
         sumf += d0 * (float) sumi0 + d1 * (float) sumi1;
@@ -452,8 +667,9 @@ void rocmfp4_vec_dot_q4_0_fast_q8_0(int n, float * GGML_RESTRICT s, size_t bs, c
         int sumi = 0;
 
         for (int j = 0; j < QK_ROCMFP4/2; ++j) {
-            sumi += rocmfp4_decode(x[ib].qs[j] & 0x0f) * y[ib].qs[j];
-            sumi += rocmfp4_decode(x[ib].qs[j] >> 4)   * y[ib].qs[j + QK_ROCMFP4/2];
+            const uint8_t q = x[ib].qs[j];
+            sumi += rocmfp4_decode_table(q)      * y[ib].qs[j];
+            sumi += rocmfp4_decode_table(q >> 4) * y[ib].qs[j + QK_ROCMFP4/2];
         }
 
         sumf += d * (float) sumi;

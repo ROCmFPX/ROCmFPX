@@ -459,9 +459,14 @@ vec2 dequantize(uint ib, uint iqs, uint a_offset) {
                 float(kvalues_rocmfp4[vui >> 4]) * d1);
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
-    vec2 v0 = dequantize(ib, iqs, a_offset);
-    vec2 v1 = dequantize(ib, iqs + 1, a_offset);
-    return vec4(v0.x, v0.y, v1.x, v1.y);
+    const uint vui0 = uint(data_a[a_offset + ib].qs[iqs]);
+    const uint vui1 = uint(data_a[a_offset + ib].qs[iqs + 1]);
+    const float d0 = ue4m3_to_fp32(data_a[a_offset + ib].e[0]);
+    const float d1 = ue4m3_to_fp32(data_a[a_offset + ib].e[1]);
+    return vec4(float(kvalues_rocmfp4[vui0 & 0xF]) * d0,
+                float(kvalues_rocmfp4[vui0 >> 4]) * d1,
+                float(kvalues_rocmfp4[vui1 & 0xF]) * d0,
+                float(kvalues_rocmfp4[vui1 >> 4]) * d1);
 }
 #endif
 
@@ -473,9 +478,13 @@ vec2 dequantize(uint ib, uint iqs, uint a_offset) {
                 float(kvalues_rocmfp4[vui >> 4]) * d);
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
-    vec2 v0 = dequantize(ib, iqs, a_offset);
-    vec2 v1 = dequantize(ib, iqs + 1, a_offset);
-    return vec4(v0.x, v0.y, v1.x, v1.y);
+    const uint vui0 = uint(data_a[a_offset + ib].qs[iqs]);
+    const uint vui1 = uint(data_a[a_offset + ib].qs[iqs + 1]);
+    const float d = ue4m3_to_fp32(data_a[a_offset + ib].e);
+    return vec4(float(kvalues_rocmfp4[vui0 & 0xF]) * d,
+                float(kvalues_rocmfp4[vui0 >> 4]) * d,
+                float(kvalues_rocmfp4[vui1 & 0xF]) * d,
+                float(kvalues_rocmfp4[vui1 >> 4]) * d);
 }
 #endif
 

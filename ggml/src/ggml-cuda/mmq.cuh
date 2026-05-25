@@ -938,7 +938,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 
         const block_rocmfp4 * bxi = (const block_rocmfp4 *) x + kbx0 + i*stride + kbx;
 
-        const int aux_q4 = get_int_b1(bxi->qs, kqsx);
+        const int aux_q4 = rocmfp4_get_qs_i32(bxi->qs, kqsx);
         const int2 v = rocmfp4_get_int_from_codebook_16(aux_q4, kvalues_rocmfp4);
         const int k0 = kbx * (2 * QI_ROCMFP4) + kqsx;
 
@@ -1005,7 +1005,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 
         const block_rocmfp4_fast * bxi = (const block_rocmfp4_fast *) x + kbx0 + i*stride + kbx;
 
-        const int aux_q4 = get_int_b1(bxi->qs, kqsx);
+        const int aux_q4 = rocmfp4_get_qs_i32(bxi->qs, kqsx);
         const int2 v = rocmfp4_get_int_from_codebook_16(aux_q4, kvalues_rocmfp4);
         const int k0 = kbx * (2 * QI_ROCMFP4) + kqsx;
 

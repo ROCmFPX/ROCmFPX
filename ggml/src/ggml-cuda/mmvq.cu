@@ -5,6 +5,55 @@
 
 #include <cstdint>
 
+#ifndef GGML_ROCMFP4_RDNA35_NWARPS
+#define GGML_ROCMFP4_RDNA35_NWARPS 2
+#endif
+
+#if GGML_ROCMFP4_RDNA35_NWARPS != 1 && GGML_ROCMFP4_RDNA35_NWARPS != 2 && \
+    GGML_ROCMFP4_RDNA35_NWARPS != 4 && GGML_ROCMFP4_RDNA35_NWARPS != 8
+#error "GGML_ROCMFP4_RDNA35_NWARPS must be one of: 1, 2, 4, 8"
+#endif
+
+#ifndef GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS
+#define GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS 2
+#endif
+
+#if GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS < 1 || GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS > MMVQ_MAX_BATCH_SIZE
+#error "GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS must be between 1 and MMVQ_MAX_BATCH_SIZE"
+#endif
+
+#ifndef GGML_ROCMFP4_RDNA35_MMID_MAX_BATCH
+#define GGML_ROCMFP4_RDNA35_MMID_MAX_BATCH MMVQ_MAX_BATCH_SIZE
+#endif
+
+#if GGML_ROCMFP4_RDNA35_MMID_MAX_BATCH < 1 || GGML_ROCMFP4_RDNA35_MMID_MAX_BATCH > MMVQ_MAX_BATCH_SIZE
+#error "GGML_ROCMFP4_RDNA35_MMID_MAX_BATCH must be between 1 and MMVQ_MAX_BATCH_SIZE"
+#endif
+
+#ifndef GGML_ROCMFP4_RDNA35_RPB_WIDE
+#define GGML_ROCMFP4_RDNA35_RPB_WIDE 1
+#endif
+
+#if GGML_ROCMFP4_RDNA35_RPB_WIDE != 1 && GGML_ROCMFP4_RDNA35_RPB_WIDE != 2
+#error "GGML_ROCMFP4_RDNA35_RPB_WIDE must be 1 or 2"
+#endif
+
+#ifndef GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL
+#define GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL GGML_ROCMFP4_RDNA35_RPB_WIDE
+#endif
+
+#ifndef GGML_ROCMFP4_RDNA35_RPB_WIDE_FAST
+#define GGML_ROCMFP4_RDNA35_RPB_WIDE_FAST GGML_ROCMFP4_RDNA35_RPB_WIDE
+#endif
+
+#if GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL != 1 && GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL != 2
+#error "GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL must be 1 or 2"
+#endif
+
+#if GGML_ROCMFP4_RDNA35_RPB_WIDE_FAST != 1 && GGML_ROCMFP4_RDNA35_RPB_WIDE_FAST != 2
+#error "GGML_ROCMFP4_RDNA35_RPB_WIDE_FAST must be 1 or 2"
+#endif
+
 typedef float (*vec_dot_q_cuda_t)(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs);
 
 static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) {
@@ -74,15 +123,18 @@ enum mmvq_parameter_table_id {
     MMVQ_PARAMETERS_GCN,
     MMVQ_PARAMETERS_RDNA2,
     MMVQ_PARAMETERS_RDNA3_0,
+    MMVQ_PARAMETERS_RDNA3_5,
     MMVQ_PARAMETERS_RDNA4
 };
 
 static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
 #if defined(RDNA4)
     return MMVQ_PARAMETERS_RDNA4;
+#elif defined(RDNA3_5)
+    return MMVQ_PARAMETERS_RDNA3_5;
 #elif defined(RDNA3_0)
     return MMVQ_PARAMETERS_RDNA3_0;
-#elif defined(RDNA2) || defined(RDNA3_5)
+#elif defined(RDNA2)
     return MMVQ_PARAMETERS_RDNA2;
 #elif defined(GCN) || defined(CDNA)
     return MMVQ_PARAMETERS_GCN;
@@ -98,7 +150,10 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
     if (GGML_CUDA_CC_IS_RDNA3_0(cc)) {
         return MMVQ_PARAMETERS_RDNA3_0;
     }
-    if (GGML_CUDA_CC_IS_RDNA2(cc) || GGML_CUDA_CC_IS_RDNA3_5(cc)) {
+    if (GGML_CUDA_CC_IS_RDNA3_5(cc)) {
+        return MMVQ_PARAMETERS_RDNA3_5;
+    }
+    if (GGML_CUDA_CC_IS_RDNA2(cc)) {
         return MMVQ_PARAMETERS_RDNA2;
     }
     if (GGML_CUDA_CC_IS_GCN(cc) || GGML_CUDA_CC_IS_CDNA(cc)) {
@@ -227,6 +282,15 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna3(ggml_type
     }
 }
 
+static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna3_5(ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q4_0_ROCMFP4:
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+                                return GGML_ROCMFP4_RDNA35_MMID_MAX_BATCH;
+        default:                return get_mmvq_mmid_max_batch_rdna3(type);
+    }
+}
+
 static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type type) {
     switch (type) {
         case GGML_TYPE_IQ1_S:   return 7;
@@ -275,6 +339,9 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
         if (GGML_CUDA_CC_IS_RDNA4(cc)) {
             return get_mmvq_mmid_max_batch_rdna4(type);
         }
+        if (GGML_CUDA_CC_IS_RDNA3_5(cc)) {
+            return get_mmvq_mmid_max_batch_rdna3_5(type);
+        }
         if (GGML_CUDA_CC_IS_RDNA3(cc)) {
             return get_mmvq_mmid_max_batch_rdna3(type);
         }
@@ -296,6 +363,8 @@ template <ggml_type type>
 static constexpr __device__ int get_mmvq_mmid_max_batch_for_device() {
 #if defined(RDNA4)
     return get_mmvq_mmid_max_batch_rdna4(type);
+#elif defined(RDNA3_5)
+    return get_mmvq_mmid_max_batch_rdna3_5(type);
 #elif defined(RDNA3)
     return get_mmvq_mmid_max_batch_rdna3(type);
 #elif defined(RDNA2) || defined(RDNA1)
@@ -368,6 +437,18 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
         }
         return 1;
     }
+    if (table_id == MMVQ_PARAMETERS_RDNA3_5) {
+        if (ncols_dst >= 1 && ncols_dst <= GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS) {
+            switch (type) {
+                case GGML_TYPE_Q4_0_ROCMFP4:
+                case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+                    return GGML_ROCMFP4_RDNA35_NWARPS;
+                default:
+                    return 1;
+            }
+        }
+        return 1;
+    }
     if (table_id == MMVQ_PARAMETERS_RDNA3_0) {
         // RDNA3 (W7900): stricter whitelist than RDNA4.
         // Q2_K / Q5_K / IQ4_XS regress in full quant sweeps.
@@ -391,7 +472,7 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
     return 1;
 }
 
-static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
+static constexpr __host__ __device__ int calc_rows_per_block(ggml_type type, int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
     if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN) {
         switch (ncols_dst) {
             case 1:
@@ -406,6 +487,18 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int 
                 return 2;
             default:
                 return 1;
+        }
+    }
+    if (table_id == MMVQ_PARAMETERS_RDNA3_5) {
+        if (ncols_dst >= 5 && ncols_dst <= 8) {
+            switch (type) {
+                case GGML_TYPE_Q4_0_ROCMFP4:
+                    return GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL;
+                case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+                    return GGML_ROCMFP4_RDNA35_RPB_WIDE_FAST;
+                default:
+                    break;
+            }
         }
     }
     return 1;
@@ -426,7 +519,7 @@ static __global__ void mul_mat_vec_q(
     constexpr int vdr = get_vdr_mmvq(type);
     constexpr mmvq_parameter_table_id table_id = get_device_table_id();
     constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id);
-    constexpr int rows_per_cuda_block = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    constexpr int rows_per_cuda_block = calc_rows_per_block(type, ncols_dst, table_id, small_k, nwarps);
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
 
     constexpr vec_dot_q_cuda_t vec_dot_q_cuda = get_vec_dot_q_cuda(type);
@@ -681,7 +774,7 @@ static std::pair<dim3, dim3> calc_launch_params(
         const int ncols_dst, const int nrows_x, const int nchannels_dst, const int nsamples_or_ntokens,
         const int warp_size, const mmvq_parameter_table_id table_id, const bool small_k = false) {
     const int nwarps = calc_nwarps(type, ncols_dst, table_id);
-    const int rpb = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    const int rpb = calc_rows_per_block(type, ncols_dst, table_id, small_k, nwarps);
     const int64_t nblocks = (nrows_x + rpb - 1) / rpb;
     const dim3 block_nums(nblocks, nchannels_dst, nsamples_or_ntokens);
     const dim3 block_dims(warp_size, nwarps, 1);

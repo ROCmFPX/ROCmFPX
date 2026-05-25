@@ -150,12 +150,26 @@ struct common_speculative_impl {
     virtual bool need_embd() const = 0;
 };
 
+static void common_speculative_batch_add_one_seq(
+        llama_batch & batch, llama_token id, llama_pos pos, llama_seq_id seq_id, bool logits) {
+    GGML_ASSERT(batch.seq_id[batch.n_tokens] && "llama_batch size exceeded");
+
+    batch.token   [batch.n_tokens] = id;
+    batch.pos     [batch.n_tokens] = pos;
+    batch.n_seq_id[batch.n_tokens] = 1;
+    batch.seq_id  [batch.n_tokens][0] = seq_id;
+    batch.logits  [batch.n_tokens] = logits ? 1 : 0;
+
+    batch.n_tokens++;
+}
+
 struct common_speculative_impl_draft_simple : public common_speculative_impl {
     common_params_speculative_draft params;
 
     llama_batch batch;
 
     std::vector<common_sampler_ptr> smpls;
+    std::vector<uint8_t> drafting;
 
     common_speculative_impl_draft_simple(const common_params_speculative & params, uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, n_seq)
@@ -209,6 +223,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
             throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
         }
+
+        drafting.assign(n_seq, 0);
     }
 
     ~common_speculative_impl_draft_simple() override {
@@ -240,7 +256,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
         // keep track of which sequences are still drafting
         int n_drafting = 0;
-        std::vector<bool> drafting(n_seq);
+        std::fill(drafting.begin(), drafting.end(), 0);
 
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             auto & dp = dparams[seq_id];
@@ -250,10 +266,14 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
             }
 
             n_drafting++;
-            drafting[seq_id] = true;
+            drafting[seq_id] = 1;
             common_sampler_reset(smpls[seq_id].get());
 
-            common_batch_add(batch, dp.id_last, dp.n_past, { seq_id }, true);
+            common_speculative_batch_add_one_seq(batch, dp.id_last, dp.n_past, seq_id, true);
+        }
+
+        if (n_drafting == 0) {
+            return;
         }
 
         int ret = llama_decode(ctx_dft, batch);
@@ -263,6 +283,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
         }
 
         int i = 0;
+        const bool log_debug = LOG_LEVEL_DEBUG <= common_log_get_verbosity_thold();
 
         while (n_drafting > 0) {
             int i_batch = 0;
@@ -281,10 +302,12 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);
 
-                for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
-                    LOG_DBG(" - seq_id %d, draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
-                            seq_id, k, i, cur_p->data[k].id, cur_p->data[k].p,
-                            common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+                if (log_debug) {
+                    for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
+                        LOG_DBG(" - seq_id %d, draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
+                                seq_id, k, i, cur_p->data[k].id, cur_p->data[k].p,
+                                common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+                    }
                 }
 
                 // add drafted token for each sequence
@@ -292,7 +315,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
                 // only collect very high-confidence draft tokens
                 if (cur_p->data[0].p < params.p_min) {
-                    drafting[seq_id] = false;
+                    drafting[seq_id] = 0;
                     n_drafting--;
 
                     continue;
@@ -300,19 +323,19 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
                 common_sampler_accept(smpl, id, true);
 
-                auto & dp = dparams.at(seq_id);
+                auto & dp = dparams[seq_id];
                 auto & result = *dp.result;
 
                 result.push_back(id);
 
                 if ((params.n_max <= (int) result.size()) ||
                     (dp.n_max > 0 && dp.n_max <= (int) result.size())) {
-                    drafting[seq_id] = false;
+                    drafting[seq_id] = 0;
                     n_drafting--;
                     continue;
                 }
 
-                common_batch_add(batch, id, dp.n_past + i + 1, { seq_id }, true);
+                common_speculative_batch_add_one_seq(batch, id, dp.n_past + i + 1, seq_id, true);
             }
 
             if (batch.n_tokens == 0) {
@@ -403,6 +426,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
     // roll back ctx_dft's recurrent state past the AR draft's redundant
     // pre-advancement before process() mirrored the verify batch.
     std::vector<uint16_t> last_n_drafted;
+    std::vector<uint8_t> drafting;
 
     common_speculative_state_draft_mtp(const common_params_speculative & params, uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
@@ -438,9 +462,13 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         i_batch_end.assign(n_seq, -1);
 
         verify_h.assign(n_seq, {});
+        for (auto & h : verify_h) {
+            h.reserve((size_t) std::max<int32_t>(1, this->params.n_max) * n_embd);
+        }
         verify_h_rows.assign(n_seq, 0);
 
         last_n_drafted.assign(n_seq, 0);
+        drafting.assign(n_seq, 0);
     }
 
     ~common_speculative_state_draft_mtp() override {
@@ -479,20 +507,22 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         const int32_t n_tokens = batch_in.n_tokens;
 
-        // remember the frist and last batch index for each sequence
+        // remember the first and last batch index for each sequence
         std::fill(i_batch_beg.begin(), i_batch_beg.end(), -1);
         std::fill(i_batch_end.begin(), i_batch_end.end(), -1);
+        std::fill(verify_h_rows.begin(), verify_h_rows.end(), 0);
 
         for (int k = 0; k < n_tokens; ++k) {
-            for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
-                GGML_ASSERT(batch_in.n_seq_id[k] == 1);
+            GGML_ASSERT(batch_in.n_seq_id[k] == 1);
 
-                if (batch_in.seq_id[k][0] == seq_id) {
-                    i_batch_end[seq_id] = k;
-                    if (i_batch_beg[seq_id] < 0) {
-                        i_batch_beg[seq_id] = k;
-                    }
-                }
+            const llama_seq_id seq_id = batch_in.seq_id[k][0];
+            if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+                continue;
+            }
+
+            i_batch_end[seq_id] = k;
+            if (i_batch_beg[seq_id] < 0) {
+                i_batch_beg[seq_id] = k;
             }
         }
 
@@ -504,7 +534,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         common_batch_clear(batch);
 
         for (int k = 0; k < n_tokens; ++k) {
-            common_batch_add(batch, batch_in.token[k], batch_in.pos[k], { batch_in.seq_id[k][0] }, 0);
+            common_speculative_batch_add_one_seq(batch, batch_in.token[k], batch_in.pos[k], batch_in.seq_id[k][0], false);
         }
 
         // shift the tgt embeddings to the right by one position
@@ -551,16 +581,24 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
 
             const int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
-            verify_h_rows[seq_id] = n_rows;
-            verify_h[seq_id].resize((size_t) n_rows * n_embd);
+            if (last_n_drafted[seq_id] == 0) {
+                const float * h_last = llama_get_embeddings_pre_norm_ith(ctx_tgt, i_batch_end[seq_id]);
+                std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
+                continue;
+            }
 
-            for (int32_t i = 0; i < n_rows; ++i) {
+            verify_h_rows[seq_id] = n_rows;
+            const size_t n_verify_floats = (size_t) (n_rows - 1) * n_embd;
+            if (verify_h[seq_id].size() < n_verify_floats) {
+                verify_h[seq_id].resize(n_verify_floats);
+            }
+            for (int32_t i = 0; i < n_rows - 1; ++i) {
                 const float * h = llama_get_embeddings_pre_norm_ith(ctx_tgt, i_batch_beg[seq_id] + i);
                 std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
             }
 
-            std::memcpy(pending_h[seq_id].data(),
-                    verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
+            const float * h_last = llama_get_embeddings_pre_norm_ith(ctx_tgt, i_batch_end[seq_id]);
+            std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
         }
 
         return true;
@@ -573,7 +611,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         // keep track of which sequences are still drafting
         int n_drafting = 0;
-        std::vector<bool> drafting(n_seq);
+        std::fill(drafting.begin(), drafting.end(), 0);
 
         const float * h_row = nullptr;
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
@@ -585,14 +623,20 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 continue;
             }
 
+            last_n_drafted[seq_id] = 0;
+
             n_drafting++;
-            drafting[seq_id] = true;
+            drafting[seq_id] = 1;
             common_sampler_reset(smpls[seq_id].get());
 
-            common_batch_add(batch, dp.id_last, dp.n_past, { seq_id }, true);
+            common_speculative_batch_add_one_seq(batch, dp.id_last, dp.n_past, seq_id, true);
 
             h_row = pending_h[seq_id].data();
             std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_row, row_bytes);
+        }
+
+        if (n_drafting == 0) {
+            return;
         }
 
         int ret = llama_decode(ctx_dft, batch);
@@ -602,6 +646,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         }
 
         int i = 0;
+        const bool log_debug = LOG_LEVEL_DEBUG <= common_log_get_verbosity_thold();
 
         while (n_drafting > 0) {
             int i_batch = 0;
@@ -621,29 +666,37 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);
 
-                for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
-                    LOG_DBG(" - seq_id %d, draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
-                            seq_id, k, i, cur_p->data[k].id, cur_p->data[k].p,
-                            common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+                if (log_debug) {
+                    for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
+                        LOG_DBG(" - seq_id %d, draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
+                                seq_id, k, i, cur_p->data[k].id, cur_p->data[k].p,
+                                common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+                    }
                 }
 
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
 
+                if (cur_p->data[0].p < params.p_min) {
+                    drafting[seq_id] = 0;
+                    n_drafting--;
+                    continue;
+                }
+
                 common_sampler_accept(smpl, id, true);
 
-                auto & dp = dparams.at(seq_id);
+                auto & dp = dparams[seq_id];
                 auto & result = *dp.result;
 
                 result.push_back(id);
 
                 if (params.n_max <= (int) result.size()) {
-                    drafting[seq_id] = false;
+                    drafting[seq_id] = 0;
                     n_drafting--;
                     continue;
                 }
 
-                common_batch_add(batch, id, dp.n_past + i + 1, { seq_id }, true);
+                common_speculative_batch_add_one_seq(batch, id, dp.n_past + i + 1, seq_id, true);
                 std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_row, row_bytes);
             }
 
@@ -682,12 +735,16 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         const int32_t n_rows = verify_h_rows[seq_id];
         if (n_rows <= 0) {
+            last_n_drafted[seq_id] = 0;
             return;
         }
 
         const int32_t i_h = std::min<int32_t>(n_accepted, n_rows - 1);
-        const size_t row_bytes = (size_t) n_embd * sizeof(float);
-        std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
+        if (i_h != n_rows - 1) {
+            const size_t row_bytes = (size_t) n_embd * sizeof(float);
+            std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
+        }
+        last_n_drafted[seq_id] = 0;
     }
 
     bool need_embd() const override {

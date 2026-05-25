@@ -1793,6 +1793,7 @@ const int8_t kvalues_rocmfp4_const[16] = {
 };
 
 shared int8_t kvalues_rocmfp4[16];
+shared float rocmfp4_ue4m3_fp32_lut[128];
 #endif
 
 #if defined(DATA_A_NVFP4)
@@ -1813,6 +1814,24 @@ float ue4m3_to_fp32_build(uint u) {
 }
 #endif
 
+#if defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST)
+float rocmfp4_ue4m3_to_fp32_build(uint u) {
+    if (u == 0u || u == 127u) {
+        return 0.0;
+    }
+    const uint exp = (u >> 3) & 15u;
+    const uint man = u & 7u;
+    if (exp == 0u) {
+        return float(man) * (1.0 / 1024.0);
+    }
+
+    // ROCmFP4 codebook values are stored at half scale, so return the
+    // already-halved UE4M3 value and keep shader call sites multiply-free.
+    const uint bits = (exp + 119u) << 23 | (man << 20);
+    return uintBitsToFloat(bits);
+}
+#endif
+
 #if defined(DATA_A_MXFP4) || defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST)
 #define NEEDS_INIT_IQ_SHMEM
 void init_iq_shmem(uvec3 wgsize)
@@ -1826,6 +1845,9 @@ void init_iq_shmem(uvec3 wgsize)
 #if defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST)
     for (uint i = gl_LocalInvocationIndex.x; i < kvalues_rocmfp4.length(); i += wgsize.x) {
         kvalues_rocmfp4[i] = kvalues_rocmfp4_const[i];
+    }
+    for (uint i = gl_LocalInvocationIndex.x; i < rocmfp4_ue4m3_fp32_lut.length(); i += wgsize.x) {
+        rocmfp4_ue4m3_fp32_lut[i] = rocmfp4_ue4m3_to_fp32_build(i);
     }
 #endif
 #if defined(DATA_A_NVFP4)
@@ -1871,21 +1893,7 @@ float e8m0_to_fp32(uint8_t x) {
 
 #if defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST)
 float ue4m3_to_fp32(uint8_t x) {
-    const uint u = uint(x);
-    if (u == 0u || u == 127u || u == 255u) {
-        return 0.0;
-    }
-
-    const uint exp = (u >> 3) & 15u;
-    const uint man = u & 7u;
-    if (exp == 0u) {
-        return float(man) * (1.0 / 1024.0);
-    }
-
-    // ROCmFP4 codebook values are stored at half scale, so return the
-    // already-halved UE4M3 value and keep shader call sites multiply-free.
-    const uint bits = (exp + 119u) << 23 | (man << 20);
-    return uintBitsToFloat(bits);
+    return rocmfp4_ue4m3_fp32_lut[min(uint(x), 127u)];
 }
 #elif defined(DATA_A_NVFP4)
 float ue4m3_to_fp32(uint8_t x) {

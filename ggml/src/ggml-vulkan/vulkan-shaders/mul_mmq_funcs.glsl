@@ -168,8 +168,7 @@ void block_a_to_shmem(const uint buf_ib, const uint ib, const uint iqs) {
         buf_a[buf_ib].d = FLOAT_TYPEV2(ue4m3_to_fp32(data_a[ib].e[0]),
                                        ue4m3_to_fp32(data_a[ib].e[1]));
 #elif defined(DATA_A_ROCMFP4_FAST)
-        const FLOAT_TYPE d = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib].e));
-        buf_a[buf_ib].d = FLOAT_TYPEV2(d, d);
+        buf_a[buf_ib].d = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib].e));
 #else
         buf_a[buf_ib].d = FLOAT_TYPE(e8m0_to_fp32(data_a[ib].e) * 0.5);
 #endif
@@ -191,7 +190,7 @@ ACC_TYPE mmq_dot_product(const uint ib_a) {
         q_sum += dotPacked4x8EXT(cache_a[ib_a].qs[iqs], cache_b.qs[iqs]);
     }
 
-    return ACC_TYPE(float(q_sum) * float(cache_a[ib_a].d.x) * float(cache_b.ds.x));
+    return ACC_TYPE(float(q_sum) * float(cache_a[ib_a].d) * float(cache_b.ds.x));
 #elif defined(DATA_A_ROCMFP4)
     int32_t q_sum0 = 0;
     int32_t q_sum1 = 0;

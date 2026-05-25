@@ -53,6 +53,7 @@
 /out/
 /tmp/
 /autogen-*.md
+/bench-reports/
 /common/build-info.cpp
 /tools/server/public
 

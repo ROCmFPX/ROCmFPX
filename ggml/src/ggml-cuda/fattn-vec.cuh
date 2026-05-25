@@ -64,14 +64,30 @@ static __global__ void flash_attn_ext_vec(
 
 #ifdef GGML_USE_HIP
 #ifdef RDNA
-    constexpr int nthreads_KQ_q = 2;
+    constexpr int nthreads_KQ_q_default = 2;
+    constexpr int nthreads_KQ_q_rocmfp4_default = 1;
 #else
-    constexpr int nthreads_KQ_q = 4;
+    constexpr int nthreads_KQ_q_default = 4;
+    constexpr int nthreads_KQ_q_rocmfp4_default = nthreads_KQ_q_default;
 #endif // RDNA
-    constexpr int nthreads_V_q  = (D/4 < 32 ? D/4 : 32);
+    constexpr bool type_K_rocmfp4 = type_K == GGML_TYPE_Q4_0_ROCMFP4 || type_K == GGML_TYPE_Q4_0_ROCMFP4_FAST;
+    constexpr bool type_V_rocmfp4 = type_V == GGML_TYPE_Q4_0_ROCMFP4 || type_V == GGML_TYPE_Q4_0_ROCMFP4_FAST;
+#ifndef GGML_ROCMFP4_FATTN_KQ_NTHREADS
+#define GGML_ROCMFP4_FATTN_KQ_NTHREADS nthreads_KQ_q_rocmfp4_default
+#endif
+#ifndef GGML_ROCMFP4_FATTN_V_NTHREADS
+#define GGML_ROCMFP4_FATTN_V_NTHREADS 2
+#endif
+#ifndef GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD
+#define GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD 8
+#endif
+    constexpr int nthreads_KQ_q = type_K_rocmfp4 ? GGML_ROCMFP4_FATTN_KQ_NTHREADS : nthreads_KQ_q_default;
+    constexpr int nthreads_V_q  = type_V_rocmfp4 ? GGML_ROCMFP4_FATTN_V_NTHREADS : (D/4 < 32 ? D/4 : 32);
+    constexpr int V_rows_per_thread_q = type_V_rocmfp4 ? GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD : 4;
 #else
     constexpr int nthreads_KQ_q = (D/4 < 32 ? D/4 : 32);
     constexpr int nthreads_V_q  = (D/4 < 32 ? D/4 : 32);
+    constexpr int V_rows_per_thread_q = 4;
 #endif // GGML_USE_HIP
 
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
@@ -81,7 +97,7 @@ static __global__ void flash_attn_ext_vec(
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
     static_assert(WARP_SIZE % nthreads_V  == 0, "bad nthreads_V");
 
-    constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne : 4;
+    constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne : V_rows_per_thread_q;
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, D, nthreads_KQ>();

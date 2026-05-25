@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
+MODEL="${MODEL:-/home/caf/strix-fp4/models/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf}" \
+SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-3}" \
+SPEC_DRAFT_N_MIN="${SPEC_DRAFT_N_MIN:-0}" \
+SPEC_DRAFT_P_MIN="${SPEC_DRAFT_P_MIN:-0.0}" \
+SPEC_DRAFT_P_SPLIT="${SPEC_DRAFT_P_SPLIT:-0.10}" \
+CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}" \
+CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}" \
+SPEC_DRAFT_TYPE_K="${SPEC_DRAFT_TYPE_K:-q4_0}" \
+SPEC_DRAFT_TYPE_V="${SPEC_DRAFT_TYPE_V:-q4_0}" \
+REASONING_MODE="${REASONING_MODE:-on}" \
+MIN_DECODE_TPS="${MIN_DECODE_TPS:-100.0}" \
+MIN_SUSTAINED_DECODE_TPS="${MIN_SUSTAINED_DECODE_TPS:-85.0}" \
+"$ROOT/scripts/check-rocmfp4-qwen-mtp-regression.sh"

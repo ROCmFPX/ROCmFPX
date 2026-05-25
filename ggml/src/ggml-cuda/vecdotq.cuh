@@ -327,10 +327,28 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
     return d * sumi;
 }
 
-#define VDR_ROCMFP4_Q8_1_MMVQ 2
-#define VDR_ROCMFP4_Q8_1_MMQ  8
-#define VDR_ROCMFP4_FAST_Q8_1_MMVQ VDR_ROCMFP4_Q8_1_MMVQ
-#define VDR_ROCMFP4_FAST_Q8_1_MMQ  VDR_ROCMFP4_Q8_1_MMQ
+#ifndef GGML_ROCMFP4_Q8_1_MMQ_VDR
+#define GGML_ROCMFP4_Q8_1_MMQ_VDR 8
+#endif
+
+#ifndef GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR
+#define GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR GGML_ROCMFP4_Q8_1_MMQ_VDR
+#endif
+
+#ifndef GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR
+#define GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR 2
+#endif
+
+#if GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR != 1 && \
+    GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR != 2 && \
+    GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR != 4
+#error "GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR must be 1, 2, or 4"
+#endif
+
+#define VDR_ROCMFP4_Q8_1_MMVQ 4
+#define VDR_ROCMFP4_Q8_1_MMQ  GGML_ROCMFP4_Q8_1_MMQ_VDR
+#define VDR_ROCMFP4_FAST_Q8_1_MMVQ GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR
+#define VDR_ROCMFP4_FAST_Q8_1_MMQ  GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR
 
 static __device__ __forceinline__ float vec_dot_rocmfp4_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
@@ -343,7 +361,7 @@ static __device__ __forceinline__ float vec_dot_rocmfp4_q8_1(
     int sumi1 = 0;
 #pragma unroll
     for (int l = 0; l < VDR_ROCMFP4_Q8_1_MMVQ; ++l) {
-        const int aux_q4 = get_int_b1(bq4->qs, iqs + l);
+        const int aux_q4 = rocmfp4_get_qs_i32(bq4->qs, iqs + l);
         const int2 v = rocmfp4_get_int_from_codebook_16(aux_q4, kvalues_rocmfp4);
 
         sumi0 = ggml_cuda_dp4a(v.x, q8[l + 0], sumi0);
@@ -364,7 +382,7 @@ static __device__ __forceinline__ float vec_dot_rocmfp4_fast_q8_1(
     int sumi = 0;
 #pragma unroll
     for (int l = 0; l < VDR_ROCMFP4_FAST_Q8_1_MMVQ; ++l) {
-        const int aux_q4 = get_int_b1(bq4->qs, iqs + l);
+        const int aux_q4 = rocmfp4_get_qs_i32(bq4->qs, iqs + l);
         const int2 v = rocmfp4_get_int_from_codebook_16(aux_q4, kvalues_rocmfp4);
 
         sumi = ggml_cuda_dp4a(v.x, q8[l + 0], sumi);

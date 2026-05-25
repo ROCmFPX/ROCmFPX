@@ -216,35 +216,71 @@ static __device__ __forceinline__ uint8_t rocmfp4_best_index_scaled_cuda(float x
     return neg ? 15 : 7;
 }
 
+static __device__ __forceinline__ int8_t rocmfp4_best_value_scaled_cuda(float x, float inv_scale_half) {
+    const float a = fabsf(x * inv_scale_half);
+    if (a <= 0.5f) {
+        return 0;
+    }
+
+    const bool neg = x < 0.0f;
+    int mag;
+    if (a <= 1.5f) {
+        mag = 1;
+    } else if (a <= 2.5f) {
+        mag = 2;
+    } else if (a <= 3.5f) {
+        mag = 3;
+    } else if (a <= 5.0f) {
+        mag = 4;
+    } else if (a <= 7.0f) {
+        mag = 6;
+    } else if (a <= 9.0f) {
+        mag = 8;
+    } else {
+        mag = 10;
+    }
+
+    return neg ? -mag : mag;
+}
+
 static __device__ __forceinline__ uint8_t rocmfp4_nearest_scale_ue4m3_cuda(float target_scale_half) {
     if (!(target_scale_half > 0.0f) || !isfinite(target_scale_half)) {
         return 1;
     }
 
-    uint8_t best_e = 1;
-    float best_diff = fabsf(rocmfp4_ue4m3_to_fp32_half_finite(best_e) - target_scale_half);
-
-    for (int e = 2; e <= 126; ++e) {
-        const float diff = fabsf(rocmfp4_ue4m3_to_fp32_half_finite((uint8_t) e) - target_scale_half);
-        if (diff < best_diff) {
-            best_diff = diff;
-            best_e = (uint8_t) e;
+    int lo = 1;
+    int hi = 126;
+    while (lo < hi) {
+        const int mid = lo + (hi - lo) / 2;
+        if (rocmfp4_ue4m3_to_fp32_half_finite((uint8_t) mid) < target_scale_half) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
         }
     }
 
-    return best_e;
+    if (lo == 1) {
+        return 1;
+    }
+
+    const float hi_scale = rocmfp4_ue4m3_to_fp32_half_finite((uint8_t) lo);
+    const float lo_scale = rocmfp4_ue4m3_to_fp32_half_finite((uint8_t) (lo - 1));
+
+    // Keep midpoint ties on the lower scale byte to match the CPU reference.
+    return (target_scale_half - lo_scale <= hi_scale - target_scale_half) ? (uint8_t) (lo - 1) : (uint8_t) lo;
 }
 
+template<int start, int n>
 static __device__ __forceinline__ float rocmfp4_block_mse_for_scale_cuda(
-        const float * __restrict__ x, int start, int n, int e, float best_err) {
+        const float * __restrict__ x, int e, float best_err) {
     const float scale_half = rocmfp4_ue4m3_to_fp32_half_finite((uint8_t) e);
     const float inv_scale_half = 1.0f / scale_half;
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
         const float xi = x[start + i];
-        const uint8_t q = rocmfp4_best_index_scaled_cuda(xi, inv_scale_half);
-        const float yi = (float) rocmfp4_decode_i8(q) * scale_half;
+        const int8_t qv = rocmfp4_best_value_scaled_cuda(xi, inv_scale_half);
+        const float yi = (float) qv * scale_half;
         const float d = xi - yi;
 
         err += d*d;
@@ -256,12 +292,15 @@ static __device__ __forceinline__ float rocmfp4_block_mse_for_scale_cuda(
     return err;
 }
 
-static __device__ __forceinline__ uint8_t rocmfp4_choose_scale_ue4m3_cuda(
-        const float * __restrict__ x, int start, int n) {
+template<int start, int n>
+static __device__ __forceinline__ uint8_t rocmfp4_choose_scale_ue4m3_cuda(const float * __restrict__ x) {
     float max_abs = 0.0f;
     for (int i = 0; i < n; ++i) {
         const float xi = x[start + i];
-        max_abs = fmaxf(max_abs, fabsf(xi));
+        const float ax = fabsf(xi);
+        if (ax > max_abs) {
+            max_abs = ax;
+        }
     }
 
     if (!(max_abs > 0.0f) || !isfinite(max_abs)) {
@@ -271,25 +310,35 @@ static __device__ __forceinline__ uint8_t rocmfp4_choose_scale_ue4m3_cuda(
     const int start_e = rocmfp4_nearest_scale_ue4m3_cuda(max_abs / 10.0f);
     int best_e = 0;
     float best_err = FLT_MAX;
+    bool lower_done = false;
 
     for (int delta = 0; delta <= 125; ++delta) {
         const int e0 = start_e - delta;
-        const int e1 = start_e + delta;
-
-        if (e0 >= 1 && e0 <= 126) {
-            const float err = rocmfp4_block_mse_for_scale_cuda(x, start, n, e0, best_err);
-            if (err < best_err || (err == best_err && e0 < best_e)) {
-                best_err = err;
-                best_e = e0;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale_half = rocmfp4_ue4m3_to_fp32_half_finite((uint8_t) e0);
+            const float clip_delta = max_abs - 10.0f*scale_half;
+            if (clip_delta > 0.0f && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = rocmfp4_block_mse_for_scale_cuda<start, n>(x, e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = e0;
+                }
             }
         }
 
+        const int e1 = start_e + delta;
         if (delta != 0 && e1 >= 1 && e1 <= 126) {
-            const float err = rocmfp4_block_mse_for_scale_cuda(x, start, n, e1, best_err);
+            const float err = rocmfp4_block_mse_for_scale_cuda<start, n>(x, e1, best_err);
             if (err < best_err || (err == best_err && e1 < best_e)) {
                 best_err = err;
                 best_e = e1;
             }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
         }
     }
 
@@ -297,8 +346,8 @@ static __device__ __forceinline__ uint8_t rocmfp4_choose_scale_ue4m3_cuda(
 }
 
 static __device__ void quantize_f32_rocmfp4_block(const float * __restrict__ x, block_rocmfp4 * __restrict__ y) {
-    const uint8_t e0 = rocmfp4_choose_scale_ue4m3_cuda(x, 0,                 QK_ROCMFP4/2);
-    const uint8_t e1 = rocmfp4_choose_scale_ue4m3_cuda(x, QK_ROCMFP4/2, QK_ROCMFP4/2);
+    const uint8_t e0 = rocmfp4_choose_scale_ue4m3_cuda<0, QK_ROCMFP4/2>(x);
+    const uint8_t e1 = rocmfp4_choose_scale_ue4m3_cuda<QK_ROCMFP4/2, QK_ROCMFP4/2>(x);
     const float d0 = rocmfp4_ue4m3_to_fp32_half_finite(e0);
     const float d1 = rocmfp4_ue4m3_to_fp32_half_finite(e1);
     const float id0 = d0 > 0.0f ? 1.0f/d0 : 0.0f;
@@ -317,7 +366,7 @@ static __device__ void quantize_f32_rocmfp4_block(const float * __restrict__ x, 
 }
 
 static __device__ void quantize_f32_rocmfp4_fast_block(const float * __restrict__ x, block_rocmfp4_fast * __restrict__ y) {
-    const uint8_t e = rocmfp4_choose_scale_ue4m3_cuda(x, 0, QK_ROCMFP4);
+    const uint8_t e = rocmfp4_choose_scale_ue4m3_cuda<0, QK_ROCMFP4>(x);
     const float d = rocmfp4_ue4m3_to_fp32_half_finite(e);
     const float id = d > 0.0f ? 1.0f/d : 0.0f;
 
@@ -357,14 +406,6 @@ static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {
     quantize_f32_iq4_nl_block((const float *)cxi, (block_iq4_nl *)cdsti);
 }
 
-static __device__ void cpy_blck_f32_rocmfp4(const char * cxi, char * cdsti) {
-    quantize_f32_rocmfp4_block((const float *)cxi, (block_rocmfp4 *)cdsti);
-}
-
-static __device__ void cpy_blck_f32_rocmfp4_fast(const char * cxi, char * cdsti) {
-    quantize_f32_rocmfp4_fast_block((const float *)cxi, (block_rocmfp4_fast *)cdsti);
-}
-
 template<typename src_t>
 static __device__ void cpy_blck_scalar_rocmfp4(const char * cxi, char * cdsti) {
     const src_t * x = (const src_t *) cxi;
@@ -389,6 +430,14 @@ static __device__ void cpy_blck_scalar_rocmfp4_fast(const char * cxi, char * cds
     }
 
     quantize_f32_rocmfp4_fast_block(tmp, (block_rocmfp4_fast *) cdsti);
+}
+
+static __device__ void cpy_blck_f32_rocmfp4(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfp4<float>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_f32_rocmfp4_fast(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfp4_fast<float>(cxi, cdsti);
 }
 
 static __device__ void cpy_blck_f16_rocmfp4(const char * cxi, char * cdsti) {
