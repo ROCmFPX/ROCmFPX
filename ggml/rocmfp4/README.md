@@ -524,6 +524,12 @@ Current status:
   byte-addressed block shader and preserves exact 18-byte or 17-byte
   ROCmFP4 blocks; contiguous FAST copies keep the existing direct byte-copy
   fast path.
+- Vulkan CPY is now covered by a dedicated regression guard so copy-path
+  changes cannot silently fall back or regress outside the ROCm-only CPY gate.
+  On Strix Halo RADV Vulkan, the large guarded shape currently measures
+  F32/F16/BF16-to-dual at `16453.45`, `3707.71`, and `3911.77` us/run,
+  dual-to-F32 at `557.03` us/run, F32/F16/BF16-to-FAST at `13836.34`,
+  `3277.06`, and `3413.58` us/run, and FAST-to-F32 at `548.95` us/run.
 - Vulkan scalar FlashAttention can now decode ROCmFP4 and ROCmFP4_FAST K/V
   cache blocks. ROCmFP4 K/V is forced to the scalar FA path because the current
   custom decode is not a coopmat/native matrix-core FP4 path.
@@ -711,6 +717,12 @@ Current status:
     after adding the shared ROCmFP4 UE4M3
     scale LUT was FAST `53.66`, `71.67`, `105.14` us/run and dual-scale
     `65.05`, `83.07`, `122.70` us/run for the same shapes.
+  - `scripts/check-rocmfp4-vulkan-cpy-regression.sh` measures Vulkan0 CPY for
+    `F32/F16/BF16 -> Q4_0_ROCMFP4`,
+    `F32/F16/BF16 -> Q4_0_ROCMFP4_FAST`, and the matching quant-to-F32
+    dequant copy paths on the same large shape used by the ROCm CPY guard.
+    It is included in the all-regression harness to catch accidental Vulkan
+    copy fallback or shader-routing regressions.
   - `scripts/check-rocmfp4-rocm-runtime-regression.sh` measures the same
     focused `MUL_MAT` shapes on ROCm0. The guard covers `n=1`, `n=2`, `n=4`,
     and `n=8` for both FAST and dual-scale ROCmFP4 so MTP-style multi-column
@@ -730,8 +742,8 @@ Current status:
     F32/F16/BF16-to-FAST `1047.21`, `950.93`, `951.00` us/run, and
     FAST-to-F32 `170.36` us/run.
   - `scripts/check-rocmfp4-all-regression.sh` runs the promoted-gain gate:
-    quant, Vulkan runtime, ROCm runtime, ROCm FlashAttention, ROCm CPY, and
-    Qwen MTP guards serially, then checks ROCm KFD PIDs. Runtime
+    quant, Vulkan runtime, Vulkan CPY, ROCm runtime, ROCm FlashAttention,
+    ROCm CPY, and Qwen MTP guards serially, then checks ROCm KFD PIDs. Runtime
     microbenchmarks should use this serial path rather than being run in
     parallel with other GPU/UMA workloads. DeepSeek is not part of this
     promoted-gain gate because no reproducible DeepSeek speedup has been

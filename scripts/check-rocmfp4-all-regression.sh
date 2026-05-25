@@ -19,6 +19,12 @@ env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
     scripts/check-rocmfp4-vulkan-runtime-regression.sh
 
 echo
+echo "== ROCmFP4 Vulkan CPY guard =="
+env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
+    BIN="$TEST_BACKEND_OPS_BIN" \
+    scripts/check-rocmfp4-vulkan-cpy-regression.sh
+
+echo
 echo "== ROCmFP4 ROCm runtime guard =="
 env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
     BIN="$TEST_BACKEND_OPS_BIN" \
