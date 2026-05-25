@@ -107,8 +107,10 @@ Current status:
   promoted. A later p-min sweep on the actual promoted `n-max 3`,
   q8-main/q4-draft profile measured `104.2` / `89.1` at `p-min 0.25`,
   `104.1` / `89.0` at `0.50`, `104.0` / `89.3` at `0.75`, and
-  `104.2` / `89.1` at `0.90`; none beat the promoted sustained-plus-short
-  profile. The full all-regression harness can include it with
+  `104.2` / `89.1` at `0.90`. Follow-up p-split checks measured
+  `103.7` / `88.9` at `0.05` and `103.8` / `89.3` at `0.20`; n-min checks
+  measured `103.8` / `88.9` for `1` and `104.2` / `89.2` for `2`. None beat
+  the promoted sustained-plus-short profile. The full all-regression harness can include it with
   `INCLUDE_QWEN35_A3B_GUARD=1`.
 - ROCm/HIP single-token MMVQ uses a full-block vector-dot ratio for the
   dual-scale layout (`VDR_ROCMFP4_Q8_1_MMVQ=4`) while keeping the FAST layout

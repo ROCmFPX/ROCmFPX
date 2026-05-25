@@ -167,14 +167,20 @@ V need q8 while the draft KV can remain q4:
 | 5 | q8 K/V | q4 K/V | none | 104.9 | 78.9 | slower burst than n-max 4 |
 
 Additional p-min filtering on the promoted `n-max 3`, q8-main/q4-draft
-profile also failed to produce a clear sustained win:
+profile also failed to produce a clear sustained win. The remaining p-split
+and n-min acceptance-shape checks were then closed on the same promoted
+profile and also did not beat the default:
 
-| `--spec-draft-p-min` | Short decode tok/s | Sustained decode tok/s | Result |
-|---:|---:|---:|---|
-| 0.25 | 104.2 | 89.1 | near tie, not promoted |
-| 0.50 | 104.1 | 89.0 | slower sustained |
-| 0.75 | 104.0 | 89.3 | tied sustained but slower short decode |
-| 0.90 | 104.2 | 89.1 | near tie, not promoted |
+| Extra setting | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|
+| `--spec-draft-p-min 0.25` | 104.2 | 89.1 | near tie, not promoted |
+| `--spec-draft-p-min 0.50` | 104.1 | 89.0 | slower sustained |
+| `--spec-draft-p-min 0.75` | 104.0 | 89.3 | tied sustained but slower short decode |
+| `--spec-draft-p-min 0.90` | 104.2 | 89.1 | near tie, not promoted |
+| `--spec-draft-p-split 0.05` | 103.7 | 88.9 | slower |
+| `--spec-draft-p-split 0.20` | 103.8 | 89.3 | tied sustained but slower short decode |
+| `--spec-draft-n-min 1` | 103.8 | 88.9 | slower |
+| `--spec-draft-n-min 2` | 104.2 | 89.2 | near tie, not promoted |
 
 Batch and thread follow-ups on the promoted `n-max 3`, q8-main/q4-draft profile
 did not improve sustained decode, so the Pi/server defaults remain `-b 512`,
