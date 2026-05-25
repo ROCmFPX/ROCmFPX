@@ -132,9 +132,10 @@ The focused guard for this promoted 35B A3B profile is:
 scripts/check-rocmfp4-qwen35-a3b-mtp-regression.sh
 ```
 
-The focused guard now defaults to `n-max 3`, q8 main KV, and q4 draft KV. The
-promoted sweep pass measured `104.3 tok/s` short and `89.3 tok/s` sustained;
-guard floors are `100.0` and `85.0 tok/s`.
+The focused guard now defaults to `n-max 3`, q8 main KV, q4 draft KV, and
+`--spec-draft-p-min 0.25`. The promoted top-k-10 MTP sampler pass measured
+`103.9 tok/s` short and `90.0 tok/s` sustained after a first sustained run at
+`89.8 tok/s`; guard floors are `100.0` and `85.0 tok/s`.
 
 Follow-up acceptance-threshold checks on the q4-KV `n-max 2` profile did not
 produce a clear sustained improvement, so the promoted server/guard defaults
@@ -167,13 +168,19 @@ V need q8 while the draft KV can remain q4:
 | 5 | q8 K/V | q4 K/V | none | 104.9 | 78.9 | slower burst than n-max 4 |
 
 Additional p-min filtering on the promoted `n-max 3`, q8-main/q4-draft
-profile also failed to produce a clear sustained win. The remaining p-split
-and n-min acceptance-shape checks were then closed on the same promoted
-profile and also did not beat the default:
+profile originally failed to produce a clear sustained win while the MTP
+internal sampler was still hardcoded to `top_k=1`. After changing the internal
+MTP sampler to `top_k=10`, the draft loop still selects the top sorted
+candidate, but `--spec-draft-p-min` sees a meaningful candidate distribution.
+That makes `p-min 0.25` a promoted 35B A3B sustained profile. The dense 27B
+profile remains at `p-min 0.0`; the same `p-min 0.25` filter regressed 27B
+sustained decode to `24.6 tok/s`.
 
 | Extra setting | Short decode tok/s | Sustained decode tok/s | Result |
 |---|---:|---:|---|
-| `--spec-draft-p-min 0.25` | 104.2 | 89.1 | near tie, not promoted |
+| `top_k=10` internal MTP, `--spec-draft-p-min 0.0` | 104.3 | 89.3 | tied previous promoted path |
+| `top_k=10` internal MTP, `--spec-draft-p-min 0.25` | 103.9 | 90.0 | promoted sustained profile |
+| pre-change `--spec-draft-p-min 0.25` | 104.2 | 89.1 | near tie, not promoted |
 | `--spec-draft-p-min 0.50` | 104.1 | 89.0 | slower sustained |
 | `--spec-draft-p-min 0.75` | 104.0 | 89.3 | tied sustained but slower short decode |
 | `--spec-draft-p-min 0.90` | 104.2 | 89.1 | near tie, not promoted |
@@ -266,6 +273,7 @@ The largest measured gains so far came from backend-specific ROCmFP4 work:
 | ROCmFP4 HIP unaligned quant-byte dword load | promoted after the full gate; the isolated step measured `78.26` / `69.23` us for 64d dual-scale / FAST and `215.82` / `183.77` us for Qwen-style 128d dual-scale / FAST, while Qwen MTP held `33.4 tok/s` short and `27.7 tok/s` sustained |
 | ROCmFP4 FAST MMVQ/MMQ packed-byte dword load | extended the ROCmFP4 unaligned packed-byte loader to FAST `MUL_MAT`; focused ROCm FAST moved to `45.17`, `58.38`, `90.54`, and `157.83` us for `n=1/2/4/8`, and Qwen MTP improved to `33.6 tok/s` short / `28.0 tok/s` sustained on the promoted default build |
 | MMVQ single-warp reduction bypass | skips the shared-memory reduction storage, barrier, and dead `threadIdx.y > 0` return path when a ROCmFP4 MMVQ specialization launches with one warp; focused ROCm `n=4/8` improved to FAST `87.29` / `156.52` us and dual-scale `82.81` / `141.99` us, while Qwen MTP reached `34.1 tok/s` short / `28.1 tok/s` sustained |
+| MTP sampler top-k-10 acceptance filtering | lets `--spec-draft-p-min` operate on a real top-candidate distribution while still drafting the top sorted candidate; the 35B A3B profile with q8 main KV and q4 draft KV moved from the `89.3`-`89.5 tok/s` sustained band to `90.0 tok/s` with `--spec-draft-p-min 0.25` |
 | ROCmFP4 CPY/dequant kernels | quant-to-F32 copies moved from the old `~740 us` band to about `182 us` dual-scale and `170 us` FAST |
 | ROCmFP4 CPU finite-block quant scoring | normal GGUF quantization avoids per-value guarded decode during scale-MSE scoring after a block-level finite scan; latest guard measured dual-scale / FAST normal quant at `3844.38` / `3582.57` cycles/32 |
 | ROCmFP4 weighted/imatrix finite scoring | FAST imatrix GGUF quantization moved from same-session pre-candidate `5258.07` to `4448.73` / `4447.32` cycles/32 on two guarded passes; dual imatrix stayed in the noisy guarded band |

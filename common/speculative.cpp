@@ -448,7 +448,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         for (auto & s : smpls) {
             common_params_sampling sparams;
             sparams.no_perf  = false;
-            sparams.top_k    = 1; // TODO: re-enable top_k == 10 and utilize `p_min` spec param
+            // Keep several candidates so --spec-draft-p-min has a meaningful
+            // probability distribution while the draft loop still selects the
+            // top candidate after sorting below.
+            sparams.top_k    = 10;
             sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
             s.reset(common_sampler_init(llama_get_model(ctx_dft), sparams));
         }

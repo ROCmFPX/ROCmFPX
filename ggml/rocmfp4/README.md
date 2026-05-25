@@ -101,26 +101,33 @@ Current status:
   `thinking = 1`; ROCm reported no KFD PIDs after shutdown. The promoted
   profile is now covered by the focused
   `scripts/check-rocmfp4-qwen35-a3b-mtp-regression.sh` guard, which defaults
-  to `n-max 3`, q8 main KV, and q4 draft KV with `100.0` short and
-  `85.0 tok/s` sustained floors.
+  to `n-max 3`, q8 main KV, q4 draft KV, and `p-min 0.25` with `100.0` short
+  and `85.0 tok/s` sustained floors.
   Follow-up `p-min 0.25/0.50/0.75`, `p-split 0.05/0.20`, and `n-min 1`
   checks on the q4-KV baseline all tied the same `80.5`-`80.8 tok/s` sustained
   band, while `p-min 0.25` on the q8-main/q4-draft path tied at `85.4 tok/s`
   sustained, so the
-  conservative `n-min 0`, `p-min 0.0`, `p-split 0.10` defaults remain
-  promoted. A later p-min sweep on the actual promoted `n-max 3`,
-  q8-main/q4-draft profile measured `104.2` / `89.1` at `p-min 0.25`,
-  `104.1` / `89.0` at `0.50`, `104.0` / `89.3` at `0.75`, and
-  `104.2` / `89.1` at `0.90`. Follow-up p-split checks measured
-  `103.7` / `88.9` at `0.05` and `103.8` / `89.3` at `0.20`; n-min checks
-  measured `103.8` / `88.9` for `1` and `104.2` / `89.2` for `2`. None beat
-  the promoted sustained-plus-short profile. Combined `p-min`/`p-split`
-  follow-ups also tied rather than beat the default: `p-min 0.25` with
-  `p-split 0.30` repeated at `104.6` / `89.5`, `p-split 0.40` and `0.50`
-  measured `104.6` / `89.5` and `104.4` / `89.5`, and `p-split 0.70` /
-  `0.90` measured `104.8` / `89.5` and `104.7` / `89.5`; the same-session
-  default tied at `104.7` / `89.5`, so no combined probability profile is
-  promoted. The full all-regression harness can include it with
+  conservative `n-min 0`, `p-min 0.0`, `p-split 0.10` defaults remained
+  promoted until the MTP internal sampler was changed from `top_k=1` to
+  `top_k=10`, making the `p-min` cutoff operate on a meaningful candidate
+  distribution while the draft loop still selects the top sorted candidate.
+  A pre-change p-min sweep on the actual promoted `n-max 3`, q8-main/q4-draft
+  profile measured `104.2` / `89.1` at `p-min 0.25`, `104.1` / `89.0` at
+  `0.50`, `104.0` / `89.3` at `0.75`, and `104.2` / `89.1` at `0.90`.
+  Follow-up p-split checks measured `103.7` / `88.9` at `0.05` and
+  `103.8` / `89.3` at `0.20`; n-min checks measured `103.8` / `88.9` for
+  `1` and `104.2` / `89.2` for `2`. None beat the promoted
+  sustained-plus-short profile. Combined `p-min`/`p-split` follow-ups also
+  tied rather than beat the default: `p-min 0.25` with `p-split 0.30`
+  repeated at `104.6` / `89.5`, `p-split 0.40` and `0.50` measured
+  `104.6` / `89.5` and `104.4` / `89.5`, and `p-split 0.70` / `0.90`
+  measured `104.8` / `89.5` and `104.7` / `89.5`; the same-session default
+  tied at `104.7` / `89.5`. With `top_k=10`, the 35B A3B profile now promotes
+  `--spec-draft-p-min 0.25`: default `p-min 0.0` measured `104.3` / `89.3`,
+  while `p-min 0.25` measured `103.9` / `90.0` after a first sustained run at
+  `89.8 tok/s`. The dense 27B profile should stay at `p-min 0.0`; the same
+  `p-min 0.25` filter regressed it to `24.6 tok/s` sustained. The full
+  all-regression harness can include the 35B guard with
   `INCLUDE_QWEN35_A3B_GUARD=1`.
 - Reasoning-off checks on the final 35B q8-main/q4-draft profile are a
   separate lower-throughput mode. `n-max 1/2/3/4` measured `77.7` / `73.9`,
