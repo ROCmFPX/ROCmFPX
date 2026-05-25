@@ -828,6 +828,7 @@ Rejected Qwen3.6 35B A3B MoE launch-shape checks on the promoted reasoning-on
 |---|---:|---:|---|
 | ROCmFP4 MoE `rows_per_block=4` | 103.8 | 89.1 | rejected; close sustained tie, but below the promoted `104.3` / `89.3` band |
 | ROCmFP4 MoE `rows_per_block=2` | 104.6 | 90.0 | rejected; tied the promoted sustained band but did not improve it |
+| Dedicated MMVQ MoE `rows_per_block=3` | n/a | 86.8 | rejected; slower than promoted sustained band |
 | ROCmFP4 MoE `rows_per_block=1` | 103.6 | 88.7 | rejected; slower than default |
 | ROCmFP4 MoE `rows_per_block=1` repeat after top-k/p-min promotion | 90.9 | not run | rejected after short-response regression |
 

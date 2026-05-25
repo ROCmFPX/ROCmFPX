@@ -94,8 +94,9 @@ Current status:
   `88.5 tok/s` sustained; the change was removed.
   MoE `rows_per_block` compile-time variants were checked against the same 35B
   guard and also rejected: `rows_per_block=4` measured `103.8` short /
-  `89.1 tok/s` sustained, and `rows_per_block=1` measured `103.6` /
-  `88.7 tok/s`, neither beating the promoted `104.3` / `89.3` band.
+  `89.1 tok/s` sustained, `rows_per_block=3` measured `86.8 tok/s` sustained,
+  and `rows_per_block=1` measured `103.6` / `88.7 tok/s`, none beating the
+  promoted `104.3` / `89.3` band.
   The Pi server profile was also started and stopped successfully with
   `n_ctx = 262144`, `draft-mtp` initialized, built-in tools enabled, and
   `thinking = 1`; ROCm reported no KFD PIDs after shutdown. The promoted
