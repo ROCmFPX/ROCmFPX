@@ -783,7 +783,17 @@ Current status:
     `llama_get_embeddings_pre_norm_ith()` plus `memcpy()` per row. Rollback
     behavior is unchanged. The focused Qwen3.6 27B MTP guard held
     `33.7 tok/s` short and `27.9 tok/s` sustained, and the 35B A3B guard held
-    `104.1 tok/s` short and `89.2 tok/s` sustained.
+    `104.1 tok/s` short and `89.2 tok/s` sustained. The same build later
+    passed the full serial all-regression gate with `INCLUDE_QWEN35_A3B_GUARD=1`,
+    including Qwen3.6 27B MTP at `33.8` / `27.9 tok/s` and Qwen3.6 35B A3B MTP
+    at `104.1` / `89.3 tok/s`.
+  - A matching contiguous-pointer cleanup inside the MTP `draft()` loop was
+    tested and rejected. It replaced per-row
+    `llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)` calls with one
+    `llama_get_embeddings_pre_norm(ctx_dft)` pointer per draft decode
+    iteration. The 27B MTP guard held at `33.8` / `27.9 tok/s`, but the 35B A3B
+    repeat measured `104.3` / `88.7` and `104.3` / `89.2 tok/s`, below the
+    promoted `89.3 tok/s` sustained band, so the code change was removed.
   - A dual-scale-only finite-pack CPU quantizer shortcut was tested and
     rejected on 2026-05-24. It passed correctness, but even after isolating
     the shared scale chooser it regressed the protected FAST quant path

@@ -491,6 +491,24 @@ A3B guard enabled:
 | Qwen3.6 35B A3B MTP in full gate | passed; `104.1 tok/s` short and `89.3 tok/s` sustained |
 | ROCm cleanup | passed; no KFD PIDs running |
 
+### 2026-05-25 Rejected MTP Draft Hidden-Row Pointer Hoist
+
+The MTP `draft()` loop was tested with a contiguous
+`llama_get_embeddings_pre_norm(ctx_dft)` pointer per draft decode iteration,
+then direct `h_dft + i_batch*n_embd` row addressing. This mirrors the promoted
+target verify-row cleanup, but it did not beat the promoted 35B A3B sustained
+profile, so the code change was removed.
+
+| Guard | Result |
+|---|---|
+| Build | `scripts/build-strix-rocmfp4-mtp.sh` passed |
+| Focused Qwen3.6 27B MTP guard | passed; `33.8 tok/s` short and `27.9 tok/s` sustained |
+| Focused Qwen3.6 35B A3B MTP guard, run 1 | passed; `104.3 tok/s` short and `88.7 tok/s` sustained |
+| Focused Qwen3.6 35B A3B MTP guard, run 2 | passed; `104.3 tok/s` short and `89.2 tok/s` sustained |
+
+Because the best repeat remained below the promoted `89.3 tok/s` sustained
+band, MTP `draft()` keeps `llama_get_embeddings_pre_norm_ith()` in the hot loop.
+
 ## Follow-Up MTP Sweep
 
 After the guarded quantizer optimization, the Vulkan 262k Qwen3.6 ROCmFP4 MTP
