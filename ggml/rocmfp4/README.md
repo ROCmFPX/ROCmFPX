@@ -118,6 +118,10 @@ Current status:
   tok/s respectively. If reasoning is disabled, `n-max 2` is currently the
   best sustained profile in this bracket; the promoted fastest profile remains
   reasoning-on `n-max 3`.
+- Draft-thread-only checks on the promoted 35B profile also tied below the
+  promoted band. Keeping target threads at `16/32`, draft `8/16`, `16/16`,
+  and `24/32` all measured around `104.1`-`104.2 tok/s` short and
+  `89.1 tok/s` sustained, so the default matching draft thread counts remain.
 - ROCm/HIP single-token MMVQ uses a full-block vector-dot ratio for the
   dual-scale layout (`VDR_ROCMFP4_Q8_1_MMVQ=4`) while keeping the FAST layout
   on the previous half-block ratio (`VDR_ROCMFP4_FAST_Q8_1_MMVQ=2`). This

@@ -207,6 +207,15 @@ did not improve sustained decode, so the Pi/server defaults remain `-b 512`,
 | `-t 24 -tb 32`, draft threads 24/32 | 104.2 | 89.1 | no improvement |
 | `-t 12 -tb 32`, draft threads 12/32 | 104.3 | 88.7 | slower sustained |
 
+Keeping target threads at `-t 16 -tb 32` while changing only draft threads
+also failed to improve sustained decode:
+
+| Draft thread setting | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|
+| `--spec-draft-threads 8 --spec-draft-threads-batch 16` | 104.1 | 89.1 | no improvement |
+| `--spec-draft-threads 16 --spec-draft-threads-batch 16` | 104.2 | 89.1 | no improvement |
+| `--spec-draft-threads 24 --spec-draft-threads-batch 32` | 104.2 | 89.1 | no improvement |
+
 Sampler-chain and backend-sampling follow-ups also failed to beat the promoted
 shape. The default sampler path remains active for the guard and Pi profile:
 
