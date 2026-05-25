@@ -19,6 +19,16 @@ MAX_FAST_TO_F32_US="${MAX_FAST_TO_F32_US:-800.0}"
 
 cd "$ROOT"
 
+echo "== ROCmFP4 Vulkan CPY correctness =="
+env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
+    "$BIN" test \
+        -b Vulkan0 \
+        -o CPY \
+        -p "q4_0_rocmfp4" \
+        --output console
+
+echo
+echo "== ROCmFP4 Vulkan CPY performance =="
 output="$(
     env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
         "$BIN" perf \

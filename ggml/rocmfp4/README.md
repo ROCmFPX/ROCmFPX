@@ -522,14 +522,17 @@ Current status:
   `Q4_0_ROCMFP4_FAST -> Q4_0_ROCMFP4_FAST`, including block-aligned
   non-contiguous/permuted/view copies. The non-contiguous path uses a
   byte-addressed block shader and preserves exact 18-byte or 17-byte
-  ROCmFP4 blocks; contiguous FAST copies keep the existing direct byte-copy
-  fast path.
+  ROCmFP4 blocks. Contiguous same-type dual-scale and FAST copies now both use
+  the direct byte-copy path, avoiding the generic halfword copy route for
+  ROCmFP4's custom 18-byte and 17-byte block layouts.
 - Vulkan CPY is now covered by a dedicated regression guard so copy-path
   changes cannot silently fall back or regress outside the ROCm-only CPY gate.
+  The guard runs same-type and source/dequant CPY correctness before measuring
+  the large copy performance shape.
   On Strix Halo RADV Vulkan, the large guarded shape currently measures
-  F32/F16/BF16-to-dual at `16453.45`, `3707.71`, and `3911.77` us/run,
-  dual-to-F32 at `557.03` us/run, F32/F16/BF16-to-FAST at `13836.34`,
-  `3277.06`, and `3413.58` us/run, and FAST-to-F32 at `548.95` us/run.
+  F32/F16/BF16-to-dual at `16465.10`, `3691.97`, and `3924.08` us/run,
+  dual-to-F32 at `509.58` us/run, F32/F16/BF16-to-FAST at `13823.23`,
+  `3284.38`, and `3395.53` us/run, and FAST-to-F32 at `521.84` us/run.
 - Vulkan scalar FlashAttention can now decode ROCmFP4 and ROCmFP4_FAST K/V
   cache blocks. ROCmFP4 K/V is forced to the scalar FA path because the current
   custom decode is not a coopmat/native matrix-core FP4 path.

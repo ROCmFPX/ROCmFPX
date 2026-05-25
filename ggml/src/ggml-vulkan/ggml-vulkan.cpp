@@ -7693,9 +7693,10 @@ static vk_pipeline ggml_vk_get_cpy_pipeline(ggml_backend_vk_context * ctx, const
 
     if (src->type == to) {
         if (to == GGML_TYPE_Q4_0_ROCMFP4) {
-            if (!contig) {
-                return ctx->device->pipeline_cpy_rocmfp4_rocmfp4;
+            if (contig) {
+                return ctx->device->pipeline_contig_cpy_u8_u8;
             }
+            return ctx->device->pipeline_cpy_rocmfp4_rocmfp4;
         }
         if (to == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
             if (contig) {
@@ -10176,17 +10177,16 @@ template <> void init_pushconst_tensor_offsets(ggml_backend_vk_context * ctx, vk
     uint32_t d_offset = get_misalign_bytes(ctx, dst) / ggml_type_size(dst->type);
 
     const bool same_type_copy_op = dst->op == GGML_OP_CPY || dst->op == GGML_OP_DUP || dst->op == GGML_OP_CONT;
-    const bool cpy_rocmfp4_same_non_contig =
+    const bool cpy_rocmfp4_same =
         same_type_copy_op &&
         src0->type == GGML_TYPE_Q4_0_ROCMFP4 &&
-        dst->type  == GGML_TYPE_Q4_0_ROCMFP4 &&
-        (!ggml_is_contiguous(src0) || !ggml_is_contiguous(dst));
+        dst->type  == GGML_TYPE_Q4_0_ROCMFP4;
     const bool cpy_rocmfp4_fast_same =
         same_type_copy_op &&
         src0->type == GGML_TYPE_Q4_0_ROCMFP4_FAST &&
         dst->type  == GGML_TYPE_Q4_0_ROCMFP4_FAST;
 
-    if (cpy_rocmfp4_same_non_contig || cpy_rocmfp4_fast_same) {
+    if (cpy_rocmfp4_same || cpy_rocmfp4_fast_same) {
         // ROCmFP4 same-type copy shaders use byte-addressed storage because
         // the custom blocks are 18 and 17 bytes wide.
         a_offset = get_misalign_bytes(ctx, src0);
@@ -10500,9 +10500,8 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
                     dst->type  == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
                     ne = contig ? (uint32_t)ggml_nbytes(dst) : (uint32_t)(ggml_nelements(dst) / ggml_blck_size(dst->type));
                 } else if (src0->type == GGML_TYPE_Q4_0_ROCMFP4 &&
-                           dst->type  == GGML_TYPE_Q4_0_ROCMFP4 &&
-                           !contig) {
-                    ne = (uint32_t)(ggml_nelements(dst) / ggml_blck_size(dst->type));
+                           dst->type  == GGML_TYPE_Q4_0_ROCMFP4) {
+                    ne = contig ? (uint32_t)ggml_nbytes(dst) : (uint32_t)(ggml_nelements(dst) / ggml_blck_size(dst->type));
                 } else {
                     // Convert from number of logical elements to 2- or 4-byte units.
                     ne /= ggml_blck_size(src0->type);
@@ -11291,9 +11290,8 @@ static void ggml_vk_cpy(ggml_backend_vk_context * ctx, vk_context& subctx, const
             dst->type  == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
             ne = contig ? (uint32_t)ggml_nbytes(src0) : (uint32_t)(ggml_nelements(src0) / ggml_blck_size(src0->type));
         } else if (src0->type == GGML_TYPE_Q4_0_ROCMFP4 &&
-                   dst->type  == GGML_TYPE_Q4_0_ROCMFP4 &&
-                   !contig) {
-            ne = (uint32_t)(ggml_nelements(src0) / ggml_blck_size(src0->type));
+                   dst->type  == GGML_TYPE_Q4_0_ROCMFP4) {
+            ne = contig ? (uint32_t)ggml_nbytes(src0) : (uint32_t)(ggml_nelements(src0) / ggml_blck_size(src0->type));
         } else {
             // Convert from number of logical elements to 2- or 4-byte units.
             ne /= ggml_blck_size(src0->type);
