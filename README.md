@@ -189,4 +189,5 @@ variables.
 ## License
 
 This repository is based on `llama.cpp` and keeps the upstream MIT license. See
-`LICENSE` for details.
+`LICENSE` for details. Bundled third-party notices are listed in
+`THIRD_PARTY_NOTICES.md`.
