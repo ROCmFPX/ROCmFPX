@@ -182,6 +182,18 @@ profile and also did not beat the default:
 | `--spec-draft-n-min 1` | 103.8 | 88.9 | slower |
 | `--spec-draft-n-min 2` | 104.2 | 89.2 | near tie, not promoted |
 
+Reasoning-off checks on the final q8-main/q4-draft profile were also measured
+because reasoning mode changes the model's generated content path. They do not
+replace the reasoning-on promoted profile, but if reasoning is disabled the
+best sustained setting in this bracket is `n-max 2`:
+
+| Reasoning | `--spec-draft-n-max` | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---:|---|
+| off | 1 | 77.7 | 73.9 | slower short decode |
+| off | 2 | 90.3 | 75.5 | best reasoning-off sustained in bracket |
+| off | 3 | 100.3 | 71.9 | current reasoning-on n-max, but slower with reasoning off |
+| off | 4 | 85.7 | 66.1 | sustained regression |
+
 Batch and thread follow-ups on the promoted `n-max 3`, q8-main/q4-draft profile
 did not improve sustained decode, so the Pi/server defaults remain `-b 512`,
 `-ub 512`, `-t 16`, `-tb 32`, and matching draft thread counts:

@@ -112,6 +112,12 @@ Current status:
   measured `103.8` / `88.9` for `1` and `104.2` / `89.2` for `2`. None beat
   the promoted sustained-plus-short profile. The full all-regression harness can include it with
   `INCLUDE_QWEN35_A3B_GUARD=1`.
+- Reasoning-off checks on the final 35B q8-main/q4-draft profile are a
+  separate lower-throughput mode. `n-max 1/2/3/4` measured `77.7` / `73.9`,
+  `90.3` / `75.5`, `100.3` / `71.9`, and `85.7` / `66.1` short/sustained
+  tok/s respectively. If reasoning is disabled, `n-max 2` is currently the
+  best sustained profile in this bracket; the promoted fastest profile remains
+  reasoning-on `n-max 3`.
 - ROCm/HIP single-token MMVQ uses a full-block vector-dot ratio for the
   dual-scale layout (`VDR_ROCMFP4_Q8_1_MMVQ=4`) while keeping the FAST layout
   on the previous half-block ratio (`VDR_ROCMFP4_FAST_Q8_1_MMVQ=2`). This
