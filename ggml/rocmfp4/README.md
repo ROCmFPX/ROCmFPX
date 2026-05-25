@@ -139,6 +139,8 @@ Current status:
   A fixed insertion top-10 replacement for `std::partial_sort` was tested and
   rejected after the 35B A3B short guard dropped to `73.0 tok/s`, below the
   `100.0 tok/s` floor.
+  Disabling internal sampler timing with `sparams.no_perf = true` was also
+  tested and rejected after the same short guard dropped to `96.2 tok/s`.
   Retesting the internal MTP sampler candidate count on the 35B A3B
   reasoning-on profile rejected both directions around the promoted `top_k=10`
   setting: `top_k=5` fell to `77.3 tok/s` sustained and `top_k=20` fell to

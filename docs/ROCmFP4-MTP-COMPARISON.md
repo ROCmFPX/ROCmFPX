@@ -872,6 +872,7 @@ Rejected internal MTP top-k implementation checks on the same promoted profile:
 | Candidate | Short decode tok/s | Sustained decode tok/s | Result |
 |---|---:|---:|---|
 | Fixed insertion top-10 selection instead of `std::partial_sort` | 73.0 | not run | rejected; failed the 35B A3B short guard floor of `100.0 tok/s`, so the promoted helper keeps `std::partial_sort` |
+| Disable internal MTP sampler timing with `sparams.no_perf = true` | 96.2 | not run | rejected; the speculative draft timer already covers this path, but disabling sampler timing still regressed the 35B A3B short guard below the `100.0 tok/s` floor |
 
 Rejected CPU/reference-path checks from the same optimization pass:
 
