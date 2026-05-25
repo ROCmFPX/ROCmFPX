@@ -78,11 +78,17 @@ static __global__ void flash_attn_ext_vec(
 #ifndef GGML_ROCMFP4_FATTN_V_NTHREADS
 #define GGML_ROCMFP4_FATTN_V_NTHREADS 2
 #endif
+#ifndef GGML_ROCMFP4_FATTN_V_NTHREADS_D128_DUAL
+#define GGML_ROCMFP4_FATTN_V_NTHREADS_D128_DUAL 4
+#endif
 #ifndef GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD
 #define GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD 8
 #endif
     constexpr int nthreads_KQ_q = type_K_rocmfp4 ? GGML_ROCMFP4_FATTN_KQ_NTHREADS : nthreads_KQ_q_default;
-    constexpr int nthreads_V_q  = type_V_rocmfp4 ? GGML_ROCMFP4_FATTN_V_NTHREADS : (D/4 < 32 ? D/4 : 32);
+    constexpr int nthreads_V_q_rocmfp4 =
+        type_V == GGML_TYPE_Q4_0_ROCMFP4 && D == 128 ? GGML_ROCMFP4_FATTN_V_NTHREADS_D128_DUAL :
+        GGML_ROCMFP4_FATTN_V_NTHREADS;
+    constexpr int nthreads_V_q  = type_V_rocmfp4 ? nthreads_V_q_rocmfp4 : (D/4 < 32 ? D/4 : 32);
     constexpr int V_rows_per_thread_q = type_V_rocmfp4 ? GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD : 4;
 #else
     constexpr int nthreads_KQ_q = (D/4 < 32 ? D/4 : 32);

@@ -303,6 +303,14 @@ Current status:
   `80.68` / `78.27` us and Qwen-style 128d measured `245.84` / `207.04` us.
   Because the Qwen-style dual-scale row failed the guard, it was rejected
   without a longer MTP run and K/Q remains `1`.
+- ROCm/HIP vector FlashAttention now has a narrow dual-scale 128d V-thread
+  specialization: `GGML_ROCMFP4_FATTN_V_NTHREADS_D128_DUAL=4`. This keeps the
+  promoted 64d default and all FAST paths on `V_NTHREADS=2`, but uses the
+  previously promising 4-thread V grouping only for the Qwen-style dual-scale
+  128d shape. The full serial gate measured FA at `70.37` / `66.31` us for
+  64d dual-scale / FAST and `188.75` / `171.89` us for Qwen-style 128d
+  dual-scale / FAST, while Qwen3.6 27B MTP held `33.7 tok/s` short and
+  `27.9 tok/s` sustained with no KFD PIDs left running.
 - Vulkan ROCmFP4 scale decode now uses a shared UE4M3 lookup table with
   ROCmFP4's half-scale semantics. This moved the focused Vulkan dual-scale
   `MUL_MAT` guard from `82.86`, `120.77`, and `181.28` us/run to `65.05`,
