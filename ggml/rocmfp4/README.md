@@ -129,6 +129,10 @@ Current status:
   `p-min 0.25` filter regressed it to `24.6 tok/s` sustained. The full
   all-regression harness can include the 35B guard with
   `INCLUDE_QWEN35_A3B_GUARD=1`.
+  Retesting the internal MTP sampler candidate count on the 35B A3B
+  reasoning-on profile rejected both directions around the promoted `top_k=10`
+  setting: `top_k=5` fell to `77.3 tok/s` sustained and `top_k=20` fell to
+  `69.6 tok/s` sustained.
 - Reasoning-off checks on the final 35B q8-main/q4-draft profile are a
   separate lower-throughput mode. `n-max 1/2/3/4` measured `77.7` / `73.9`,
   `90.3` / `75.5`, `100.3` / `71.9`, and `85.7` / `66.1` short/sustained

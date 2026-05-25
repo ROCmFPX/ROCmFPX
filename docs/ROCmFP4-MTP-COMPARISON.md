@@ -844,6 +844,14 @@ promoted profile:
 | `--spec-draft-p-min 0.25 --spec-draft-p-split 0.90` | 104.7 | 89.5 | tied same-session default |
 | `--spec-draft-p-min 0.50 --spec-draft-p-split 0.30` | 104.6 | 89.2 | sustained regression |
 
+Rejected internal MTP sampler candidate-count checks on the same promoted
+profile:
+
+| Internal MTP sampler `top_k` | Sustained decode tok/s | Result |
+|---:|---:|---|
+| 5 | 77.3 | rejected; too little candidate mass for the promoted `p-min 0.25` profile |
+| 20 | 69.6 | rejected; more candidates did not improve acceptance enough to offset the path |
+
 Rejected CPU/reference-path checks from the same optimization pass:
 
 | Promoted CPU/reference-path change | Result |
