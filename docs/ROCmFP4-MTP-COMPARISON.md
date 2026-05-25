@@ -821,6 +821,19 @@ Rejected Qwen3.6 35B A3B MoE launch-shape checks on the promoted reasoning-on
 | ROCmFP4 MoE `rows_per_block=4` | 103.8 | 89.1 | rejected; close sustained tie, but below the promoted `104.3` / `89.3` band |
 | ROCmFP4 MoE `rows_per_block=1` | 103.6 | 88.7 | rejected; slower than default |
 
+Rejected Qwen3.6 35B A3B combined probability-profile checks on the same
+promoted profile:
+
+| Setting change | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|
+| `--spec-draft-p-min 0.25 --spec-draft-p-split 0.05` | 104.4 | 89.3 | tied prior promoted sustained band |
+| `--spec-draft-p-min 0.25 --spec-draft-p-split 0.30` | 104.6 | 89.5 | repeated same result; same-session default also reached `104.7` / `89.5` |
+| `--spec-draft-p-min 0.25 --spec-draft-p-split 0.40` | 104.6 | 89.5 | tied same-session default |
+| `--spec-draft-p-min 0.25 --spec-draft-p-split 0.50` | 104.4 | 89.5 | tied same-session default sustained, lower short decode |
+| `--spec-draft-p-min 0.25 --spec-draft-p-split 0.70` | 104.8 | 89.5 | tied same-session default sustained; not enough to promote |
+| `--spec-draft-p-min 0.25 --spec-draft-p-split 0.90` | 104.7 | 89.5 | tied same-session default |
+| `--spec-draft-p-min 0.50 --spec-draft-p-split 0.30` | 104.6 | 89.2 | sustained regression |
+
 Rejected CPU/reference-path checks from the same optimization pass:
 
 | Promoted CPU/reference-path change | Result |

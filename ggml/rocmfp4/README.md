@@ -114,7 +114,13 @@ Current status:
   `104.2` / `89.1` at `0.90`. Follow-up p-split checks measured
   `103.7` / `88.9` at `0.05` and `103.8` / `89.3` at `0.20`; n-min checks
   measured `103.8` / `88.9` for `1` and `104.2` / `89.2` for `2`. None beat
-  the promoted sustained-plus-short profile. The full all-regression harness can include it with
+  the promoted sustained-plus-short profile. Combined `p-min`/`p-split`
+  follow-ups also tied rather than beat the default: `p-min 0.25` with
+  `p-split 0.30` repeated at `104.6` / `89.5`, `p-split 0.40` and `0.50`
+  measured `104.6` / `89.5` and `104.4` / `89.5`, and `p-split 0.70` /
+  `0.90` measured `104.8` / `89.5` and `104.7` / `89.5`; the same-session
+  default tied at `104.7` / `89.5`, so no combined probability profile is
+  promoted. The full all-regression harness can include it with
   `INCLUDE_QWEN35_A3B_GUARD=1`.
 - Reasoning-off checks on the final 35B q8-main/q4-draft profile are a
   separate lower-throughput mode. `n-max 1/2/3/4` measured `77.7` / `73.9`,
