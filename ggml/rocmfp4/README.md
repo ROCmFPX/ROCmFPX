@@ -191,7 +191,10 @@ Current status:
   launch from `n=1` to `n=1..4` improved some focused multi-column ROCm
   microbench rows (`dual n=2` reached `57.14` us/run), but Qwen3.6 27B MTP
   sustained decode fell to `23.6 tok/s`, so the promoted upper bound stops at
-  `n=2`.
+  `n=2`. A midpoint `GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS=3` build was also
+  checked on the Qwen3.6 35B A3B reasoning-on 262k profile; it reached
+  `87.5 tok/s` sustained versus `89.6 tok/s` for the same-session promoted
+  build, so `n=2` remains the default.
 - ROCm/HIP RDNA3.5 wide-column rows-per-block now has ROCmFP4-owned compile-time
   test knobs: `GGML_ROCMFP4_RDNA35_RPB_WIDE`,
   `GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL`, and
