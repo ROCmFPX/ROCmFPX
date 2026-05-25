@@ -867,6 +867,12 @@ Accepted internal MTP sampler cleanup on the same promoted profile:
 |---|---:|---:|---|
 | Top-10 probability-only draft sampler | 104.6 | 90.2 | promoted; avoids the unused final RNG sampler while preserving the top-candidate probability distribution used by `p-min 0.25` |
 
+Rejected internal MTP top-k implementation checks on the same promoted profile:
+
+| Candidate | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|
+| Fixed insertion top-10 selection instead of `std::partial_sort` | 73.0 | not run | rejected; failed the 35B A3B short guard floor of `100.0 tok/s`, so the promoted helper keeps `std::partial_sort` |
+
 Rejected CPU/reference-path checks from the same optimization pass:
 
 | Promoted CPU/reference-path change | Result |

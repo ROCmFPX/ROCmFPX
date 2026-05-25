@@ -136,6 +136,9 @@ Current status:
   output path while improving the 35B A3B guard to `104.6 tok/s` short and
   `90.2 tok/s` sustained. The dense 27B guard remained stable at `33.9` /
   `28.1 tok/s`.
+  A fixed insertion top-10 replacement for `std::partial_sort` was tested and
+  rejected after the 35B A3B short guard dropped to `73.0 tok/s`, below the
+  `100.0 tok/s` floor.
   Retesting the internal MTP sampler candidate count on the 35B A3B
   reasoning-on profile rejected both directions around the promoted `top_k=10`
   setting: `top_k=5` fell to `77.3 tok/s` sustained and `top_k=20` fell to
