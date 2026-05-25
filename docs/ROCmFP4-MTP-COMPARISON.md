@@ -166,6 +166,16 @@ V need q8 while the draft KV can remain q4:
 | 4 | q8 K/V | q4 K/V | none | 111.2 | 78.7 | best burst, sustained regression |
 | 5 | q8 K/V | q4 K/V | none | 104.9 | 78.9 | slower burst than n-max 4 |
 
+Additional p-min filtering on the promoted `n-max 3`, q8-main/q4-draft
+profile also failed to produce a clear sustained win:
+
+| `--spec-draft-p-min` | Short decode tok/s | Sustained decode tok/s | Result |
+|---:|---:|---:|---|
+| 0.25 | 104.2 | 89.1 | near tie, not promoted |
+| 0.50 | 104.1 | 89.0 | slower sustained |
+| 0.75 | 104.0 | 89.3 | tied sustained but slower short decode |
+| 0.90 | 104.2 | 89.1 | near tie, not promoted |
+
 Batch and thread follow-ups on the promoted `n-max 3`, q8-main/q4-draft profile
 did not improve sustained decode, so the Pi/server defaults remain `-b 512`,
 `-ub 512`, `-t 16`, `-tb 32`, and matching draft thread counts:
