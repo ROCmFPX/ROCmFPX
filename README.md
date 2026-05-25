@@ -56,16 +56,23 @@ promoted unless end-to-end decode guards hold or improve.
 - `docs/ROCmFP4-MTP-COMPARISON.md` - benchmark history, rejected experiments,
   and promoted profiles.
 - `docs/ROCmFP4-REPRODUCIBILITY.md` - promotion rules and proof commands.
+- `docs/STRIX-HALO-QUICKSTART.md` - install, build, quantize, run, and
+  validation path for Strix Halo users.
 
 ## Build
 
 Recommended Strix Halo ROCm + Vulkan build:
 
 ```bash
-git clone <private-repo-url> rocmfp4-llama
+git clone https://github.com/charlie12345/rocmfp4-llama.git
 cd rocmfp4-llama
+git checkout mtp-rocmfp4-strix
 env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh
 ```
+
+See `docs/STRIX-HALO-QUICKSTART.md` for prerequisites, runtime commands, MTP
+flags, and troubleshooting. If this GitHub repository is private, public users
+cannot clone it until the owner makes it public or invites them.
 
 The build script creates:
 
