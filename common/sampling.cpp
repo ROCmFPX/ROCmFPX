@@ -618,6 +618,46 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
     return id;
 }
 
+llama_token_data_array * common_sampler_sample_top_k_probs(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, int32_t top_k) {
+    llama_synchronize(ctx);
+
+    const auto tm = gsmpl->tm();
+
+    auto & cur_p = gsmpl->cur_p;
+    gsmpl->set_logits(ctx, idx);
+
+    if (cur_p.size == 0) {
+        cur_p.selected = -1;
+        return &cur_p;
+    }
+
+    top_k = std::min<int32_t>(std::max<int32_t>(top_k, 1), (int32_t) cur_p.size);
+
+    if (!cur_p.sorted) {
+        std::partial_sort(cur_p.data, cur_p.data + top_k, cur_p.data + cur_p.size,
+                [](const llama_token_data & a, const llama_token_data & b) {
+                    return a.logit > b.logit;
+                });
+    }
+
+    cur_p.size     = top_k;
+    cur_p.sorted   = true;
+    cur_p.selected = 0;
+
+    const float max_l = cur_p.data[0].logit;
+    double sum = 0.0;
+    for (size_t i = 0; i < cur_p.size; ++i) {
+        const float p = expf(cur_p.data[i].logit - max_l);
+        cur_p.data[i].p = p;
+        sum += p;
+    }
+    for (size_t i = 0; i < cur_p.size; ++i) {
+        cur_p.data[i].p /= sum;
+    }
+
+    return &cur_p;
+}
+
 std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, bool grammar_first) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
 

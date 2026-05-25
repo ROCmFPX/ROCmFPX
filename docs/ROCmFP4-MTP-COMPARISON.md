@@ -135,7 +135,12 @@ scripts/check-rocmfp4-qwen35-a3b-mtp-regression.sh
 The focused guard now defaults to `n-max 3`, q8 main KV, q4 draft KV, and
 `--spec-draft-p-min 0.25`. The promoted top-k-10 MTP sampler pass measured
 `103.9 tok/s` short and `90.0 tok/s` sustained after a first sustained run at
-`89.8 tok/s`; guard floors are `100.0` and `85.0 tok/s`.
+`89.8 tok/s`. A follow-up MTP draft sampler cleanup keeps the same top-10
+probability distribution but skips the unused final RNG sampler selection; the
+candidate measured `104.6 tok/s` short and `90.2 tok/s` sustained on the
+35B A3B guard, while the dense 27B guard held `33.9 tok/s` short and
+`28.1 tok/s` sustained. Guard floors are `100.0` and `85.0 tok/s` for 35B,
+and `30.0` / `25.5 tok/s` for dense 27B.
 
 Follow-up acceptance-threshold checks on the q4-KV `n-max 2` profile did not
 produce a clear sustained improvement, so the promoted server/guard defaults
@@ -274,6 +279,7 @@ The largest measured gains so far came from backend-specific ROCmFP4 work:
 | ROCmFP4 FAST MMVQ/MMQ packed-byte dword load | extended the ROCmFP4 unaligned packed-byte loader to FAST `MUL_MAT`; focused ROCm FAST moved to `45.17`, `58.38`, `90.54`, and `157.83` us for `n=1/2/4/8`, and Qwen MTP improved to `33.6 tok/s` short / `28.0 tok/s` sustained on the promoted default build |
 | MMVQ single-warp reduction bypass | skips the shared-memory reduction storage, barrier, and dead `threadIdx.y > 0` return path when a ROCmFP4 MMVQ specialization launches with one warp; focused ROCm `n=4/8` improved to FAST `87.29` / `156.52` us and dual-scale `82.81` / `141.99` us, while Qwen MTP reached `34.1 tok/s` short / `28.1 tok/s` sustained |
 | MTP sampler top-k-10 acceptance filtering | lets `--spec-draft-p-min` operate on a real top-candidate distribution while still drafting the top sorted candidate; the 35B A3B profile with q8 main KV and q4 draft KV moved from the `89.3`-`89.5 tok/s` sustained band to `90.0 tok/s` with `--spec-draft-p-min 0.25` |
+| MTP probability-only draft sampler | the MTP draft loop only consumes the sorted top candidate and its probability, so it now fills top-10 probabilities directly and skips the unused final RNG sampler selection; the 35B A3B 262k reasoning-on guard measured `104.6 tok/s` short / `90.2 tok/s` sustained, and dense 27B held `33.9` / `28.1 tok/s` |
 | ROCmFP4 CPY/dequant kernels | quant-to-F32 copies moved from the old `~740 us` band to about `182 us` dual-scale and `170 us` FAST |
 | ROCmFP4 CPU finite-block quant scoring | normal GGUF quantization avoids per-value guarded decode during scale-MSE scoring after a block-level finite scan; latest guard measured dual-scale / FAST normal quant at `3844.38` / `3582.57` cycles/32 |
 | ROCmFP4 weighted/imatrix finite scoring | FAST imatrix GGUF quantization moved from same-session pre-candidate `5258.07` to `4448.73` / `4447.32` cycles/32 on two guarded passes; dual imatrix stayed in the noisy guarded band |
@@ -854,6 +860,12 @@ profile:
 |---:|---:|---|
 | 5 | 77.3 | rejected; too little candidate mass for the promoted `p-min 0.25` profile |
 | 20 | 69.6 | rejected; more candidates did not improve acceptance enough to offset the path |
+
+Accepted internal MTP sampler cleanup on the same promoted profile:
+
+| Candidate | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|
+| Top-10 probability-only draft sampler | 104.6 | 90.2 | promoted; avoids the unused final RNG sampler while preserving the top-candidate probability distribution used by `p-min 0.25` |
 
 Rejected CPU/reference-path checks from the same optimization pass:
 

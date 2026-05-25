@@ -64,6 +64,10 @@ struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl);
 //
 llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first = false);
 
+// MTP draft helper: fill current candidates with top-k probabilities and
+// select the highest-probability token without running the final RNG sampler.
+llama_token_data_array * common_sampler_sample_top_k_probs(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, int32_t top_k);
+
 // generalized version of common_sampler_sample
 //
 // will cross-reference the sampled tokens with a batch of draft tokens and accept those that match

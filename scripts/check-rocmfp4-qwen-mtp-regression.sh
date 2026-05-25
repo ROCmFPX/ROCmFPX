@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-BIN="${BIN:-$ROOT/build-strix-rocmfp4/bin/llama-cli}"
+BUILD_DIR="${BUILD_DIR:-$ROOT/build-strix-rocmfp4}"
+BIN="${BIN:-$BUILD_DIR/bin/llama-cli}"
 MODEL="${MODEL:-/home/caf/strix-fp4/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf}"
 BACKEND="${BACKEND:-ROCm0}"
 MIN_DECODE_TPS="${MIN_DECODE_TPS:-30.0}"

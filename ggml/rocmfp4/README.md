@@ -130,6 +130,12 @@ Current status:
   `p-min 0.25` filter regressed it to `24.6 tok/s` sustained. The full
   all-regression harness can include the 35B guard with
   `INCLUDE_QWEN35_A3B_GUARD=1`.
+  The MTP draft sampler now uses a probability-only top-10 helper for this
+  path. The draft loop only consumes the sorted top candidate and its
+  probability, so skipping the unused final RNG sampler selection preserved the
+  output path while improving the 35B A3B guard to `104.6 tok/s` short and
+  `90.2 tok/s` sustained. The dense 27B guard remained stable at `33.9` /
+  `28.1 tok/s`.
   Retesting the internal MTP sampler candidate count on the 35B A3B
   reasoning-on profile rejected both directions around the promoted `top_k=10`
   setting: `top_k=5` fell to `77.3 tok/s` sustained and `top_k=20` fell to

@@ -401,6 +401,8 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
 };
 
 struct common_speculative_state_draft_mtp : public common_speculative_impl {
+    static constexpr int32_t MTP_DRAFT_TOP_K = 10;
+
     common_params_speculative_draft params; // reuses the draft-model params slot (ctx_tgt/ctx_dft)
 
     llama_batch batch;
@@ -451,7 +453,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             // Keep several candidates so --spec-draft-p-min has a meaningful
             // probability distribution while the draft loop still selects the
             // top candidate after sorting below.
-            sparams.top_k    = 10;
+            sparams.top_k    = MTP_DRAFT_TOP_K;
             sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
             s.reset(common_sampler_init(llama_get_model(ctx_dft), sparams));
         }
@@ -665,11 +667,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
                 auto * smpl = smpls[seq_id].get();
 
-                common_sampler_sample(smpl, ctx_dft, i_batch, true);
+                const auto * cur_p = common_sampler_sample_top_k_probs(smpl, ctx_dft, i_batch, MTP_DRAFT_TOP_K);
                 h_row = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch);
                 ++i_batch;
-
-                const auto * cur_p = common_sampler_get_candidates(smpl, true);
 
                 if (log_debug) {
                     for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
