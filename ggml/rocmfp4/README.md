@@ -365,6 +365,11 @@ Current status:
   rows per thread, and the fixed-copy helper does not support the resulting
   32-byte move. The source now rejects unsupported values with a direct
   ROCmFP4 compile-time error.
+  Retesting `GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD=2` on the promoted
+  D128-specialized build was rejected by the focused ROCm FlashAttention
+  guard. It regressed 64d dual-scale / FAST to `94.31` / `88.77` us and
+  Qwen-style 128d dual-scale / FAST to `270.00` / `223.88` us, so the
+  promoted rows-per-thread default remains `8`.
 - Vulkan ROCmFP4 scale decode now uses a shared UE4M3 lookup table with
   ROCmFP4's half-scale semantics. This moved the focused Vulkan dual-scale
   `MUL_MAT` guard from `82.86`, `120.77`, and `181.28` us/run to `65.05`,

@@ -718,6 +718,7 @@ Post-routing ROCm0 FlashAttention checks:
 | ROCmFP4-only FA `KQ_NTHREADS=2,V_NTHREADS=2` | 91.52 us | 82.90 us | not run | not run | rejected; slower FA than promoted `KQ=1,V=2` |
 | ROCmFP4-only FA `KQ_NTHREADS=4,V_NTHREADS=2` | 102.31 us | 92.00 us | not run | not run | rejected; slower FA than promoted `KQ=1,V=2` |
 | ROCmFP4-only FA `GGML_ROCMFP4_FATTN_KQ_NTHREADS=4` | 136.79 us | 124.37 us | not run | not run | rejected; FA guard regression |
+| `V_ROWS_PER_THREAD=2` on the promoted D128-specialized build | 94.31 us | 88.77 us | not run | not run | rejected; failed the focused FA guard and Qwen-style 128d also regressed to 270.00 / 223.88 us |
 
 The promoted setting affects only `Q4_0_ROCMFP4` and `Q4_0_ROCMFP4_FAST`
 vector FlashAttention K/Q and V work on ROCm/HIP. Other quantized K/V-cache FA
