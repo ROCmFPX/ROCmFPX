@@ -144,6 +144,9 @@ Current status:
   guard at `104.4 tok/s` short and `90.2 tok/s` sustained, but a same-session
   promoted-build comparison measured `104.1` / `90.2`, so it was not promoted:
   it added sampler buffer/clone complexity without a sustained decode gain.
+  A normal-path shortcut that only normalized `data[0].p` and filled the rest
+  of the top-k probabilities only for debug logging was rejected after the
+  35B A3B short guard fell to `92.7 tok/s`, below the `100.0 tok/s` floor.
   Disabling internal sampler timing with `sparams.no_perf = true` was also
   tested and rejected after the same short guard dropped to `96.2 tok/s`.
   Retesting the internal MTP sampler candidate count on the 35B A3B
