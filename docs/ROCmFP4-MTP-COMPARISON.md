@@ -813,6 +813,14 @@ Additional rejected ROCm0 sweeps on the longer forced-output prompt:
 | dual-scale and FAST MMVQ `vdr=4` | 24.2 | slower sustained decode |
 | RDNA3.5 two-warp launch for `n=1..4` | 23.6 | slower sustained decode |
 
+Rejected Qwen3.6 35B A3B MoE launch-shape checks on the promoted reasoning-on
+`n-max 3`, q8-main/q4-draft profile:
+
+| Setting change | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|
+| ROCmFP4 MoE `rows_per_block=4` | 103.8 | 89.1 | rejected; close sustained tie, but below the promoted `104.3` / `89.3` band |
+| ROCmFP4 MoE `rows_per_block=1` | 103.6 | 88.7 | rejected; slower than default |
+
 Rejected CPU/reference-path checks from the same optimization pass:
 
 | Promoted CPU/reference-path change | Result |
