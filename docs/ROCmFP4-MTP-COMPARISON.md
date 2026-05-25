@@ -476,6 +476,21 @@ After this change:
 | Focused Qwen3.6 27B MTP guard | passed; `33.7 tok/s` short and `27.9 tok/s` sustained |
 | Focused Qwen3.6 35B A3B MTP guard | passed; `104.1 tok/s` short and `89.2 tok/s` sustained |
 
+The same build later passed the full all-regression gate with the optional 35B
+A3B guard enabled:
+
+| Guard | Result |
+|---|---|
+| Full all-regression gate | passed with `INCLUDE_QWEN35_A3B_GUARD=1` |
+| CPU quant/dequant/vec-dot | passed; dual quant `4064.88`, FAST quant `3626.84`, dual dequant `33.54`, FAST dequant `33.19`, dual vec-dot `30.03`, FAST vec-dot `27.08`, dual imatrix `5710.87`, FAST imatrix `4396.19` cycles / 32 values |
+| Vulkan runtime `MUL_MAT` | passed; FAST `54.58` / `71.53` / `104.89` / `167.99` us and dual-scale `64.93` / `83.02` / `122.01` / `182.55` us for `n=1/2/4/8` |
+| ROCm runtime `MUL_MAT` | passed; FAST `44.29` / `57.21` / `88.52` / `158.27` us and dual-scale `51.09` / `50.65` / `85.96` / `142.50` us for `n=1/2/4/8` |
+| ROCm FlashAttention | passed; 64d dual-scale `69.72` us, 64d FAST `66.26` us, Qwen-style 128d dual-scale `201.39` us, Qwen-style 128d FAST `172.88` us |
+| ROCm CPY | passed; dual source-to-quant `1107.35` / `1009.95` / `1007.65` us, dual-to-F32 `181.96` us, FAST source-to-quant `1046.48` / `950.92` / `956.18` us, FAST-to-F32 `170.26` us |
+| Qwen3.6 27B MTP in full gate | passed; `33.8 tok/s` short and `27.9 tok/s` sustained |
+| Qwen3.6 35B A3B MTP in full gate | passed; `104.1 tok/s` short and `89.3 tok/s` sustained |
+| ROCm cleanup | passed; no KFD PIDs running |
+
 ## Follow-Up MTP Sweep
 
 After the guarded quantizer optimization, the Vulkan 262k Qwen3.6 ROCmFP4 MTP
