@@ -774,6 +774,12 @@ Current status:
     pass. The focused Qwen MTP guard held `33.8 tok/s` short and `27.9 tok/s`
     sustained, and the full serial gate held `33.9 tok/s` short and
     `27.9 tok/s` sustained with no KFD PIDs left running.
+  - The MTP `process()` path now copies retained verification hidden rows from
+    the target embedding buffer in one contiguous `memcpy()` instead of one
+    `llama_get_embeddings_pre_norm_ith()` plus `memcpy()` per row. Rollback
+    behavior is unchanged. The focused Qwen3.6 27B MTP guard held
+    `33.7 tok/s` short and `27.9 tok/s` sustained, and the 35B A3B guard held
+    `104.1 tok/s` short and `89.2 tok/s` sustained.
   - A dual-scale-only finite-pack CPU quantizer shortcut was tested and
     rejected on 2026-05-24. It passed correctness, but even after isolating
     the shared scale chooser it regressed the protected FAST quant path

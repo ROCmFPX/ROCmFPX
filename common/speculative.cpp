@@ -575,14 +575,17 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             return false;
         }
 
+        const float * h_tgt = llama_get_embeddings_pre_norm(ctx_tgt);
+
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             if (i_batch_end[seq_id] < 0) {
                 continue;
             }
 
             const int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
+            const float * h_seq = h_tgt + (size_t) i_batch_beg[seq_id] * n_embd;
             if (last_n_drafted[seq_id] == 0) {
-                const float * h_last = llama_get_embeddings_pre_norm_ith(ctx_tgt, i_batch_end[seq_id]);
+                const float * h_last = h_seq + (size_t) (n_rows - 1) * n_embd;
                 std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
                 continue;
             }
@@ -592,12 +595,11 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             if (verify_h[seq_id].size() < n_verify_floats) {
                 verify_h[seq_id].resize(n_verify_floats);
             }
-            for (int32_t i = 0; i < n_rows - 1; ++i) {
-                const float * h = llama_get_embeddings_pre_norm_ith(ctx_tgt, i_batch_beg[seq_id] + i);
-                std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
+            if (n_verify_floats > 0) {
+                std::memcpy(verify_h[seq_id].data(), h_seq, n_verify_floats * sizeof(float));
             }
 
-            const float * h_last = llama_get_embeddings_pre_norm_ith(ctx_tgt, i_batch_end[seq_id]);
+            const float * h_last = h_seq + (size_t) (n_rows - 1) * n_embd;
             std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
         }
 

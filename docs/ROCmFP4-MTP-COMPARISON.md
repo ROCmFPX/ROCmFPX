@@ -259,7 +259,7 @@ The largest measured gains so far came from backend-specific ROCmFP4 work:
 | ROCmFP4 CPY/dequant kernels | quant-to-F32 copies moved from the old `~740 us` band to about `182 us` dual-scale and `170 us` FAST |
 | ROCmFP4 CPU finite-block quant scoring | normal GGUF quantization avoids per-value guarded decode during scale-MSE scoring after a block-level finite scan; latest guard measured dual-scale / FAST normal quant at `3844.38` / `3582.57` cycles/32 |
 | ROCmFP4 weighted/imatrix finite scoring | FAST imatrix GGUF quantization moved from same-session pre-candidate `5258.07` to `4448.73` / `4447.32` cycles/32 on two guarded passes; dual imatrix stayed in the noisy guarded band |
-| Speculative host-side cleanup | removed per-draft `std::vector<bool>` allocation from MTP and simple draft paths, changed MTP sequence-index tracking from token-by-sequence scanning to one pass over token seq-ids, skipped full verify-row copies when no draft is pending, moved simple and MTP draft paths to a shared direct one-sequence batch append helper, skipped re-copying `pending_h` when accept lands on the already staged final verify row, stores only the non-final verify rows needed for rollback, reuses the grown verify-row buffer instead of resizing every verification pass, skips idle draft-model decode when no sequence is drafting, skipped debug-candidate loop work unless debug logging is enabled, and hoisted the debug verbosity check out of the per-token draft loop; latest Qwen guard held `33.9 tok/s` short / `27.9 tok/s` sustained |
+| Speculative host-side cleanup | removed per-draft `std::vector<bool>` allocation from MTP and simple draft paths, changed MTP sequence-index tracking from token-by-sequence scanning to one pass over token seq-ids, skipped full verify-row copies when no draft is pending, moved simple and MTP draft paths to a shared direct one-sequence batch append helper, skipped re-copying `pending_h` when accept lands on the already staged final verify row, stores only the non-final verify rows needed for rollback, copies stored verify rows with one contiguous target-embedding memcpy, reuses the grown verify-row buffer instead of resizing every verification pass, skips idle draft-model decode when no sequence is drafting, skipped debug-candidate loop work unless debug logging is enabled, and hoisted the debug verbosity check out of the per-token draft loop; latest Qwen 27B guard held `33.7 tok/s` short / `27.9 tok/s` sustained and the 35B A3B guard held `104.1 tok/s` short / `89.2 tok/s` sustained |
 
 The GitHub-facing reproduction harness is
 `scripts/reproduce-rocmfp4-qwen-mtp-comparison.sh`. On 2026-05-24 it generated
@@ -448,6 +448,24 @@ After this change:
 | ROCm CPY | passed; dual source-to-quant `1108.80` / `1008.77` / `1006.00` us, dual-to-F32 `183.43` us, FAST source-to-quant `1046.98` / `951.20` / `950.79` us, FAST-to-F32 `170.35` us |
 | Qwen3.6 27B MTP in full gate | passed; `33.9 tok/s` short and `27.9 tok/s` sustained |
 | ROCm cleanup | passed; no KFD PIDs running |
+
+### 2026-05-25 MTP Contiguous Verify-Row Copy
+
+The MTP `process()` path now copies the retained verification hidden rows from
+the target embedding buffer in one contiguous block instead of calling
+`llama_get_embeddings_pre_norm_ith()` and `memcpy()` once per row. This uses
+the same contiguous target embedding layout already used earlier in
+`process()` when shifting target embeddings into the draft batch. Rollback
+semantics are unchanged: non-final verify rows are still retained for partial
+acceptance, and the final row is still staged directly into `pending_h`.
+
+After this change:
+
+| Guard | Result |
+|---|---|
+| Build | `scripts/build-strix-rocmfp4-mtp.sh` passed |
+| Focused Qwen3.6 27B MTP guard | passed; `33.7 tok/s` short and `27.9 tok/s` sustained |
+| Focused Qwen3.6 35B A3B MTP guard | passed; `104.1 tok/s` short and `89.2 tok/s` sustained |
 
 ## Follow-Up MTP Sweep
 
