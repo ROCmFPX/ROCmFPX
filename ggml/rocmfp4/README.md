@@ -140,6 +140,10 @@ Current status:
   rejected after the 35B A3B short guard dropped to `73.0 tok/s`, below the
   `100.0 tok/s` floor. A `std::nth_element` plus top-k slice sort variant was
   also rejected after the same guard dropped to `71.5 tok/s`.
+  A `std::partial_sort_copy` top-k buffer variant built and passed the same
+  guard at `104.4 tok/s` short and `90.2 tok/s` sustained, but a same-session
+  promoted-build comparison measured `104.1` / `90.2`, so it was not promoted:
+  it added sampler buffer/clone complexity without a sustained decode gain.
   Disabling internal sampler timing with `sparams.no_perf = true` was also
   tested and rejected after the same short guard dropped to `96.2 tok/s`.
   Retesting the internal MTP sampler candidate count on the 35B A3B
