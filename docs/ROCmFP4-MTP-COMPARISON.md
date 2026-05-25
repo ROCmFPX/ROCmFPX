@@ -188,6 +188,12 @@ shape. The default sampler path remains active for the guard and Pi profile:
 | `--samplers penalties;top_k;top_p;min_p;temperature` | 104.1 | 88.9 | rejected; slower sustained |
 | `--backend-sampling` | 104.3 | 89.2 | near tie, not promoted |
 
+MoE routing was also checked because the 35B A3B path is much more sensitive to
+`MUL_MAT_ID` behavior than the dense 27B comparison. A separate build with
+`CMAKE_HIP_FLAGS=-DGGML_ROCMFP4_RDNA35_MMID_MAX_BATCH=3` measured only
+`95.8 tok/s` short and `74.0 tok/s` sustained, so the promoted build keeps the
+default `MMVQ_MAX_BATCH_SIZE` routing threshold.
+
 A single-sequence MTP `process()` fast path was also prototyped for the `-np 1`
 serving case. It compiled and passed the guard floors, but measured only
 `104.1 tok/s` short and `88.5 tok/s` sustained, below the promoted `89.3 tok/s`
@@ -555,6 +561,7 @@ Post-MMVQ-tune ROCm0 RDNA3.5 launch geometry checks:
 | FAST MMVQ/MMQ ROCmFP4 packed-byte dword load | 45.17 / 58.38 / 90.54 / 157.83 us for `n=1/2/4/8` | unchanged source path; dual guard remained 49.18 / 51.40 / 83.54 / 141.75 us | 33.6 | 28.0 | promoted; direct end-to-end Qwen MTP gain and tighter FAST runtime guard |
 | FAST MMVQ `GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR=1` after packed-byte load | 60.18 us at `n=1` | not run | not run | not run | rejected; failed the focused FAST ROCm guard ceiling of 50.00 us before Qwen MTP |
 | FAST MMVQ `GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR=4` retest after packed-byte load | 41.37 / 49.29 / 80.91 / 139.58 us for `n=1/2/4/8` | unchanged source path; dual guard stayed inside ceiling at 50.32 / 50.83 / 82.93 / 142.13 us | 34.0 | 24.7 | rejected; better focused ROCm microbench, but sustained Qwen MTP regressed below the 25.5 tok/s floor |
+| ROCmFP4 direct `vec_dot_q_cuda_dispatch<type>` call instead of the generic constexpr function pointer | 45.16 / 57.52 / 89.44 / 156.49 us for FAST `n=1/2/4/8` | 50.83 / 51.11 / 84.51 / 143.27 us for dual `n=1/2/4/8` | 33.7 | 27.9 | rejected; compiled and passed floors, but did not improve sustained decode versus the promoted 28.0 tok/s band |
 
 Post-routing ROCm0 MMQ vector-dot ratio checks:
 

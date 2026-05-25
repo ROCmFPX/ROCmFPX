@@ -122,6 +122,13 @@ Current status:
   `GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR=1`, was also rejected after it failed the
   focused FAST ROCm `n=1` guard at `60.18` us/run. The knob now rejects
   invalid FAST MMVQ values at compile time; only `1`, `2`, and `4` are valid.
+- A direct ROCmFP4 `vec_dot_q_cuda_dispatch<type>` wrapper was tested in the
+  MMVQ kernels to bypass the generic constexpr function pointer call. It built
+  and passed the focused ROCm guard, measuring FAST `45.16` / `57.52` /
+  `89.44` / `156.49` us and dual-scale `50.83` / `51.11` / `84.51` /
+  `143.27` us for `n=1/2/4/8`, but Qwen3.6 27B MTP only reached `33.7 tok/s`
+  short and `27.9 tok/s` sustained. Because it did not beat the promoted
+  sustained band, the code change was removed.
 - ROCm/HIP batched MMQ keeps the upstream-style `vdr=8` default for both
   ROCmFP4 layouts, with ROCmFP4-owned compile-time test knobs
   `GGML_ROCMFP4_Q8_1_MMQ_VDR` and `GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR`.
@@ -165,7 +172,10 @@ Current status:
   tied the promoted Qwen3.6 27B MTP path at `33.4 tok/s` short and `27.7 tok/s`
   sustained. Follow-up threshold `2`, `3`, and `4` builds also tied at
   `33.6` / `33.8` / `33.7 tok/s` short and `27.7` / `27.9` / `27.9 tok/s`
-  sustained, so no lower routing threshold is promoted.
+  sustained. The same `3` threshold was then checked on the MoE-heavy
+  Qwen3.6 35B A3B MTP ROCmFP4 path and regressed to `95.8 tok/s` short and
+  `74.0 tok/s` sustained versus the promoted `104.4` / `89.3` band. No lower
+  routing threshold is promoted.
 - Target/draft "dual-stream" MTP overlap was inspected and is not a promoted
   optimization. The current common MTP implementation verifies with the target
   context, mirrors pre-norm embeddings into the MTP context, then drafts through
