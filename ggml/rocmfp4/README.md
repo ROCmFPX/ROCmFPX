@@ -341,6 +341,11 @@ Current status:
   `70.92` us promoted build), but regressed the Qwen-style 128d dual-scale row
   from `194.40` to `211.10` us/run. Because long-context Qwen is the relevant
   guard, the promoted D128 dual-scale V grouping remains `4`.
+  `GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD=16` was rejected during compilation:
+  the ROCmFP4 V dequantizer intentionally supports only `2`, `4`, and `8`
+  rows per thread, and the fixed-copy helper does not support the resulting
+  32-byte move. The source now rejects unsupported values with a direct
+  ROCmFP4 compile-time error.
 - Vulkan ROCmFP4 scale decode now uses a shared UE4M3 lookup table with
   ROCmFP4's half-scale semantics. This moved the focused Vulkan dual-scale
   `MUL_MAT` guard from `82.86`, `120.77`, and `181.28` us/run to `65.05`,

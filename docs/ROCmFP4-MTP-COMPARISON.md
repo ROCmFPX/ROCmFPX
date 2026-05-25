@@ -704,6 +704,7 @@ Post-routing ROCm0 FlashAttention checks:
 | `V_NTHREADS=4` with promoted `V_ROWS_PER_THREAD=8` | 77.35 us | 77.25 us | 33.5 | 27.7 | rejected for default; Qwen-style dual improved to 187.72 us, but 64d and Qwen-style FAST regressed and Qwen MTP decode did not improve |
 | dual-scale-only 128d V-thread specialization `GGML_ROCMFP4_FATTN_V_NTHREADS_D128_DUAL=4` | 70.37 us | 66.31 us | 33.7 | 27.9 | promoted; leaves 64d and FAST defaults intact while Qwen-style 128d dual-scale improves to 188.75 us and FAST stays guarded at 171.89 us |
 | `V_NTHREADS=8` with promoted `V_ROWS_PER_THREAD=8` | 81.22 us | 78.36 us | not run | not run | rejected; every focused FA row regressed versus the promoted default, including Qwen-style 128d at 208.94 / 200.45 us |
+| `V_ROWS_PER_THREAD=16` | build failed | build failed | not run | not run | rejected; ROCmFP4 V dequant supports only `2/4/8` and the fixed-copy helper rejects the resulting 32-byte move |
 | `KQ_NTHREADS=2` with promoted `V_ROWS_PER_THREAD=8` | 80.68 us | 78.27 us | not run | not run | rejected; Qwen-style 128d dual-scale failed the guard at 245.84 us and FAST regressed to 207.04 us |
 | Qwen-style 128d FA guard with `V_NTHREADS=4` | 244.01 us | 224.21 us | not run | not run | rejected; tiny dual win, FAST and 64d guard regress |
 | Qwen-style 128d FA guard with `KQ_NTHREADS=2,V_NTHREADS=2` | 268.53 us | 226.32 us | not run | not run | rejected; Qwen-style dual and FAST regress |

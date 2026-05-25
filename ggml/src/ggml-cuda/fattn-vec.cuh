@@ -84,6 +84,11 @@ static __global__ void flash_attn_ext_vec(
 #ifndef GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD
 #define GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD 8
 #endif
+#if GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD != 2 && \
+    GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD != 4 && \
+    GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD != 8
+#error "GGML_ROCMFP4_FATTN_V_ROWS_PER_THREAD must be 2, 4, or 8"
+#endif
     constexpr int nthreads_KQ_q = type_K_rocmfp4 ? GGML_ROCMFP4_FATTN_KQ_NTHREADS : nthreads_KQ_q_default;
     constexpr int nthreads_V_q_rocmfp4 =
         type_V == GGML_TYPE_Q4_0_ROCMFP4 && D == 128 ? GGML_ROCMFP4_FATTN_V_NTHREADS_D128_DUAL :
