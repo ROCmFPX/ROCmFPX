@@ -328,6 +328,11 @@ Current status:
   64d dual-scale / FAST and `188.75` / `171.89` us for Qwen-style 128d
   dual-scale / FAST, while Qwen3.6 27B MTP held `33.7 tok/s` short and
   `27.9 tok/s` sustained with no KFD PIDs left running.
+  Retesting `GGML_ROCMFP4_FATTN_V_NTHREADS_D128_DUAL=8` was rejected. It
+  slightly improved the 64d dual-scale row (`69.40` us versus a same-session
+  `70.92` us promoted build), but regressed the Qwen-style 128d dual-scale row
+  from `194.40` to `211.10` us/run. Because long-context Qwen is the relevant
+  guard, the promoted D128 dual-scale V grouping remains `4`.
 - Vulkan ROCmFP4 scale decode now uses a shared UE4M3 lookup table with
   ROCmFP4's half-scale semantics. This moved the focused Vulkan dual-scale
   `MUL_MAT` guard from `82.86`, `120.77`, and `181.28` us/run to `65.05`,

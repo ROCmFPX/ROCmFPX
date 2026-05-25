@@ -827,7 +827,9 @@ Rejected Qwen3.6 35B A3B MoE launch-shape checks on the promoted reasoning-on
 | Setting change | Short decode tok/s | Sustained decode tok/s | Result |
 |---|---:|---:|---|
 | ROCmFP4 MoE `rows_per_block=4` | 103.8 | 89.1 | rejected; close sustained tie, but below the promoted `104.3` / `89.3` band |
+| ROCmFP4 MoE `rows_per_block=2` | 104.6 | 90.0 | rejected; tied the promoted sustained band but did not improve it |
 | ROCmFP4 MoE `rows_per_block=1` | 103.6 | 88.7 | rejected; slower than default |
+| ROCmFP4 MoE `rows_per_block=1` repeat after top-k/p-min promotion | 90.9 | not run | rejected after short-response regression |
 
 Rejected Qwen3.6 35B A3B combined probability-profile checks on the same
 promoted profile:
@@ -902,6 +904,14 @@ Explicitly unrolling the fixed-size ROCmFP4 source-quant loops was rejected.
 The ROCm CPY guard stayed in the same band, with F32-to-dual at
 `1119.04 us/run` and F32-to-FAST at `1229.08 us/run`, while HIP emitted
 unroll-failed warnings during compilation.
+
+Replacing packed-count multiply/divide expressions in the ROCmFP4 CPY and HIP
+helpers with shift/mask arithmetic was also rejected. The focused guard moved
+source-to-quant paths only inside noise (`F32/F16/BF16 -> dual` at
+`1106.34`/`1008.52`/`1006.51 us/run`, `F32/F16/BF16 -> FAST` at
+`1045.16`/`952.41`/`950.70 us/run`) while slightly regressing quant-to-F32
+(`dual -> F32` from `182.06` to `183.45 us/run`, FAST from `170.24` to
+`170.44 us/run`). The code change was removed.
 
 The promoted Qwen MTP ROCmFP4 path remains the plain `draft-mtp` ROCm0 run
 with `--spec-draft-n-max 4` plus the dual-scale-only MMVQ `vdr=4` tune. The
