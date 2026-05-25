@@ -192,7 +192,17 @@ MoE routing was also checked because the 35B A3B path is much more sensitive to
 `MUL_MAT_ID` behavior than the dense 27B comparison. A separate build with
 `CMAKE_HIP_FLAGS=-DGGML_ROCMFP4_RDNA35_MMID_MAX_BATCH=3` measured only
 `95.8 tok/s` short and `74.0 tok/s` sustained, so the promoted build keeps the
-default `MMVQ_MAX_BATCH_SIZE` routing threshold.
+default `MMVQ_MAX_BATCH_SIZE` routing threshold. The existing
+`GGML_ROCMFP4_RDNA35_MMID_MAX_BATCH=4` exploratory build was also checked on
+the same 35B guard and measured `104.2 tok/s` short and `89.2 tok/s`
+sustained. That is a near-tie, but it still does not beat the promoted
+`89.3 tok/s` sustained band, so it was not rebuilt from current source or
+promoted.
+
+The older rocWMMA FlashAttention build was also checked against the 35B A3B
+profile after it had already regressed the dense 27B guard. It measured
+`99.7 tok/s` short and `76.1 tok/s` sustained, so rocWMMA remains opt-in only
+and is not promoted for the current Strix Halo ROCmFP4 MTP path.
 
 A single-sequence MTP `process()` fast path was also prototyped for the `-np 1`
 serving case. It compiled and passed the guard floors, but measured only

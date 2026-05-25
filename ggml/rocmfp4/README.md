@@ -174,8 +174,10 @@ Current status:
   `33.6` / `33.8` / `33.7 tok/s` short and `27.7` / `27.9` / `27.9 tok/s`
   sustained. The same `3` threshold was then checked on the MoE-heavy
   Qwen3.6 35B A3B MTP ROCmFP4 path and regressed to `95.8 tok/s` short and
-  `74.0 tok/s` sustained versus the promoted `104.4` / `89.3` band. No lower
-  routing threshold is promoted.
+  `74.0 tok/s` sustained versus the promoted `104.4` / `89.3` band. Reusing
+  the older threshold `4` exploratory build on the same 35B guard measured
+  `104.2` / `89.2`, a near tie but still below the sustained promoted band.
+  No lower routing threshold is promoted.
 - Target/draft "dual-stream" MTP overlap was inspected and is not a promoted
   optimization. The current common MTP implementation verifies with the target
   context, mirrors pre-norm embeddings into the MTP context, then drafts through
@@ -819,7 +821,9 @@ Hardware note:
   `/home/caf/strix-fp4/third_party/rocWMMA`, but the Strix Halo benchmark
   regressed sustained Qwen MTP decode (`23.3 tok/s` vs the promoted
   `26.2 tok/s` default HIP FlashAttention path), so the default build keeps it
-  disabled.
+  disabled. A follow-up on the 35B A3B ROCmFP4 MTP guard measured only
+  `99.7` / `76.1 tok/s` versus the promoted `104.4` / `89.3` band, so this
+  remains true for the MoE-heavy profile as well.
 - TurboQuant and TriAttention are not present as runtime flags in this isolated
   tree. Integrating them would require a source-level merge into `strix-fp4`;
   do not claim support or promote them unless they beat the serial ROCmFP4
