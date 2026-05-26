@@ -137,6 +137,7 @@ void llama_memory_recurrent::clear(bool data) {
 
     head = 0;
     used = 0;
+    std::fill(rs_idx.begin(), rs_idx.end(), 0);
 
     if (data) {
         for (auto & [_, buf] : ctxs_bufs) {
@@ -179,6 +180,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
             }
             // invalidate tails which will be cleared
             if (p0 <= cell.pos && cell.pos < p1) {
+                set_rs_idx(seq_id, 0);
                 tail_id = -1;
             }
         }
@@ -188,6 +190,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
             //printf("[DEBUG] inside `llama_memory_recurrent::seq_rm`: `seq_id` is negative, so returning false\n");
             return false;
         }
+        std::fill(rs_idx.begin(), rs_idx.end(), 0);
     }
 
     for (uint32_t i = 0; i < size; ++i) {
@@ -719,15 +722,6 @@ size_t llama_memory_recurrent::size_s_bytes() const {
 void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
     GGML_UNUSED(flags);
 
-    // [TAG_RS_STATE_ROLLBACK_SUPPORT]
-    if (n_rs_seq != 0) {
-        for (uint32_t i = 0; i < rs_idx.size(); ++i) {
-            if (rs_idx[i] != 0) {
-                GGML_ABORT("recurrent state read/write is not supported with partial rollback");
-            }
-        }
-    }
-
     std::vector<std::pair<uint32_t, uint32_t>> cell_ranges; // ranges, from inclusive, to exclusive
     uint32_t cell_count = 0;
 
@@ -788,6 +782,12 @@ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_i
         }
         throw std::runtime_error("failed to restore kv cache");
     }
+
+    if (seq_id == -1) {
+        std::fill(rs_idx.begin(), rs_idx.end(), 0);
+    } else {
+        set_rs_idx(seq_id, 0);
+    }
 }
 
 void llama_memory_recurrent::state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id) const {
@@ -816,6 +816,51 @@ void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::
     io.write(&s_trans, sizeof(s_trans));
     io.write(&n_layer, sizeof(n_layer));
 
+    auto state_row = [this](uint32_t cell_idx) -> uint32_t {
+        if (n_rs_seq == 0 || cells[cell_idx].seq_id.empty()) {
+            return cell_idx;
+        }
+
+        uint32_t idx = 0;
+        for (const llama_seq_id seq : cells[cell_idx].seq_id) {
+            if (seq < 0 || (size_t) seq >= rs_idx.size()) {
+                continue;
+            }
+
+            const uint32_t cur = rs_idx[seq];
+            if (idx != 0 && cur != 0 && cur != idx) {
+                GGML_ABORT("cannot serialize recurrent state shared by multiple rollback indices");
+            }
+            if (cur != 0) {
+                idx = cur;
+            }
+        }
+
+        if (idx == 0) {
+            return cell_idx;
+        }
+
+        const int32_t src = cells[cell_idx].src >= 0 ? cells[cell_idx].src : (int32_t) cell_idx;
+        return idx * size + (uint32_t) src;
+    };
+
+    auto write_rows = [&](ggml_tensor * tensor, uint64_t row_size) {
+        for (const auto & range : cell_ranges) {
+            uint32_t cell = range.first;
+            while (cell < range.second) {
+                const uint32_t src_begin = state_row(cell);
+                uint32_t n_rows = 1;
+
+                while (cell + n_rows < range.second && state_row(cell + n_rows) == src_begin + n_rows) {
+                    ++n_rows;
+                }
+
+                io.write_tensor(tensor, (size_t) src_begin * row_size, (size_t) n_rows * row_size);
+                cell += n_rows;
+            }
+        }
+    };
+
     // Iterate and write all the R tensors first, each row is a cell
     // Get whole range at a time
     for (uint32_t il = 0; il < n_layer; ++il) {
@@ -830,12 +875,7 @@ void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::
         const uint64_t r_size_row = ggml_row_size(r_l[il]->type, hparams.n_embd_r());
         io.write(&r_size_row, sizeof(r_size_row));
 
-        // Write each range of cells of r_size_row length
-        for (const auto & range : cell_ranges) {
-            const size_t range_size = range.second - range.first;
-            const size_t buf_size = range_size * r_size_row;
-            io.write_tensor(r_l[il], range.first * r_size_row, buf_size);
-        }
+        write_rows(r_l[il], r_size_row);
     }
 
     if (!s_trans) {
@@ -851,12 +891,7 @@ void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::
             const uint64_t s_size_row = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
             io.write(&s_size_row, sizeof(s_size_row));
 
-            // Write each range of S tensor rows
-            for (const auto & range : cell_ranges) {
-                const size_t range_size = range.second - range.first;
-                const size_t buf_size = range_size * s_size_row;
-                io.write_tensor(s_l[il], range.first * s_size_row, buf_size);
-            }
+            write_rows(s_l[il], s_size_row);
         }
     } else {
         // When S tensor is transposed, we also need the element size and get the element ranges from each row
