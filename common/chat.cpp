@@ -503,7 +503,21 @@ std::string common_chat_format_single(const struct common_chat_templates * tmpls
     inputs.add_generation_prompt = add_ass;
     auto fmt_new_msg             = common_chat_templates_apply(tmpls, inputs).prompt;
     // get the diff part
-    ss << fmt_new_msg.substr(fmt_past_msg.size(), fmt_new_msg.size() - fmt_past_msg.size());
+    if (fmt_past_msg.empty() || string_starts_with(fmt_new_msg, fmt_past_msg)) {
+        ss << fmt_new_msg.substr(fmt_past_msg.size(), fmt_new_msg.size() - fmt_past_msg.size());
+        return ss.str();
+    }
+
+    size_t common_prefix = 0;
+    const size_t max_prefix = fmt_past_msg.size() < fmt_new_msg.size() ? fmt_past_msg.size() : fmt_new_msg.size();
+    while (common_prefix < max_prefix && fmt_past_msg[common_prefix] == fmt_new_msg[common_prefix]) {
+        ++common_prefix;
+    }
+
+    LOG_WRN("%s: formatted chat history is not a prefix of the new chat render; "
+            "falling back to common-prefix diff (past=%zu, new=%zu, common=%zu)\n",
+            __func__, fmt_past_msg.size(), fmt_new_msg.size(), common_prefix);
+    ss << fmt_new_msg.substr(common_prefix);
     return ss.str();
 }
 

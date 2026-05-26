@@ -4687,6 +4687,42 @@ static void test_msg_diffs_compute() {
     }
 }
 
+static void test_chat_format_single_handles_template_rewrite() {
+    LOG_DBG("%s\n", __func__);
+
+    const std::string tmpl =
+        "{%- for message in messages -%}"
+        "{%- if message['role'] == 'user' -%}"
+        "{{- '<|im_start|>user\\n' + message['content'] + '<|im_end|>\\n' -}}"
+        "{%- elif message['role'] == 'assistant' -%}"
+        "{%- if loop.last -%}"
+        "{{- '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' + message['content'] + '<|im_end|>\\n' -}}"
+        "{%- else -%}"
+        "{{- '<|im_start|>assistant\\n' + message['content'] + '<|im_end|>\\n' -}}"
+        "{%- endif -%}"
+        "{%- endif -%}"
+        "{%- endfor -%}"
+        "{%- if add_generation_prompt -%}{{- '<|im_start|>assistant\\n<think>\\n' -}}{%- endif -%}";
+
+    auto tmpls = common_chat_templates_ptr(common_chat_templates_init(nullptr, tmpl));
+
+    std::vector<common_chat_msg> past = {
+        message_user,
+        simple_assist_msg("Thomas Jefferson was the 3rd President of the United States."),
+    };
+
+    common_chat_msg next_user;
+    next_user.role = "user";
+    next_user.content = "What years did he serve?";
+
+    const std::string formatted = common_chat_format_single(
+        tmpls.get(), past, next_user, /* add_ass = */ true, /* use_jinja = */ true);
+
+    if (formatted.empty()) {
+        throw std::runtime_error("common_chat_format_single returned an empty fallback diff");
+    }
+}
+
 int main(int argc, char ** argv) {
     bool detailed_debug    = false;
     bool only_run_filtered = false;
@@ -4760,6 +4796,7 @@ int main(int argc, char ** argv) {
 #endif
     {
         test_msg_diffs_compute();
+        test_chat_format_single_handles_template_rewrite();
         test_msgs_oaicompat_json_conversion();
         test_tools_oaicompat_json_conversion();
         test_convert_responses_to_chatcmpl();

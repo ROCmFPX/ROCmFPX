@@ -278,11 +278,78 @@ int main(int argc, char ** argv) {
     std::vector<llama_token> embd_inp;
 
     bool waiting_for_first_input = false;
-    auto chat_add_and_format = [&chat_msgs, &chat_templates](const std::string & role, const std::string & content) {
+
+    const bool template_supports_thinking = params.use_jinja && common_chat_templates_support_enable_thinking(chat_templates.get());
+    auto get_enable_thinking = [&params, template_supports_thinking]() {
+        bool enable_thinking = params.enable_reasoning != 0 && template_supports_thinking;
+        const auto it = params.default_template_kwargs.find("enable_thinking");
+        if (it != params.default_template_kwargs.end()) {
+            if (it->second == "true") {
+                enable_thinking = true;
+            } else if (it->second == "false") {
+                enable_thinking = false;
+            }
+        }
+        return enable_thinking;
+    };
+    const bool enable_thinking = get_enable_thinking();
+
+    auto make_chat_inputs = [&params, enable_thinking](const std::vector<common_chat_msg> & messages, bool add_generation_prompt) {
+        common_chat_templates_inputs inputs;
+        inputs.use_jinja             = params.use_jinja;
+        inputs.messages              = messages;
+        inputs.add_generation_prompt = add_generation_prompt;
+        inputs.reasoning_format      = params.reasoning_format;
+        inputs.enable_thinking       = enable_thinking;
+        inputs.chat_template_kwargs  = params.default_template_kwargs;
+        if (enable_thinking) {
+            inputs.chat_template_kwargs.emplace("preserve_thinking", "true");
+            inputs.chat_template_kwargs.emplace("clear_thinking", "false");
+        }
+        inputs.force_pure_content    = params.force_pure_content_parser;
+        return inputs;
+    };
+
+    auto chat_format_single = [&chat_templates, &make_chat_inputs](const std::vector<common_chat_msg> & past_msg,
+                                                                   const common_chat_msg &              new_msg,
+                                                                   bool                                 add_ass) {
+        std::string fmt_past_msg;
+        if (!past_msg.empty()) {
+            fmt_past_msg = common_chat_templates_apply(chat_templates.get(), make_chat_inputs(past_msg, false)).prompt;
+        }
+
+        std::ostringstream ss;
+        if (add_ass && !fmt_past_msg.empty() && fmt_past_msg.back() == '\n') {
+            ss << "\n";
+        }
+
+        std::vector<common_chat_msg> new_msgs = past_msg;
+        new_msgs.push_back(new_msg);
+        auto fmt_new_msg = common_chat_templates_apply(chat_templates.get(), make_chat_inputs(new_msgs, add_ass)).prompt;
+
+        if (fmt_past_msg.empty() || string_starts_with(fmt_new_msg, fmt_past_msg)) {
+            ss << fmt_new_msg.substr(fmt_past_msg.size(), fmt_new_msg.size() - fmt_past_msg.size());
+            return ss.str();
+        }
+
+        size_t common_prefix = 0;
+        const size_t max_prefix = fmt_past_msg.size() < fmt_new_msg.size() ? fmt_past_msg.size() : fmt_new_msg.size();
+        while (common_prefix < max_prefix && fmt_past_msg[common_prefix] == fmt_new_msg[common_prefix]) {
+            ++common_prefix;
+        }
+
+        LOG_WRN("chat template history is not a prefix of the new render; "
+                "falling back to common-prefix diff (past=%zu, new=%zu, common=%zu)\n",
+                fmt_past_msg.size(), fmt_new_msg.size(), common_prefix);
+        ss << fmt_new_msg.substr(common_prefix);
+        return ss.str();
+    };
+
+    auto chat_add_and_format = [&chat_msgs, &chat_format_single](const std::string & role, const std::string & content) {
         common_chat_msg new_msg;
         new_msg.role = role;
         new_msg.content = content;
-        auto formatted = common_chat_format_single(chat_templates.get(), chat_msgs, new_msg, role == "user", g_params->use_jinja);
+        auto formatted = chat_format_single(chat_msgs, new_msg, role == "user");
         chat_msgs.push_back(new_msg);
         LOG_DBG("formatted: '%s'\n", formatted.c_str());
         return formatted;
@@ -304,13 +371,8 @@ int main(int argc, char ** argv) {
             }
 
             if (!params.system_prompt.empty() || !params.prompt.empty()) {
-                common_chat_templates_inputs inputs;
-                inputs.use_jinja = g_params->use_jinja;
-                inputs.messages = chat_msgs;
-                inputs.add_generation_prompt = !params.prompt.empty();
-                inputs.force_pure_content = params.force_pure_content_parser;
-
-                prompt = common_chat_templates_apply(chat_templates.get(), inputs).prompt;
+                prompt = common_chat_templates_apply(chat_templates.get(),
+                                                     make_chat_inputs(chat_msgs, !params.prompt.empty())).prompt;
             }
         } else {
             // otherwise use the prompt as is
@@ -556,6 +618,25 @@ int main(int argc, char ** argv) {
     std::vector<int>   output_tokens; g_output_tokens = &output_tokens;
     std::ostringstream output_ss;     g_output_ss     = &output_ss;
     std::ostringstream assistant_ss; // for storing current assistant message, used in conversation mode
+
+    auto chat_add_assistant_response = [&chat_msgs, &chat_templates, &make_chat_inputs, &assistant_ss, &params]() {
+        const std::string response = assistant_ss.str();
+        try {
+            auto chat_params = common_chat_templates_apply(chat_templates.get(), make_chat_inputs(chat_msgs, true));
+            common_chat_parser_params parser_params(chat_params);
+            parser_params.reasoning_format = params.reasoning_format;
+
+            common_chat_msg assistant_msg = common_chat_parse(response, /* is_partial = */ false, parser_params);
+            assistant_msg.role = "assistant";
+            chat_msgs.push_back(assistant_msg);
+        } catch (const std::exception & e) {
+            LOG_WRN("failed to parse assistant response for chat history: %s; storing raw content\n", e.what());
+            common_chat_msg assistant_msg;
+            assistant_msg.role = "assistant";
+            assistant_msg.content = response;
+            chat_msgs.push_back(assistant_msg);
+        }
+    };
 
     // the first thing we will do is to output the prompt, so set color accordingly
     console::set_display(DISPLAY_TYPE_PROMPT);
@@ -834,7 +915,7 @@ int main(int argc, char ** argv) {
                     }
 
                     if (params.enable_chat_template) {
-                        chat_add_and_format("assistant", assistant_ss.str());
+                        chat_add_assistant_response();
                     }
                     is_interacting = true;
                     LOG("\n");
