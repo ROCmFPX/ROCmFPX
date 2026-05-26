@@ -35,6 +35,7 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
 
 cmake --build "$BUILD_DIR" -j "$JOBS" --target \
     llama-cli \
+    llama-server \
     llama-quantize \
     llama-bench \
     test-backend-ops \
@@ -43,6 +44,7 @@ cmake --build "$BUILD_DIR" -j "$JOBS" --target \
 
 echo "Built:"
 echo "  $BUILD_DIR/bin/llama-cli"
+echo "  $BUILD_DIR/bin/llama-server"
 echo "  $BUILD_DIR/bin/llama-quantize"
 echo "  $BUILD_DIR/bin/llama-bench"
 echo "  $BUILD_DIR/bin/test-backend-ops"
