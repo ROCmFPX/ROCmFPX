@@ -3330,6 +3330,13 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
         path = FA_SCALAR;
     }
 
+    if (path == FA_COOPMAT2 && k_type == GGML_TYPE_BF16 && !device->coopmat2_bf16_support) {
+        path = FA_COOPMAT1;
+    }
+    if (path == FA_COOPMAT1 && k_type == GGML_TYPE_BF16 && !device->coopmat_bf16_support) {
+        path = FA_SCALAR;
+    }
+
     if (path == FA_COOPMAT1 && device->architecture == vk_device_architecture::NVIDIA_TURING) {
         // Nvidia compiler bug, see https://github.com/ggml-org/llama.cpp/pull/19075#issuecomment-3820716090
         path = FA_SCALAR;
@@ -6056,8 +6063,8 @@ static vk_device ggml_vk_get_device(size_t idx) {
                 bool found_fp16_128 = false,
                      found_fp16_256 = false,
                      found_fp32_128 = false,
-                     found_fp32_256 = false,
-                     found_bf16_128 = false,
+                     found_fp32_256 = false;
+                bool found_bf16_128 = false,
                      found_bf16_256 = false;
                 // need to support fp16*fp16 with fp16/fp32 accumulator, for workgroupsize 128
                 // with 32x16x16 and 256 with 32x32x16.
@@ -6117,27 +6124,6 @@ static vk_device ggml_vk_get_device(size_t idx) {
                         }
 #endif
                     }
-
-#if defined(VK_KHR_shader_bfloat16) && defined(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
-                    if (prop.AType == VK_COMPONENT_TYPE_BFLOAT16_KHR &&
-                        prop.BType == VK_COMPONENT_TYPE_BFLOAT16_KHR &&
-                        prop.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
-                        prop.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR) {
-
-                        if (prop.workgroupInvocations == 128 &&
-                            prop.MGranularity <= 32 &&
-                            prop.NGranularity <= 16 &&
-                            prop.KGranularity <= 16) {
-                            found_bf16_128 = true;
-                        }
-                        if (prop.workgroupInvocations == 256 &&
-                            prop.MGranularity <= 32 &&
-                            prop.NGranularity <= 32 &&
-                            prop.KGranularity <= 16) {
-                            found_bf16_256 = true;
-                        }
-                    }
-#endif
                 }
                 if (found_fp16_128 && found_fp16_256 &&
                     found_fp32_128 && found_fp32_256 &&
