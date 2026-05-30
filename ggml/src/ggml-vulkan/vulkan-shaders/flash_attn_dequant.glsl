@@ -32,6 +32,9 @@ layout (binding = 2) readonly buffer V_PACKED_ROCMFP4 { block_rocmfp4 data[]; } 
 layout (binding = 1) readonly buffer K_PACKED_ROCMFP4_FAST { block_rocmfp4_fast data[]; } k_packed_rocmfp4_fast;
 layout (binding = 2) readonly buffer V_PACKED_ROCMFP4_FAST { block_rocmfp4_fast data[]; } v_packed_rocmfp4_fast;
 
+layout (binding = 1) readonly buffer K_PACKED_BF16 { u16vec4 data[]; } k_packed_bf16;
+layout (binding = 2) readonly buffer V_PACKED_BF16 { u16vec4 data[]; } v_packed_bf16;
+
 // Q4_1 and Q5_1 packed32 views: aliased to the same memory as the packed16
 // views, used by the MMQ K-side hot path for fast 4-uint loads.
 layout (binding = 1) readonly buffer K_PACKED_Q4_1_P32 { block_q4_1_packed32 data[]; } k_packed_q4_1_p32;
@@ -182,6 +185,9 @@ FLOAT_TYPE fa_rocmfp4_ue4m3_to_fp_half(uint8_t x) {
                             fa_rocmfp4_code_value((vui >> 24) & 0xF));                            \
 }
 
+#define FA_DEQUANT4_BF16(BUF) \
+    return FLOAT_TYPEV4(bf16_to_fp32(uvec4(BUF.data[(a_offset + ib) / 4])));
+
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         switch (FaTypeK) {
@@ -193,6 +199,7 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(k_packed_q8_0)
             case FA_TYPE_Q4_0_ROCMFP4:      FA_DEQUANT4_ROCMFP4(k_packed_rocmfp4)
             case FA_TYPE_Q4_0_ROCMFP4_FAST: FA_DEQUANT4_ROCMFP4_FAST(k_packed_rocmfp4_fast)
+            case FA_TYPE_BF16: FA_DEQUANT4_BF16(k_packed_bf16)
         }
     } else {
         switch (FaTypeV) {
@@ -204,6 +211,7 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(v_packed_q8_0)
             case FA_TYPE_Q4_0_ROCMFP4:      FA_DEQUANT4_ROCMFP4(v_packed_rocmfp4)
             case FA_TYPE_Q4_0_ROCMFP4_FAST: FA_DEQUANT4_ROCMFP4_FAST(v_packed_rocmfp4_fast)
+            case FA_TYPE_BF16: FA_DEQUANT4_BF16(v_packed_bf16)
         }
     }
     return FLOAT_TYPEV4(0);
