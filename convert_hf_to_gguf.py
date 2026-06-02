@@ -14382,8 +14382,8 @@ def main() -> None:
             logger.error("--mtp and --no-mtp are mutually exclusive")
             sys.exit(1)
 
-        if (args.mtp or args.no_mtp) and not issubclass(model_class, _Qwen35MtpMixin):
-            logger.error("--mtp / --no-mtp are only supported for Qwen3.5/3.6 text variants today")
+        if (args.mtp or args.no_mtp) and not issubclass(model_class, (_Qwen35MtpMixin, Step35Model)):
+            logger.error("--mtp / --no-mtp are only supported for Qwen3.5/3.6 and Step3.5 text variants today")
             sys.exit(1)
 
         # set on the class so __init__ / filter_tensors see the correct mode
