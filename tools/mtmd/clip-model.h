@@ -329,7 +329,7 @@ struct clip_model {
     ggml_tensor * norm_embd_w = nullptr;
     ggml_tensor * norm_embd_b = nullptr;
 
-    // Gemma 4 unified vision patch norms
+    // "indexed" patch embedding norms
     ggml_tensor * patch_norm_1_w = nullptr;
     ggml_tensor * patch_norm_1_b = nullptr;
     ggml_tensor * patch_norm_2_w = nullptr;

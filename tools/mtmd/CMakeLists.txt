@@ -22,6 +22,8 @@ add_library(mtmd
             models/gemma4ua.cpp
             models/gemma4uv.cpp
             models/gemma4v.cpp
+            models/gemma4ua.cpp
+            models/gemma4uv.cpp
             models/glm4v.cpp
             models/granite-speech.cpp
             models/hunyuanocr.cpp
