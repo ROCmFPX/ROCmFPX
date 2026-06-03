@@ -26,9 +26,16 @@ void llama_model_step35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key_or_arr(LLM_KV_SWIGLU_CLAMP_EXP,   hparams.swiglu_clamp_exp,   hparams.n_layer, false);
     ml.get_key_or_arr(LLM_KV_SWIGLU_CLAMP_SHEXP, hparams.swiglu_clamp_shexp, hparams.n_layer, false);
 
+<<<<<<< HEAD
     // NextN/MTP (Step3p5): extra decoder block appended beyond the main stack.
     ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
     GGML_ASSERT(hparams.nextn_predict_layers < hparams.n_layer && "nextn_predict_layers must be < n_layer");
+=======
+    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
+    if (hparams.nextn_predict_layers > 0) {
+        GGML_ASSERT(hparams.nextn_predict_layers < hparams.n_layer && "nextn_predict_layers must be < n_layer");
+    }
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
 
     switch (hparams.n_layer - hparams.nextn_predict_layers) {
         case 45: type = LLM_TYPE_196B_A11B; break;
@@ -69,6 +76,7 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
 
     auto load_block_trunk = [&](int i, int flags) {
         auto & layer = layers[i];
+        const bool is_nextn = i >= n_layer - (int) hparams.nextn_predict_layers;
 
         const uint32_t n_head_l      = hparams.n_head(i);
         const uint32_t n_embd_k_gqa  = hparams.n_embd_k_gqa(i);
@@ -111,6 +119,7 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {n_embd, hparams.n_ff_shexp}, TENSOR_NOT_REQUIRED);
         layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,   "weight", i), {n_embd, hparams.n_ff_shexp}, TENSOR_NOT_REQUIRED);
         layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {hparams.n_ff_shexp, n_embd}, TENSOR_NOT_REQUIRED);
+<<<<<<< HEAD
     };
 
     auto load_block_mtp = [&](int i, bool is_first_mtp) {
@@ -184,6 +193,17 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
     // path. See scripts/prune_step35_extra_mtp.py for the pruner.
     for (int i = (int) n_main; i < n_layer; ++i) {
         load_block_mtp(i, /*is_first_mtp=*/ i == (int) n_main);
+=======
+
+        if (is_nextn) {
+            layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", i), {2 * n_embd, n_embd}, 0);
+            layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", i), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+            layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", i), {n_embd}, 0);
+            layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", i), {n_embd}, 0);
+            layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+            layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        }
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
     }
 }
 
@@ -203,8 +223,13 @@ llama_model_step35::graph::graph(const llama_model & model, const llm_graph_para
     auto        * inp_attn    = build_attn_inp_kv_iswa();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
+<<<<<<< HEAD
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
     const int n_transformer_layers = n_layer - (int) hparams.nextn_predict_layers;
+=======
+    const int n_transformer_layers = n_layer - (int) hparams.nextn_predict_layers;
+
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
     for (int il = 0; il < n_transformer_layers; ++il) {
         ggml_tensor * inpSA = inpL;
 
@@ -292,8 +317,15 @@ llama_model_step35::graph::graph(const llama_model & model, const llm_graph_para
             cb(cur, "attn_proj", il);
         }
 
+<<<<<<< HEAD
         if (il == n_transformer_layers - 1 && inp_out_ids && cparams.embeddings_pre_norm_masked) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+=======
+        const bool keep_all_h_pre_norm =
+            cparams.embeddings_pre_norm && !cparams.embeddings_pre_norm_masked;
+        if (il == n_transformer_layers - 1 && inp_out_ids && !keep_all_h_pre_norm) {
+            cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
 
@@ -354,7 +386,11 @@ llama_model_step35::graph::graph(const llama_model & model, const llm_graph_para
     cb(cur, "h_pre_norm", -1);
     res->t_h_pre_norm = cur;
 
+<<<<<<< HEAD
     if (!cparams.embeddings_pre_norm_masked && inp_out_ids) {
+=======
+    if (cparams.embeddings_pre_norm && !cparams.embeddings_pre_norm_masked && inp_out_ids) {
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
         cur = ggml_get_rows(ctx0, cur, inp_out_ids);
     }
 
@@ -369,11 +405,16 @@ llama_model_step35::graph::graph(const llama_model & model, const llm_graph_para
     ggml_build_forward_expand(gf, cur);
 }
 
+<<<<<<< HEAD
 // LLM_GRAPH_TYPE_DECODER_MTP draft head for Step3p5 (MoE)
+=======
+// LLM_GRAPH_TYPE_DECODER_MTP draft head for Step35/Step3.7
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
 llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_graph_params & params)
     : llm_graph_context(params) {
     GGML_ASSERT(hparams.nextn_predict_layers > 0 && "STEP35 MTP requires nextn_predict_layers > 0");
 
+<<<<<<< HEAD
     // Single-block MTP only: always run the first trained MTP block (Qwen
     // MTP / vLLM single-MTP-layer style). Multi-block round-robin proved to
     // be a much deeper refactor than this PR justifies; the trailing MTP
@@ -394,10 +435,27 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
 
     auto inp = std::make_unique<llm_graph_input_embd>(hparams.n_embd);
+=======
+    const int speculative_step = llm_graph_get_mtp_speculative_step();
+    const int start_il = (int) hparams.n_layer - (int) hparams.nextn_predict_layers;
+    GGML_ASSERT(start_il >= 0);
+
+    const int il = start_il + speculative_step % (int) hparams.nextn_predict_layers;
+    const auto & layer = model.layers[il];
+
+    GGML_ASSERT(layer.nextn.eh_proj && "STEP35 MTP block missing nextn.eh_proj");
+    GGML_ASSERT(layer.nextn.enorm   && "STEP35 MTP block missing nextn.enorm");
+    GGML_ASSERT(layer.nextn.hnorm   && "STEP35 MTP block missing nextn.hnorm");
+
+    res->add_input(std::make_unique<llm_graph_input_mtp_speculative_step>(speculative_step));
+
+    auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd);
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
 
     inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_input(inp->tokens);
 
+<<<<<<< HEAD
     inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
     ggml_set_input(inp->embd);
     ggml_set_name(inp->embd, "mtp_h_input");
@@ -414,6 +472,32 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     auto        * inp_attn = build_attn_inp_kv_iswa();
 
     ggml_tensor * h_norm = build_norm(h_input, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
+=======
+    inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd_inp(), n_tokens);
+    ggml_set_input(inp->embd);
+
+    ggml_tensor * tok_embd;
+    if (ubatch.token) {
+        ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
+        tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
+    } else {
+        tok_embd = inp->embd;
+    }
+    cb(tok_embd, "mtp_tok_embd", il);
+
+    inp->h = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+    ggml_set_input(inp->h);
+    ggml_set_name(inp->h, "mtp_h_input");
+    ggml_tensor * h_embd = inp->h;
+
+    res->add_input(std::move(inp));
+
+    ggml_tensor * inp_pos     = build_inp_pos();
+    ggml_tensor * inp_out_ids = build_inp_out_ids();
+    auto        * inp_attn    = build_attn_inp_kv_iswa();
+
+    ggml_tensor * h_norm = build_norm(h_embd, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
     cb(h_norm, "mtp_hnorm", il);
 
     ggml_tensor * e_norm = build_norm(tok_embd, layer.nextn.enorm, nullptr, LLM_NORM_RMS, il);
@@ -422,6 +506,7 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     ggml_tensor * concat = ggml_concat(ctx0, e_norm, h_norm, /*dim=*/ 0);
     cb(concat, "mtp_concat", il);
 
+<<<<<<< HEAD
     ggml_tensor * cur = build_lora_mm(layer.nextn.eh_proj, concat);
     cb(cur, "mtp_eh_proj", il);
 
@@ -502,6 +587,72 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cb(cur, "mtp_ffn_norm", il);
 
     // FFN: dense MLP or MoE (mirrors trunk path)
+=======
+    ggml_tensor * cur = build_lora_mm(layer.nextn.eh_proj, concat, layer.nextn.eh_proj_s);
+    cb(cur, "mtp_eh_proj", il);
+
+    const uint32_t n_head_l    = hparams.n_head(il);
+    const uint32_t n_head_kv_l = hparams.n_head_kv(il);
+
+    const float freq_base_l  = model.get_rope_freq_base(cparams, il);
+    const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
+
+    ggml_tensor * inpSA = cur;
+
+    {
+        ggml_tensor * attn_in = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
+        cb(attn_in, "mtp_attn_norm", il);
+
+        ggml_tensor * Qcur = build_lora_mm(layer.wq, attn_in);
+        ggml_tensor * Kcur = build_lora_mm(layer.wk, attn_in);
+        ggml_tensor * Vcur = build_lora_mm(layer.wv, attn_in);
+
+        Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head_k, n_head_l,     n_tokens);
+        Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head_k, n_head_kv_l, n_tokens);
+        Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head_v, n_head_kv_l, n_tokens);
+
+        if (layer.attn_q_norm) {
+            Qcur = build_norm(Qcur, layer.attn_q_norm, nullptr, LLM_NORM_RMS, il);
+        }
+        if (layer.attn_k_norm) {
+            Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
+        }
+
+        const bool is_swa = hparams.is_swa(il);
+        ggml_tensor * rope_factors = is_swa ? nullptr : model.get_rope_factors(cparams, il);
+        const int64_t n_rot_l = hparams.n_rot(il);
+        Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, rope_factors,
+                n_rot_l, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
+                ext_factor, attn_factor, beta_fast, beta_slow);
+        Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, rope_factors,
+                n_rot_l, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
+                ext_factor, attn_factor, beta_fast, beta_slow);
+
+        const float kq_scale = 1.0f / sqrtf(float(n_embd_head_k));
+        ggml_tensor * attn_out = build_attn(inp_attn,
+                nullptr, nullptr, nullptr,
+                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+
+        if (layer.wqkv_gate) {
+            ggml_tensor * gate = build_lora_mm(layer.wqkv_gate, attn_in);
+            gate = ggml_sigmoid(ctx0, gate);
+            ggml_tensor * attn_3d = ggml_reshape_3d(ctx0, attn_out, n_embd_head_v, n_head_l, n_tokens);
+            ggml_tensor * gate_3d = ggml_reshape_3d(ctx0, gate,       1,          n_head_l, n_tokens);
+            attn_3d = ggml_mul(ctx0, attn_3d, gate_3d);
+            attn_out = ggml_reshape_2d(ctx0, attn_3d, n_embd_head_v * n_head_l, n_tokens);
+        }
+
+        cur = build_lora_mm(layer.wo, attn_out, layer.wo_s);
+        cb(cur, "mtp_attn_out", il);
+    }
+
+    ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
+    cb(ffn_inp, "mtp_ffn_inp", il);
+
+    cur = build_norm(ffn_inp, layer.ffn_norm, nullptr, LLM_NORM_RMS, il);
+    cb(cur, "mtp_ffn_norm", il);
+
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
     if (layer.ffn_gate_inp == nullptr) {
         cur = build_ffn(cur,
                 layer.ffn_up,   layer.ffn_up_b,   nullptr,
@@ -509,7 +660,10 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
                 layer.ffn_down, layer.ffn_down_b, nullptr,
                 nullptr,
                 LLM_FFN_SILU, LLM_FFN_PAR, il);
+<<<<<<< HEAD
         cb(cur, "mtp_ffn_out", il);
+=======
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
     } else {
         ggml_tensor * moe_out = build_moe_ffn(cur,
                 layer.ffn_gate_inp,
@@ -522,7 +676,10 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
                 hparams.expert_weights_scale,
                 (llama_expert_gating_func_type) hparams.expert_gating_func,
                 il);
+<<<<<<< HEAD
         cb(moe_out, "mtp_ffn_moe_out", il);
+=======
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
 
         ggml_tensor * sh_out = build_ffn(cur,
                 layer.ffn_up_shexp,   nullptr, nullptr,
@@ -530,6 +687,7 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
                 layer.ffn_down_shexp, nullptr, nullptr,
                 nullptr,
                 LLM_FFN_SILU, LLM_FFN_PAR, il);
+<<<<<<< HEAD
         cb(sh_out, "mtp_ffn_shared_out", il);
 
         cur = ggml_add(ctx0, moe_out, sh_out);
@@ -546,14 +704,41 @@ llama_model_step35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
             ? layer.nextn.shared_head_norm
             : model.output_norm;
     GGML_ASSERT(head_norm_w && "STEP35 MTP: missing both nextn.shared_head_norm and output_norm");
+=======
+
+        cur = ggml_add(ctx0, moe_out, sh_out);
+    }
+    cur = ggml_add(ctx0, cur, ffn_inp);
+    cur = build_cvec(cur, il);
+    cb(cur, "mtp_l_out", il);
+
+    cb(cur, "h_pre_norm", -1);
+    res->t_h_pre_norm = cur;
+
+    if (inp_out_ids) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
+
+    ggml_tensor * head_norm_w = layer.nextn.shared_head_norm ? layer.nextn.shared_head_norm : model.output_norm;
+    GGML_ASSERT(head_norm_w && "STEP35 MTP missing shared head norm");
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
     cb(cur, "mtp_shared_head_norm", -1);
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
+<<<<<<< HEAD
     GGML_ASSERT(head_w && "STEP35 MTP: missing LM head (nextn.shared_head_head or model.output)");
     cur = build_lora_mm(head_w, cur);
     cb(cur, "result_output", -1);
 
     res->t_logits = cur;
+=======
+    ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
+    GGML_ASSERT(head_w && "STEP35 MTP missing shared LM head");
+    cur = build_lora_mm(head_w, cur, head_s);
+    cb(cur, "mtp_shared_head_output", -1);
+    res->t_logits = cur;
+
+>>>>>>> a22218750 (Snapshot ROCmFP4 DeepSeek feature layer)
     ggml_build_forward_expand(gf, cur);
 }

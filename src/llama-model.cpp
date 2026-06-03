@@ -174,6 +174,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_deepseek2(params);
         case LLM_ARCH_DEEPSEEK2OCR:
             return new llama_model_deepseek2ocr(params);
+        case LLM_ARCH_DEEPSEEK4:
+            return new llama_model_deepseek4(params);
         case LLM_ARCH_GLM_DSA:
             return new llama_model_glm_dsa(params);
         case LLM_ARCH_MISTRAL4:
@@ -801,6 +803,7 @@ static const char * llama_expert_gating_func_name(llama_expert_gating_func_type 
     switch (type) {
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX: return "softmax";
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID: return "sigmoid";
+        case LLAMA_EXPERT_GATING_FUNC_TYPE_SQRTSOFTPLUS: return "sqrtsoftplus";
         default:                                    return "unknown";
     }
 }
@@ -1591,6 +1594,10 @@ const float * llama_model::tensor_split() const {
     return params.tensor_split;
 }
 
+uint32_t llama_model::n_embd_pre_norm() const {
+    return arch == LLM_ARCH_DEEPSEEK4 ? hparams.n_embd * hparams.n_hc : hparams.n_embd;
+}
+
 uint32_t llama_model::n_gpu_layers() const {
     return params.n_gpu_layers >= 0 ? params.n_gpu_layers : hparams.n_layer + 1;
 }
@@ -1944,6 +1951,34 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
             {
                 res = nullptr;
             } break;
+        case LLM_ARCH_DEEPSEEK4:
+            {
+                llama_memory_i::layer_filter_cb filter_attn = [&](int32_t) {
+                    return true;
+                };
+                llama_memory_i::layer_filter_cb filter_recr = [&](int32_t il) {
+                    return hparams.attn_compress_ratio[il] != 0;
+                };
+
+                res = new llama_memory_hybrid_iswa(
+                        /* model             */ *this,
+                        /* attn_type_k       */ params.type_k,
+                        /* attn_type_v       */ params.type_v,
+                        /* attn_v_trans      */ !cparams.flash_attn,
+                        /* attn_swa_full     */ params.swa_full,
+                        /* attn_kv_size      */ cparams.n_ctx_seq,
+                        /* attn_n_ubatch     */ cparams.n_ubatch,
+                        /* attn_n_pad        */ 1,
+                        /* recurrent_type_r  */ GGML_TYPE_F32,
+                        /* recurrent_type_s  */ GGML_TYPE_F32,
+                        /* recurrent_rs_size */ std::max((uint32_t) 1, cparams.n_seq_max),
+                        /* n_seq_max         */ cparams.n_seq_max,
+                        /* n_rs_seq          */ cparams.n_rs_seq,
+                        /* offload           */ cparams.offload_kqv,
+                        /* unified           */ cparams.kv_unified,
+                        /* filter_attn       */ std::move(filter_attn),
+                        /* filter_recr       */ std::move(filter_recr));
+            } break;
         // Models that need standard caching should rely on recurrent/hybrid
         // checks
         default:
@@ -1953,6 +1988,10 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 const bool mtp_on_hybrid_qwen35 =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
                     (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE);
+                const bool step35_with_mtp =
+                    arch == LLM_ARCH_STEP35 && hparams.nextn_predict_layers > 0;
+                const bool mtp_on_step35 =
+                    params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && step35_with_mtp;
 
                 if (llm_arch_is_recurrent(arch)) {
                     res = new llama_memory_recurrent(
@@ -2046,6 +2085,12 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     if (mtp_on_hybrid_qwen35) {
                         const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
                         filter = [n_main](int32_t il) { return (uint32_t)il >= n_main; };
+                    }
+                    if (step35_with_mtp) {
+                        const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
+                        filter = [n_main, mtp_on_step35](int32_t il) {
+                            return mtp_on_step35 ? (uint32_t)il >= n_main : (uint32_t)il < n_main;
+                        };
                     }
 
                     if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
@@ -2259,6 +2304,8 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_DEEPSEEK:
         case LLM_ARCH_DEEPSEEK2:
         case LLM_ARCH_DEEPSEEK2OCR:
+        case LLM_ARCH_DEEPSEEK32:
+        case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_PLM:
         case LLM_ARCH_CHATGLM:
         case LLM_ARCH_GRANITE:

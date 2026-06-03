@@ -14279,6 +14279,14 @@ def parse_args() -> argparse.Namespace:
             "layer count to populate its GGUF."
         ),
     )
+    parser.add_argument(
+        "--deepseek4-max-layers", type=int, default=None,
+        help="DeepSeek V4 debug only: export only the first N transformer layers.",
+    )
+    parser.add_argument(
+        "--deepseek4-include-mtp", action="store_true",
+        help="DeepSeek V4 only: append the checkpoint's MTP prediction layer to the exported GGUF.",
+    )
 
     args = parser.parse_args()
     if not args.print_supported_models and args.model is None:
@@ -14441,6 +14449,8 @@ def main() -> None:
                                      target_model_dir=Path(args.target_model_dir) if args.target_model_dir else None,
                                      fuse_gate_up_exps=args.fuse_gate_up_exps,
                                      fp8_as_q8=args.fp8_as_q8,
+                                     deepseek4_max_layers=args.deepseek4_max_layers,
+                                     deepseek4_include_mtp=args.deepseek4_include_mtp,
                                      )
 
         if args.vocab_only:

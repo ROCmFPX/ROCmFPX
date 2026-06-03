@@ -106,6 +106,24 @@ protected:
 
 using llm_graph_input_ptr = std::unique_ptr<llm_graph_input_i>;
 
+// The MTP draft loop stages the predictor depth immediately before decode.
+// Step35 uses it to select one appended predictor block while keeping graph
+// cache reuse correct when the selected block changes.
+void llm_graph_set_mtp_speculative_step(int32_t step);
+int32_t llm_graph_get_mtp_speculative_step();
+
+class llm_graph_input_mtp_speculative_step : public llm_graph_input_i {
+public:
+    llm_graph_input_mtp_speculative_step(int32_t step) : step(step) {}
+    ~llm_graph_input_mtp_speculative_step() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    bool can_reuse(const llm_graph_params & params) override;
+
+    const int32_t step;
+};
+
 class llm_graph_input_embd : public llm_graph_input_i {
 public:
     llm_graph_input_embd(int64_t n_embd) : n_embd(n_embd) {}
@@ -892,7 +910,8 @@ struct llm_graph_context {
              ggml_tensor * gate_up_exps = nullptr,
              ggml_tensor * up_exps_s = nullptr,
              ggml_tensor * gate_exps_s = nullptr,
-             ggml_tensor * down_exps_s = nullptr) const;
+             ggml_tensor * down_exps_s = nullptr,
+             ggml_tensor * selected_experts_in = nullptr) const;
 
     ggml_tensor * build_moe_ffn(
              ggml_tensor * cur,
@@ -917,7 +936,8 @@ struct llm_graph_context {
              ggml_tensor * gate_up_exps_b = nullptr,
              ggml_tensor * up_exps_s = nullptr,
              ggml_tensor * gate_exps_s = nullptr,
-             ggml_tensor * down_exps_s = nullptr) const;
+             ggml_tensor * down_exps_s = nullptr,
+             ggml_tensor * selected_experts_in = nullptr) const;
 
     //
     // inputs

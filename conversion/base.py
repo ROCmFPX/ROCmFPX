@@ -20,6 +20,8 @@ from transformers import AutoConfig
 import numpy as np
 import torch
 
+TORCH_FLOAT8_E8M0FNU = getattr(torch, "float8_e8m0fnu", None)
+
 if TYPE_CHECKING:
     from torch import Tensor
 
@@ -122,7 +124,9 @@ class ModelBase:
                  sentence_transformers_dense_modules: bool = False,
                  target_model_dir: Path | None = None,
                  fuse_gate_up_exps: bool = False,
-                 fp8_as_q8: bool = False):
+                 fp8_as_q8: bool = False,
+                 deepseek4_max_layers: int | None = None,
+                 deepseek4_include_mtp: bool = False):
         if type(self) is ModelBase or \
                 type(self) is TextModel or \
                 type(self) is MmprojModel:
@@ -154,6 +158,8 @@ class ModelBase:
         self._is_mxfp4 = False
         self._fp8_as_q8 = fp8_as_q8
         self._fp8_dequantized: set[str] = set()
+        self.deepseek4_max_layers = deepseek4_max_layers
+        self.deepseek4_include_mtp = deepseek4_include_mtp
 
         # Apply heuristics to figure out typical tensor encoding based on first tensor's dtype
         # NOTE: can't use field "torch_dtype" in config.json, because some finetunes lie.
@@ -1285,6 +1291,8 @@ class TextModel(ModelBase):
                 self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
             elif score_func == "softmax":
                 self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SOFTMAX)
+            elif score_func == "sqrtsoftplus":
+                self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SQRTSOFTPLUS)
             else:
                 raise ValueError(f"Unsupported expert score gating function value: {score_func}")
             logger.info(f"gguf: expert score gating function = {score_func}")
@@ -1456,6 +1464,9 @@ class TextModel(ModelBase):
         if chkhsh == "0ef9807a4087ebef797fc749390439009c3b9eda9ad1a097abbe738f486c01e5":
             # ref: https://huggingface.co/meta-llama/Meta-Llama-3-8B
             res = "llama-bpe"
+        if chkhsh == "5841594bd6a8eeecd7207aeec6570831cc97ffaeba51e908bdaf560113177bae":
+            # ref: https://huggingface.co/stepfun-ai/Step-3.7-Flash
+            res = "deepseek-v3"
         if chkhsh == "049ecf7629871e3041641907f3de7c733e4dbfdc736f57d882ba0b0845599754":
             # ref: https://huggingface.co/deepseek-ai/deepseek-llm-7b-base
             res = "deepseek-llm"
@@ -2505,6 +2516,7 @@ class LazyTorchTensor(gguf.LazyBase):
         torch.bool: np.uint8,
         torch.float8_e4m3fn: np.uint8,
         torch.float8_e5m2: np.uint8,
+        **({TORCH_FLOAT8_E8M0FNU: np.uint8} if TORCH_FLOAT8_E8M0FNU is not None else {}),
     }
 
     # used for safetensors slices
@@ -2526,6 +2538,7 @@ class LazyTorchTensor(gguf.LazyBase):
         "BOOL": torch.bool,
         "F8_E4M3": torch.float8_e4m3fn,
         "F8_E5M2": torch.float8_e5m2,
+        **({"F8_E8M0": TORCH_FLOAT8_E8M0FNU, "F8_E8M0FNU": TORCH_FLOAT8_E8M0FNU} if TORCH_FLOAT8_E8M0FNU is not None else {}),
     }
 
     def numpy(self) -> gguf.LazyNumpyTensor:

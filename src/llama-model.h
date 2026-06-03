@@ -208,6 +208,21 @@ struct llama_layer_nextn {
     struct ggml_tensor * hnorm            = nullptr;
     struct ggml_tensor * shared_head_head = nullptr;
     struct ggml_tensor * shared_head_norm = nullptr;
+    struct ggml_tensor * eh_proj               = nullptr;
+    struct ggml_tensor * eh_proj_s             = nullptr;
+    struct ggml_tensor * eh_proj_in_s          = nullptr;
+    struct ggml_tensor * e_proj                = nullptr;
+    struct ggml_tensor * h_proj                = nullptr;
+    struct ggml_tensor * embed_tokens          = nullptr;
+    struct ggml_tensor * enorm                 = nullptr;
+    struct ggml_tensor * hnorm                 = nullptr;
+    struct ggml_tensor * shared_head_head      = nullptr;
+    struct ggml_tensor * shared_head_head_s    = nullptr;
+    struct ggml_tensor * shared_head_head_in_s = nullptr;
+    struct ggml_tensor * shared_head_norm      = nullptr;
+    struct ggml_tensor * hc_head_base          = nullptr;
+    struct ggml_tensor * hc_head_fn            = nullptr;
+    struct ggml_tensor * hc_head_scale         = nullptr;
 };
 
 struct llama_layer {
@@ -257,6 +272,15 @@ struct llama_layer {
     struct ggml_tensor * wv_enc    = nullptr;
     struct ggml_tensor * wo_enc    = nullptr;
     struct ggml_tensor * wqkv_gate = nullptr;
+    struct ggml_tensor * attn_kv   = nullptr;
+    struct ggml_tensor * attn_wo_a = nullptr;
+    struct ggml_tensor * attn_wo_b = nullptr;
+
+    // DeepSeek V4 KV compressors
+    struct ggml_tensor * attn_compressor_ape  = nullptr;
+    struct ggml_tensor * attn_compressor_kv   = nullptr;
+    struct ggml_tensor * attn_compressor_gate = nullptr;
+    struct ggml_tensor * attn_compressor_norm = nullptr;
 
     // relative position bias
     struct ggml_tensor * attn_rel_b       = nullptr;
@@ -322,6 +346,7 @@ struct llama_layer {
     struct ggml_tensor * ffn_up_b   = nullptr; // b3
     struct ggml_tensor * ffn_act    = nullptr;
     struct ggml_tensor * ffn_exp_probs_b = nullptr;
+    struct ggml_tensor * ffn_gate_tid2eid = nullptr;
 
     // mamba proj
     struct ggml_tensor * ssm_in  = nullptr;
@@ -483,6 +508,18 @@ struct llama_layer {
     struct ggml_tensor * indexer_proj     = nullptr;
     struct ggml_tensor * indexer_attn_k   = nullptr;
     struct ggml_tensor * indexer_attn_q_b = nullptr; // note: for lora a/b, not bias
+    struct ggml_tensor * indexer_compressor_ape  = nullptr;
+    struct ggml_tensor * indexer_compressor_kv   = nullptr;
+    struct ggml_tensor * indexer_compressor_gate = nullptr;
+    struct ggml_tensor * indexer_compressor_norm = nullptr;
+
+    // DeepSeek V4 hyper-connection weights
+    struct ggml_tensor * hc_attn_base  = nullptr;
+    struct ggml_tensor * hc_attn_fn    = nullptr;
+    struct ggml_tensor * hc_attn_scale = nullptr;
+    struct ggml_tensor * hc_ffn_base   = nullptr;
+    struct ggml_tensor * hc_ffn_fn     = nullptr;
+    struct ggml_tensor * hc_ffn_scale  = nullptr;
 
     // gemma4 layer output scale
     struct ggml_tensor * out_scale = nullptr;
@@ -534,6 +571,9 @@ struct llama_model {
     struct ggml_tensor * output_norm_b   = nullptr;
     struct ggml_tensor * output          = nullptr;
     struct ggml_tensor * output_b        = nullptr;
+    struct ggml_tensor * output_hc_base  = nullptr;
+    struct ggml_tensor * output_hc_fn    = nullptr;
+    struct ggml_tensor * output_hc_scale = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
     struct ggml_tensor * nextn_proj_pre  = nullptr;
     struct ggml_tensor * nextn_proj_post = nullptr;
@@ -607,6 +647,7 @@ struct llama_model {
     size_t n_tensors() const;
     size_t n_devices() const;
     const float * tensor_split() const;
+    uint32_t n_embd_pre_norm() const;
 
     uint32_t n_gpu_layers() const;
     llama_split_mode split_mode() const;

@@ -469,7 +469,7 @@ void llama_context::sched_reserve() {
 
     const int64_t t_start_us = ggml_time_us();
 
-    const uint32_t n_seqs = cparams.n_seq_max;
+    const uint32_t n_seqs = model.arch == LLM_ARCH_DEEPSEEK4 ? 1 : cparams.n_seq_max;
     const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
 
     const size_t max_nodes = this->graph_max_nodes(n_tokens);
@@ -657,6 +657,26 @@ void llama_context::sched_reserve() {
 
         n_splits_pp = ggml_backend_sched_get_n_splits(sched.get());
         n_nodes_pp  = ggml_graph_n_nodes(gf);
+    }
+
+    // DeepSeek V4 resumed-prompt chunks use a larger compressed-attention graph
+    // than the position-zero prefill graph.
+    if (model.arch == LLM_ARCH_DEEPSEEK4 && n_tokens > 1) {
+        const llama_pos max_reserve_pos0 =
+            cparams.n_ctx > n_tokens ? cparams.n_ctx - n_tokens : 0;
+        const llama_pos reserve_pos0 = std::min<llama_pos>(
+                max_reserve_pos0,
+                std::max<uint32_t>(cparams.n_batch, 8u*n_tokens));
+        if (reserve_pos0 > 0) {
+            auto * gf = graph_reserve(n_tokens, n_seqs, n_tokens, mctx.get(),
+                    model.hparams.no_alloc, nullptr, reserve_pos0);
+            if (!gf) {
+                throw std::runtime_error("failed to allocate DeepSeek V4 resumed pp buffers");
+            }
+
+            n_splits_pp = std::max(n_splits_pp, ggml_backend_sched_get_n_splits(sched.get()));
+            n_nodes_pp  = std::max(n_nodes_pp,  ggml_graph_n_nodes(gf));
+        }
     }
 
     // reserve with tg (token generation) graph to get the number of splits and nodes
@@ -963,6 +983,7 @@ float * llama_context::get_embeddings_pre_norm_ith(int32_t i) {
         }
 
         const uint32_t n_embd = model.hparams.n_embd_out();
+        const uint32_t n_embd = model.n_embd_pre_norm();
 
         if (!cparams.embeddings_pre_norm_masked) {
             // unmasked: pre-norm rows are stored densely, indexed by raw token position.
@@ -1436,6 +1457,9 @@ int llama_context::encode(const llama_batch & batch_inp) {
 
     // eagle3/DFlash: features as encoder input, and non-draft paths fall back to model's input dim
     const int64_t n_embd = hparams.n_embd_inp();
+    const int64_t n_embd  = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP
+        ? model.n_embd_pre_norm()
+        : hparams.n_embd_inp();
     const int64_t n_vocab = model.vocab.n_tokens();
 
     // note: during encode, we always pass the full sequence starting from pos = 0
@@ -1571,6 +1595,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
         GGML_ASSERT(backend_h != nullptr);
 
         const uint32_t n_embd = hparams.n_embd_out();
+        const uint32_t n_embd = model.n_embd_pre_norm();
         GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_pre_norm.size);
         ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm.data, 0, n_tokens*n_embd*sizeof(float));
     }
@@ -1745,7 +1770,9 @@ int llama_context::decode(const llama_batch & batch_inp) {
     const auto & hparams = model.hparams;
 
     const int64_t n_vocab = vocab.n_tokens();
-    const int64_t n_embd  = hparams.n_embd_inp();
+    const int64_t n_embd  = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP
+        ? model.n_embd_pre_norm()
+        : hparams.n_embd_inp();
 
     // when computing embeddings, all tokens are output
     const bool output_all   = cparams.embeddings;
@@ -2038,6 +2065,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 GGML_ASSERT(backend_h != nullptr);
 
                 const uint32_t n_embd = hparams.n_embd_out();
+                const uint32_t n_embd = model.n_embd_pre_norm();
                 float * embd_pre_norm_out = embd_pre_norm.data + offset*n_embd;
 
                 GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_pre_norm.size);
@@ -2130,7 +2158,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const auto n_batch    = cparams.n_batch;
     const auto n_vocab    = vocab.n_tokens();
-    const auto n_embd     = hparams.n_embd;
+    const auto n_embd_pre_norm = model.n_embd_pre_norm();
     const auto n_embd_out = hparams.n_embd_out();
 
     bool has_logits        = true;
@@ -2159,11 +2187,12 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
             embd_layer_inp_float_count += (size_t) n_embd * n_batch;
         }
     }
+    embd_pre_norm.size = has_embd_pre_norm ? n_embd_pre_norm*n_outputs_max : 0;
 
     if (has_embd_pre_norm && !cparams.embeddings_pre_norm_masked) {
         // unmasked: pre-norm row exists for every token in the batch, not just
         // those flagged via batch.logits[i] -> size by token count instead.
-        embd_pre_norm.size = (size_t) n_embd * n_batch;
+        embd_pre_norm.size = (size_t) n_embd_pre_norm * n_batch;
     }
 
     // Allocate backend sampling output buffers if there are backend samplers configured.
@@ -2316,6 +2345,7 @@ void llama_context::extract_layer_inputs(const llm_graph_result * res, size_t to
 void llama_context::output_reorder() {
     const uint64_t n_vocab = model.vocab.n_tokens();
     const uint64_t n_embd  = model.hparams.n_embd;
+    const uint64_t n_embd_pre_norm = model.n_embd_pre_norm();
 
     for (size_t s = 0; s < output_swaps.size(); ++s) {
         const uint64_t i0 = output_swaps[s].i0;
@@ -2334,8 +2364,8 @@ void llama_context::output_reorder() {
         }
 
         if (embd_pre_norm.size > 0) {
-            for (uint64_t k = 0; k < n_embd; k++) {
-                std::swap(embd_pre_norm.data[i0*n_embd + k], embd_pre_norm.data[i1*n_embd + k]);
+            for (uint64_t k = 0; k < n_embd_pre_norm; k++) {
+                std::swap(embd_pre_norm.data[i0*n_embd_pre_norm + k], embd_pre_norm.data[i1*n_embd_pre_norm + k]);
             }
         }
 
@@ -2388,6 +2418,9 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     if (model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_KIMI_LINEAR || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE) {
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
+    if (model.arch == LLM_ARCH_DEEPSEEK4) {
+        return std::max<uint32_t>(524288u, n_tokens * 192 + 64u * model.n_tensors());
+    }
     uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
     for (const auto & lora : model.loras) {
         res += lora->get_n_nodes();
@@ -2400,7 +2433,7 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
 }
 
 ggml_cgraph * llama_context::graph_reserve(
-        uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
+        uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes, llama_pos pos0) {
     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
     GGML_ASSERT(n_outputs >= 1);
 
@@ -2424,6 +2457,14 @@ ggml_cgraph * llama_context::graph_reserve(
 
     llama_batch_allocr balloc(model.hparams.n_pos_per_embd());
     llama_ubatch ubatch = balloc.ubatch_reserve(n_tokens/n_seqs, n_seqs);
+    if (pos0 != 0 && ubatch.pos != nullptr) {
+        for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+            ubatch.pos[i*ubatch.n_pos] = pos0 + i;
+            for (uint32_t j = 1; j < ubatch.n_pos; ++j) {
+                ubatch.pos[i*ubatch.n_pos + j] = 0;
+            }
+        }
+    }
 
     // set one output token per sequence in order to activate all backend samplers
     std::vector<llama_seq_id> seq_ids(n_seqs);
@@ -3792,6 +3833,8 @@ void llama_set_mtp_source(llama_context * ctx, llama_context * src) {
 
 void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool value) {
     ctx->set_embeddings_layer_inp(lid, value);
+int32_t llama_model_n_embd_pre_norm(const llama_model * model) {
+    return model->n_embd_pre_norm();
 }
 
 float * llama_get_embeddings_pre_norm(llama_context * ctx) {
