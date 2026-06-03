@@ -23,6 +23,7 @@
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/diagmask.cuh"
 #include "ggml-cuda/diag.cuh"
+#include "ggml-cuda/dsv4.cuh"
 #include "ggml-cuda/fattn.cuh"
 #include "ggml-cuda/getrows.cuh"
 #include "ggml-cuda/im2col.cuh"
@@ -3120,6 +3121,21 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_ROPE_BACK:
             ggml_cuda_op_rope_back(ctx, dst);
             break;
+        case GGML_OP_DSV4_HC_SPLIT_SINKHORN:
+            ggml_cuda_op_dsv4_hc_split_sinkhorn(ctx, dst);
+            break;
+        case GGML_OP_DSV4_HC_WEIGHTED_SUM:
+            ggml_cuda_op_dsv4_hc_weighted_sum(ctx, dst);
+            break;
+        case GGML_OP_DSV4_HC_EXPAND:
+            ggml_cuda_op_dsv4_hc_expand(ctx, dst);
+            break;
+        case GGML_OP_DSV4_FP8_KV_QUANTIZE:
+            ggml_cuda_op_dsv4_fp8_kv_quantize(ctx, dst);
+            break;
+        case GGML_OP_DSV4_ROPE_TAIL:
+            ggml_cuda_op_dsv4_rope_tail(ctx, dst);
+            break;
         case GGML_OP_ROLL:
             ggml_cuda_op_roll(ctx, dst);
             break;
@@ -5582,6 +5598,57 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_ROPE:
         case GGML_OP_ROPE_BACK: {
             return op->src[0]->nb[0] == ggml_type_size(op->src[0]->type) && ggml_is_contiguous_2(op->src[0]);
+        }
+        case GGML_OP_DSV4_HC_SPLIT_SINKHORN: {
+            const ggml_tensor * mixes = op->src[0];
+            const ggml_tensor * scale = op->src[1];
+            const ggml_tensor * base  = op->src[2];
+            const int n_hc = ggml_get_op_params_i32(op, 0);
+            return mixes->type == GGML_TYPE_F32 && scale->type == GGML_TYPE_F32 && base->type == GGML_TYPE_F32 &&
+                   op->type == GGML_TYPE_F32 && n_hc > 0 && n_hc <= 16 &&
+                   mixes->nb[0] == ggml_type_size(mixes->type) && op->nb[0] == ggml_type_size(op->type) &&
+                   ggml_is_contiguous(scale) && ggml_is_contiguous(base);
+        }
+        case GGML_OP_DSV4_HC_WEIGHTED_SUM: {
+            const ggml_tensor * x       = op->src[0];
+            const ggml_tensor * weights = op->src[1];
+            return x->type == GGML_TYPE_F32 && weights->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
+                   x->nb[0] == ggml_type_size(x->type) && weights->nb[0] == ggml_type_size(weights->type) &&
+                   op->nb[0] == ggml_type_size(op->type) && x->ne[1] <= 16;
+        }
+        case GGML_OP_DSV4_HC_EXPAND: {
+            const ggml_tensor * block_out = op->src[0];
+            const ggml_tensor * residual  = op->src[1];
+            const ggml_tensor * post      = op->src[2];
+            const ggml_tensor * comb      = op->src[3];
+            return block_out->type == GGML_TYPE_F32 && residual->type == GGML_TYPE_F32 &&
+                   post->type == GGML_TYPE_F32 && comb->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
+                   block_out->nb[0] == ggml_type_size(block_out->type) &&
+                   residual->nb[0] == ggml_type_size(residual->type) &&
+                   post->nb[0] == ggml_type_size(post->type) &&
+                   comb->nb[0] == ggml_type_size(comb->type) &&
+                   op->nb[0] == ggml_type_size(op->type) && op->ne[1] <= 16;
+        }
+        case GGML_OP_DSV4_FP8_KV_QUANTIZE: {
+            const ggml_tensor * src0 = op->src[0];
+            const int64_t n_rot = ggml_get_op_params_i32(op, 0);
+            const int64_t n_nope = src0->ne[0] - n_rot;
+            return src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
+                   src0->nb[0] == ggml_type_size(src0->type) && op->nb[0] == ggml_type_size(op->type) &&
+                   n_rot >= 0 && n_nope > 0 && n_nope % 64 == 0;
+        }
+        case GGML_OP_DSV4_ROPE_TAIL: {
+            const ggml_tensor * src0 = op->src[0];
+            const ggml_tensor * pos  = op->src[1];
+            const ggml_tensor * freq = op->src[2];
+            const int n_dims = ((int32_t *) op->op_params)[0];
+            const int mode   = ((int32_t *) op->op_params)[1];
+            return (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16) &&
+                   op->type == src0->type && pos->type == GGML_TYPE_I32 &&
+                   (freq == nullptr || freq->type == GGML_TYPE_F32) &&
+                   src0->nb[0] == ggml_type_size(src0->type) && op->nb[0] == ggml_type_size(op->type) &&
+                   n_dims > 0 && n_dims <= src0->ne[0] && n_dims % 2 == 0 &&
+                   (mode == GGML_ROPE_TYPE_NORMAL || mode == GGML_ROPE_TYPE_NEOX);
         }
         case GGML_OP_IM2COL:
         case GGML_OP_IM2COL_3D:

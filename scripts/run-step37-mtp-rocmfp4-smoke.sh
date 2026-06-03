@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-BUILD_DIR="${BUILD_DIR:-$ROOT/build-strix-rocmfp4-upstream-integration}"
+BUILD_DIR="${BUILD_DIR:-$ROOT/build-rocmfp4-deepseek-clean-upstream}"
 BIN="${BIN:-$BUILD_DIR/bin/llama-cli}"
 MODEL="${MODEL:-/home/caf/strix-fp4/models/Step-3.7-Flash-MTP-GGUF/Step-3.7-flash-BF16-MTP-to-ROCmFP4-STRIX_LEAN.gguf}"
 BACKEND="${BACKEND:-ROCm0}"

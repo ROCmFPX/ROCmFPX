@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-BUILD_DIR="${BUILD_DIR:-$ROOT/build-strix-rocmfp4-upstream-integration}"
+BUILD_DIR="${BUILD_DIR:-$ROOT/build-rocmfp4-deepseek-clean-upstream}"
 CONVERT_SESSION="${CONVERT_SESSION:-step37-mtp-convert}"
 SOURCE="${SOURCE:-/mnt/ai-models/rocmfp4-quants/Step-3.7-flash-BF16-MTP.gguf}"
 MODEL_DIR="${MODEL_DIR:-/home/caf/strix-fp4/models/Step-3.7-Flash-MTP-GGUF}"
