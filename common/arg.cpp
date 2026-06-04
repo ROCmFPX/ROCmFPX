@@ -345,7 +345,8 @@ struct handle_model_result {
 static handle_model_result common_params_handle_model(struct common_params_model & model,
                                                       const std::string          & bearer_token,
                                                       bool                         offline,
-                                                      bool                         search_mtp = false) {
+                                                      bool                         search_mtp = false,
+                                                      bool                         search_mmproj = true) {
     handle_model_result result;
 
     if (!model.docker_repo.empty()) {
@@ -360,7 +361,7 @@ static handle_model_result common_params_handle_model(struct common_params_model
         common_download_opts opts;
         opts.bearer_token = bearer_token;
         opts.offline = offline;
-        auto download_result = common_download_model(model, opts, true, search_mtp);
+        auto download_result = common_download_model(model, opts, search_mmproj, search_mtp);
 
         if (download_result.model_path.empty()) {
             throw std::runtime_error("failed to download model from Hugging Face");
@@ -461,7 +462,7 @@ void common_params_handle_models(common_params & params, llama_example curr_ex) 
     // only download mmproj if the current example is using it
     for (const auto & ex : mmproj_examples) {
         if (curr_ex == ex) {
-            common_params_handle_model(params.mmproj,    params.hf_token, params.offline);
+            common_params_handle_model(params.mmproj, params.hf_token, params.offline, false, false);
             break;
         }
     }
@@ -473,8 +474,10 @@ void common_params_handle_models(common_params & params, llama_example curr_ex) 
         params.speculative.draft.mparams.url.empty()) {
         params.speculative.draft.mparams.path = res.mtp.path;
     }
-    common_params_handle_model(params.speculative.draft.mparams, params.hf_token, params.offline);
-    common_params_handle_model(params.vocoder.model,             params.hf_token, params.offline);
+    // sub-models (draft, mmproj, vocoder) are explicitly specified by the user,
+    // so we should not auto-discover mtp/mmproj siblings for them
+    common_params_handle_model(params.speculative.draft.mparams, params.hf_token, params.offline, false, false);
+    common_params_handle_model(params.vocoder.model,             params.hf_token, params.offline, false, false);
 }
 
 static bool common_params_parse_ex(int argc, char ** argv, common_params_context & ctx_arg) {
