@@ -1008,7 +1008,7 @@ Hardware note:
 - rocWMMA FlashAttention is intentionally opt-in via
   `GGML_HIP_ROCWMMA_FATTN=ON scripts/build-strix-rocmfp4-mtp.sh`.
   It currently compiles with the local rocWMMA headers in
-  `/home/caf/strix-fp4/third_party/rocWMMA`, but the Strix Halo benchmark
+  `/path/to/third_party/rocWMMA`, but the Strix Halo benchmark
   regressed sustained Qwen MTP decode (`23.3 tok/s` vs the promoted
   `26.2 tok/s` default HIP FlashAttention path), so the default build keeps it
   disabled. A follow-up on the 35B A3B ROCmFP4 MTP guard measured only

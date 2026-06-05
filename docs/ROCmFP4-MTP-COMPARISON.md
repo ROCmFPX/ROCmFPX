@@ -12,12 +12,12 @@ This compares Qwen3.6 27B MTP against Qwen3.6 27B MTP. It does not compare Qwen 
 
 The same merged binary was used for both model files:
 
-`/home/caf/strix-fp4/llama.cpp-mtp-rocmfp4/build-strix-rocmfp4/bin/llama-cli`
+`/path/to/llama.cpp-mtp-rocmfp4/build-strix-rocmfp4/bin/llama-cli`
 
 Models:
 
-- ROCmFP4: `/home/caf/strix-fp4/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf`
-- Baseline Q5: `/home/caf/llm-builds/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf`
+- ROCmFP4: `/path/to/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf`
+- Baseline Q5: `/path/to/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf`
 
 Shared settings:
 
@@ -74,8 +74,8 @@ After each run, `rocm-smi --showpids` showed no KFD processes running, so VRAM w
 The Jackrong Qwopus3.6 27B v2 MTP BF16 GGUF was downloaded and converted to
 ROCmFP4 STRIX_LEAN on 2026-05-25.
 
-- Source BF16: `/home/caf/strix-fp4/models/Qwopus3.6-27B-v2-MTP-GGUF/BF16/Qwopus3.6-27B-v2-MTP-BF16.gguf`
-- ROCmFP4: `/home/caf/strix-fp4/models/Qwopus3.6-27B-v2-MTP-GGUF/Qwopus3.6-27B-v2-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf`
+- Source BF16: `/path/to/models/Qwopus3.6-27B-v2-MTP-GGUF/BF16/Qwopus3.6-27B-v2-MTP-BF16.gguf`
+- ROCmFP4: `/path/to/models/Qwopus3.6-27B-v2-MTP-GGUF/Qwopus3.6-27B-v2-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf`
 - Source size: `52115.19 MiB`, `16.00 BPW`
 - ROCmFP4 size: `14120.35 MiB`, `4.34 BPW`
 - Native context metadata: `262144`
