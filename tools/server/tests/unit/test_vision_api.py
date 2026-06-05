@@ -127,6 +127,46 @@ def test_vision_completion(prompt, image_data, success, re_content):
         assert res.status_code != 200
 
 
+def test_vision_slot_erase():
+    global server
+    server.slot_save_path = "./tmp"
+    server.start()
+
+    prompt = "What is this: <__media__>\n"
+    image_data = get_img_url("IMG_BASE64_0")
+
+    res = server.make_request("POST", "/completions", data={
+        "temperature": 0.0,
+        "top_k": 1,
+        "id_slot": 0,
+        "cache_prompt": True,
+        "prompt": {
+            JSON_PROMPT_STRING_KEY: prompt,
+            JSON_MULTIMODAL_KEY: [ image_data ],
+        },
+    })
+    assert res.status_code == 200
+    assert match_regex("(cat)+", res.body["content"])
+
+    res = server.make_request("POST", "/slots/0?action=erase")
+    assert res.status_code == 200
+    assert res.body["id_slot"] == 0
+    assert res.body["n_erased"] > 0
+
+    res = server.make_request("POST", "/completions", data={
+        "temperature": 0.0,
+        "top_k": 1,
+        "id_slot": 0,
+        "cache_prompt": True,
+        "prompt": {
+            JSON_PROMPT_STRING_KEY: prompt,
+            JSON_MULTIMODAL_KEY: [ image_data ],
+        },
+    })
+    assert res.status_code == 200
+    assert match_regex("(cat)+", res.body["content"])
+
+
 @pytest.mark.parametrize(
     "prompt, image_data, success",
     [
