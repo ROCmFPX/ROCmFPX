@@ -19,6 +19,8 @@ add_library(mtmd
             models/conformer.cpp
             models/dotsocr.cpp
             models/gemma4a.cpp
+            models/gemma4ua.cpp
+            models/gemma4uv.cpp
             models/gemma4v.cpp
             models/glm4v.cpp
             models/granite-speech.cpp
