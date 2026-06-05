@@ -69,6 +69,107 @@ On these controlled 262k-context runs with the same merged binary, ROCmFP4 was f
 
 After each run, `rocm-smi --showpids` showed no KFD processes running, so VRAM was released.
 
+## Qwopus3.6 27B v2 MTP ROCmFP4 Native 262k
+
+The Jackrong Qwopus3.6 27B v2 MTP BF16 GGUF was downloaded and converted to
+ROCmFP4 STRIX_LEAN on 2026-05-25.
+
+- Source BF16: `/home/caf/strix-fp4/models/Qwopus3.6-27B-v2-MTP-GGUF/BF16/Qwopus3.6-27B-v2-MTP-BF16.gguf`
+- ROCmFP4: `/home/caf/strix-fp4/models/Qwopus3.6-27B-v2-MTP-GGUF/Qwopus3.6-27B-v2-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf`
+- Source size: `52115.19 MiB`, `16.00 BPW`
+- ROCmFP4 size: `14120.35 MiB`, `4.34 BPW`
+- Native context metadata: `262144`
+- MTP metadata: `nextn_predict_layers = 1`
+
+Winning first-pass 262k profile:
+
+```bash
+-dev ROCm0 --spec-draft-device ROCm0 \
+-ngl 999 -c 262144 -b 512 -ub 512 -fa on \
+-ctk q4_0 -ctv q4_0 --no-mmap --jinja -cnv -st \
+--reasoning on \
+--spec-type draft-mtp \
+--spec-draft-ngl all \
+--spec-draft-type-k q4_0 \
+--spec-draft-type-v q4_0 \
+--spec-draft-n-max 4 \
+--spec-draft-n-min 0 \
+--spec-draft-p-min 0.0 \
+--spec-draft-p-split 0.10 \
+--seed 123 --temp 0.2 --top-k 20 --top-p 0.9 \
+--no-display-prompt -n 160
+```
+
+Initial sweep results:
+
+| Model | Backend | Context | KV cache | Draft KV | `n-max` | `p-min` | Reasoning | Tools | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---|
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | off | off in CLI guard | 33.8 | 24.2 | stable |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.0 | 29.7 | first-pass best sustained |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 34.9 | 29.6 | retest after rejected sampler tweak was reverted |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 34.9 | 29.9 | `-b 1024 -ub 512`; promoted Qwopus sustained profile |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.0 | 29.8 | `-b 1024 -ub 512`; post MTP embedding-fetch cleanup retest |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.0 | 29.9 | `-b 2048 -ub 512`; tied, heavier batch |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 34.3 | 29.8 | `-b 1024 -ub 1024`; tied/slower |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.0 | 29.8 | `-b 1280 -ub 512`; tied/slower |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 34.9 | 29.9 | `-b 1536 -ub 512`; tied, no promotion over smaller batch |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.0 | 29.8 | `-b 1536 -ub 768`; tied/slower |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.05 | on | off in CLI guard | 35.0 | 29.9 | `-b 1024 -ub 512`; light p-min tied, no promotion |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.10 | on | off in CLI guard | 35.0 | 29.9 | `-b 1024 -ub 512`; light p-min tied, no promotion |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.0 | 29.9 | `--backend-sampling`; sustained tied but prompt throughput fell, no promotion |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.1 | 29.9 | `-t 12 -tb 32 --spec-draft-threads 12 --spec-draft-threads-batch 32`; tied |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.1 | 29.9 | `-t 24 -tb 32 --spec-draft-threads 24 --spec-draft-threads-batch 32`; tied |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | Vulkan0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 40.0 | 27.7 | Vulkan verified; better burst, lower sustained than ROCm0 |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | Vulkan0 | 262144 | q4 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 39.9 | 27.7 | `-b 1024 -ub 512`; same sustained as Vulkan `512/512` |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | Vulkan0 | 262144 | q4 K/V | q4 K/V | 3 | 0.00 | on | off in CLI guard | 34.2 | 27.1 | slower than Vulkan n-max 4 |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | Vulkan0 | 262144 | q4 K/V | q4 K/V | 5 | 0.00 | on | off in CLI guard | 36.8 | 26.3 | burst-only, sustained regression |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | Vulkan0 | 262144 | q8 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 36.5 | 25.7 | rejected; q8 main KV regressed |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q8 K/V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 36.6 | 26.0 | rejected; q8 main KV regressed |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q8 K/V | 4 | 0.00 | on | off in CLI guard | 35.1 | 29.8 | draft-only q8 tied/slower |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q8 K/V | q8 K/V | 4 | 0.00 | on | off in CLI guard | 36.6 | 26.0 | faster burst, sustained regression |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q8 K, q4 V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 35.7 | 22.3 | K-only q8 sustained regression |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K, q8 V | q4 K/V | 4 | 0.00 | on | off in CLI guard | 34.2 | 24.7 | V-only q8 sustained regression |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q8 K/V | q4 K/V | 3 | 0.25 | on | off in CLI guard | 31.9 | 24.5 | rejected; q8 main KV regressed |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 1 | 0.00 | on | off in CLI guard | 21.9 | 19.9 | too conservative |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 2 | 0.00 | on | off in CLI guard | 28.4 | 26.6 | slower sustained |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 3 | 0.00 | on | off in CLI guard | 33.8 | 27.3 | slower sustained |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 3 | 0.25 | on | off in CLI guard | 32.8 | 26.5 | slower sustained |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 5 | 0.00 | on | off in CLI guard | 35.4 | 27.7 | burst-only, slower sustained |
+| Qwopus3.6-27B-v2-MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | q4 K/V | q4 K/V | 4 | 0.25 | on | off in CLI guard | 34.6 | 27.9 | slower sustained |
+
+This model behaves more like the dense 27B path than the 35B A3B MoE path:
+q4 main KV and q4 draft KV are currently best, while the 35B q8-main-KV profile
+regresses sustained decode here.
+
+The MTP helper's top-k probability accumulator was briefly narrowed from
+`double` to `float` because the stored probabilities are floats. Dense 27B still
+passed at `34.0` / `28.1 tok/s`, but the 35B A3B short guard repeated below
+floor at `84.1` then `93.4 tok/s`. Restoring the `double` accumulator recovered
+the 35B short guard to `104.4 tok/s`, so the float accumulator is rejected.
+
+A later host-path cleanup moved `llama_get_embeddings_pre_norm_ith()` in the
+MTP draft loop so it only runs when another draft token will actually be
+queued. This avoids fetching a pre-norm embedding pointer for p-min rejects and
+for the final accepted draft token at `n-max`. It built cleanly and passed the
+focused guards: dense 27B `34.0` / `28.1 tok/s`, 35B A3B `104.4` /
+`90.1 tok/s`, and Qwopus best-profile ROCm0 `35.0` / `29.8 tok/s`. The default
+serial all-regression gate also passed after the cleanup, ending with dense
+27B `34.0` / `28.1 tok/s` and no KFD PIDs running.
+
+A follow-up attempt to skip `common_sampler_accept()` for the final `n-max`
+draft token was rejected. It passed the 35B A3B short check at `104.5 tok/s`
+but dropped the sustained guard to `81.1 tok/s`, below the `85.0 tok/s` floor.
+After reverting only that sampler-accept change and confirming no KFD PIDs were
+running, the same 35B guard recovered to `104.3` / `90.0 tok/s`.
+
+A single-sequence MTP `draft()` fast path was also tested and rejected on
+2026-05-25. It removed the active-sequence bookkeeping loop for `n_seq == 1`
+and passed the dense 27B guard at `33.7` / `28.0 tok/s`, but the 35B A3B
+sustained guard collapsed to `25.7 tok/s` despite a passing `103.1 tok/s`
+short check. Reverting that path restored the 35B A3B guard to `104.3` /
+`90.3 tok/s`, so the shared multi-sequence draft loop remains the promoted
+implementation.
+
 ## Qwen3.6 35B A3B ROCmFP4 Native 262k
 
 The 35B A3B MTP ROCmFP4 model was also checked on ROCm0 at native `262144`
@@ -142,9 +243,26 @@ candidate measured `104.6 tok/s` short and `90.2 tok/s` sustained on the
 `28.1 tok/s` sustained. Guard floors are `100.0` and `85.0 tok/s` for 35B,
 and `30.0` / `25.5 tok/s` for dense 27B.
 
-Follow-up acceptance-threshold checks on the q4-KV `n-max 2` profile did not
-produce a clear sustained improvement, so the promoted server/guard defaults
-stay at `n-min 0`, `p-min 0.0`, and `p-split 0.10`:
+Current KV and draft-depth isolation on the promoted reasoning-on 35B profile:
+
+| Setting | Short decode tok/s | Sustained decode tok/s | Result |
+|---|---:|---:|---|
+| `n-max 3`, q8 main KV, q4 draft KV, `p-min 0.25` | 104.3 | 90.1 | promoted sustained profile |
+| `n-max 3`, q8 main KV, q8 draft KV, `p-min 0.25` | 104.5 | 90.0 | tied, heavier draft KV |
+| `n-max 3`, q4 main KV, q8 draft KV, `p-min 0.25` | 104.3 | 82.2 | draft-only q8 is not enough |
+| `n-max 3`, q8 K only, q4 V/draft KV, `p-min 0.25` | 89.9 | 70.5 | rejected |
+| `n-max 3`, q4 K, q8 V only, q4 draft KV, `p-min 0.25` | 90.2 | 74.6 | rejected |
+| `n-max 2`, q8 main KV, q4 draft KV, `p-min 0.25` | 93.4 | 84.8 | slower sustained |
+| `n-max 4`, q8 main KV, q4 draft KV, `p-min 0.25` | 109.2 | 80.2 | burst-only, sustained regression |
+| `n-max 3`, q8 main KV, q4 draft KV, `p-min 0.0` | 104.4 | 89.4 | close, not promoted |
+
+The updated default guard pass after promoting this shape measured `103.3 tok/s`
+short and `90.1 tok/s` sustained, clearing the `100.0` / `85.0 tok/s` floors.
+
+Earlier acceptance-threshold checks on the q4-KV `n-max 2` profile did not
+produce a clear sustained improvement. Those checks are retained as background;
+the q4-KV profile was later superseded by the q8-main-KV `n-max 3`,
+`p-min 0.25` profile above:
 
 | Setting | Short decode tok/s | Sustained decode tok/s | Result |
 |---|---:|---:|---|
@@ -337,6 +455,45 @@ remains opt-in compatibility smoke only via `INCLUDE_DEEPSEEK_SMOKE=1`.
 | DeepSeek ROCmFP4 decode | not run in the promoted gate; optional compatibility smoke only with `INCLUDE_DEEPSEEK_SMOKE=1` |
 | Qwen3.6 27B MTP ROCmFP4 decode | passed; `33.6 tok/s` short and `28.0 tok/s` sustained |
 | ROCm cleanup | passed; no KFD PIDs running |
+
+### 2026-05-25 MTP Embedding Fetch Cleanup Gate
+
+The current promoted tree passed `scripts/check-rocmfp4-all-regression.sh`
+after the MTP draft loop was changed to fetch the draft pre-norm embedding row
+only after the p-min and final `n-max` checks confirm another token will be
+queued. This keeps sampler behavior unchanged while avoiding unused embedding
+row lookups on rejected/final draft tokens.
+
+| Guard | Result |
+|---|---|
+| CPU quant/dequant/vec-dot | passed; dual quant `4038.91`, FAST quant `3702.28`, dual dequant `33.66`, FAST dequant `33.19`, dual vec-dot `29.91`, FAST vec-dot `27.04`, dual imatrix `5704.54`, FAST imatrix `4698.38` cycles / 32 values |
+| Vulkan runtime `MUL_MAT` | passed; FAST `53.06` / `72.10` / `104.52` / `166.73` us and dual-scale `64.76` / `78.84` / `118.74` / `192.59` us for `n=1/2/4/8` |
+| Vulkan CPY | passed; F32/F16/BF16 source-to-dual `16476.68` / `3739.62` / `3909.14` us, dual-to-F32 `539.79` us, F32/F16/BF16 source-to-FAST `13867.67` / `3271.77` / `3394.37` us, FAST-to-F32 `539.53` us |
+| ROCm runtime `MUL_MAT` | passed; FAST `45.66` / `57.81` / `88.27` / `155.05` us and dual-scale `49.16` / `51.58` / `83.34` / `151.42` us for `n=1/2/4/8` |
+| ROCm FlashAttention | passed; 64d dual-scale `70.86` us, 64d FAST `66.51` us, Qwen-style 128d dual-scale `189.45` us, Qwen-style 128d FAST `172.73` us |
+| ROCm CPY | passed; F32/F16/BF16 source-to-dual `1106.89` / `1008.56` / `1006.60` us, dual-to-F32 `182.27` us, F32/F16/BF16 source-to-FAST `1050.49` / `958.98` / `950.50` us, FAST-to-F32 `171.15` us |
+| Qwen3.6 27B MTP ROCmFP4 decode | passed; `33.9 tok/s` short and `27.9 tok/s` sustained |
+| ROCm cleanup | passed; no KFD PIDs running |
+
+### 2026-05-25 Vulkan Source-To-ROCmFP4 Scale-Pruning Gate
+
+The Vulkan `copy_to_quant.comp` ROCmFP4 scale search now stops scanning lower
+scale candidates once clipping the block max alone cannot beat the current best
+error. This mirrors the CPU/HIP exact-search bound; it does not change the
+candidate set or replace the exhaustive MSE choice with a cheaper max-abs
+shortcut. The Vulkan CPY guard script was also changed to stream the perf phase
+through `tee` so long RADV runs keep producing output while still being parsed.
+
+| Guard | Result |
+|---|---|
+| Vulkan CPY correctness | passed; `34/34` cases |
+| F32/F16/BF16 source-to-dual | `9525.39` / `2350.54` / `2418.09` us/run |
+| dual-to-F32 | `516.65` us/run |
+| F32/F16/BF16 source-to-FAST | `10111.85` / `2923.67` / `2949.42` us/run |
+| FAST-to-F32 | `509.65` us/run |
+| Full promoted gate | passed after rebuild; Qwen3.6 27B MTP `33.9` / `28.0 tok/s`, no KFD PIDs running |
+| Tightened Vulkan CPY guard | passed; ceilings now require source-to-dual under `11500` / `3000` / `3100` us for F32/F16/BF16 and source-to-FAST under `12200` / `3600` / `3700` us |
+| Vulkan Qwen MTP retest | passed; `34.4 tok/s` short and `24.9 tok/s` sustained, so ROCm0 remains the promoted sustained backend |
 
 ### 2026-05-24 Simple Draft Allocation Cleanup
 

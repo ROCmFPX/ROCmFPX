@@ -6,16 +6,16 @@ ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BIN="${BIN:-$ROOT/build-strix-rocmfp4/bin/test-backend-ops}"
 
 # Conservative ceilings for the large Vulkan0 CPY perf shape. Runtime
-# quantization is slower on RADV Vulkan than ROCm, but these bounds still catch
-# accidental CPU/system-memory fallbacks or broken ROCmFP4 copy shader routing.
-MAX_F32_TO_Q4_US="${MAX_F32_TO_Q4_US:-18000.0}"
-MAX_F16_TO_Q4_US="${MAX_F16_TO_Q4_US:-5000.0}"
-MAX_BF16_TO_Q4_US="${MAX_BF16_TO_Q4_US:-5200.0}"
-MAX_Q4_TO_F32_US="${MAX_Q4_TO_F32_US:-800.0}"
-MAX_F32_TO_FAST_US="${MAX_F32_TO_FAST_US:-16000.0}"
-MAX_F16_TO_FAST_US="${MAX_F16_TO_FAST_US:-4500.0}"
-MAX_BF16_TO_FAST_US="${MAX_BF16_TO_FAST_US:-4600.0}"
-MAX_FAST_TO_F32_US="${MAX_FAST_TO_F32_US:-800.0}"
+# quantization is slower on RADV Vulkan than ROCm, but these bounds catch
+# fallback and also protect the ROCmFP4 lower-scale pruning speedup.
+MAX_F32_TO_Q4_US="${MAX_F32_TO_Q4_US:-11500.0}"
+MAX_F16_TO_Q4_US="${MAX_F16_TO_Q4_US:-3000.0}"
+MAX_BF16_TO_Q4_US="${MAX_BF16_TO_Q4_US:-3100.0}"
+MAX_Q4_TO_F32_US="${MAX_Q4_TO_F32_US:-700.0}"
+MAX_F32_TO_FAST_US="${MAX_F32_TO_FAST_US:-12200.0}"
+MAX_F16_TO_FAST_US="${MAX_F16_TO_FAST_US:-3600.0}"
+MAX_BF16_TO_FAST_US="${MAX_BF16_TO_FAST_US:-3700.0}"
+MAX_FAST_TO_F32_US="${MAX_FAST_TO_F32_US:-700.0}"
 
 cd "$ROOT"
 
@@ -29,16 +29,16 @@ env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
 
 echo
 echo "== ROCmFP4 Vulkan CPY performance =="
-output="$(
-    env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
-        "$BIN" perf \
-            -b Vulkan0 \
-            -o CPY \
-            -p "q4_0_rocmfp4" \
-            --output console
-)"
+tmp_output="$(mktemp)"
+trap 'rm -f "$tmp_output"' EXIT
+env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
+    "$BIN" perf \
+        -b Vulkan0 \
+        -o CPY \
+        -p "q4_0_rocmfp4" \
+        --output console | tee "$tmp_output"
 
-printf "%s\n" "$output"
+output="$(cat "$tmp_output")"
 
 extract_us() {
     local pattern="$1"

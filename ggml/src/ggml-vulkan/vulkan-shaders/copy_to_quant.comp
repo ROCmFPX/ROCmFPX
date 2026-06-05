@@ -366,24 +366,36 @@ uint rocmfp4_choose_scale_ue4m3(uint src_idx, uint src_off, uint n) {
     const uint start_e = rocmfp4_nearest_scale_ue4m3(max_abs / 10.0);
     uint best_e = 0u;
     float best_err = 3.4028234663852886e38;
+    bool lower_done = false;
 
     for (uint delta = 0u; delta <= 125u; ++delta) {
-        if (delta < start_e) {
-            const uint e0 = start_e - delta;
-            const float err = rocmfp4_block_mse_for_scale(src_idx, src_off, n, e0, best_err);
-            if (err < best_err || (err == best_err && e0 < best_e)) {
-                best_err = err;
-                best_e = e0;
+        const int e0 = int(start_e) - int(delta);
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale_half = ue4m3_to_fp32(uint8_t(e0));
+            const float clip_delta = max_abs - 10.0 * scale_half;
+            if (clip_delta > 0.0 && clip_delta * clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const uint e0u = uint(e0);
+                const float err = rocmfp4_block_mse_for_scale(src_idx, src_off, n, e0u, best_err);
+                if (err < best_err || (err == best_err && e0u < best_e)) {
+                    best_err = err;
+                    best_e = e0u;
+                }
             }
         }
 
-        if (delta != 0u && start_e + delta <= 126u) {
-            const uint e1 = start_e + delta;
+        const uint e1 = start_e + delta;
+        if (delta != 0u && e1 <= 126u) {
             const float err = rocmfp4_block_mse_for_scale(src_idx, src_off, n, e1, best_err);
             if (err < best_err || (err == best_err && e1 < best_e)) {
                 best_err = err;
                 best_e = e1;
             }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126u) {
+            break;
         }
     }
 

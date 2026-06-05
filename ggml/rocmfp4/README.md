@@ -84,6 +84,13 @@ Current status:
   `-b 1024 -ub 512`, `-b 2048 -ub 512`, `-b 512 -ub 256`,
   `-t 24 -tb 32`, and `-t 12 -tb 32` all measured in the `88.7`-`89.1 tok/s`
   sustained band, so `-b 512 -ub 512 -t 16 -tb 32` stays promoted.
+  Current KV isolation rechecked the promoted shape at `104.3 tok/s` short and
+  `90.1 tok/s` sustained with q8 main KV, q4 draft KV, `n-max 3`, and
+  `p-min 0.25`; full q8 draft KV tied at `104.5` / `90.0`, while draft-only
+  q8 reached only `82.2` sustained. K-only and V-only q8 main KV regressed to
+  `70.5` and `74.6` sustained, so both accepted K and V need q8 and the draft
+  KV can stay q4. The updated default 35B guard then passed at `103.3 tok/s`
+  short and `90.1 tok/s` sustained.
   Sampler-chain trims and backend sampling did not beat the promoted sustained
   profile: `top_k;top_p;temperature` reached `104.2` / `87.5`, the milder
   `penalties;top_k;top_p;min_p;temperature` chain reached `104.1` / `88.9`,
@@ -140,10 +147,39 @@ Current status:
   rejected after the 35B A3B short guard dropped to `73.0 tok/s`, below the
   `100.0 tok/s` floor. A `std::nth_element` plus top-k slice sort variant was
   also rejected after the same guard dropped to `71.5 tok/s`.
+  Narrowing the MTP top-k probability accumulator from `double` to `float` was
+  also rejected: dense 27B still passed at `34.0` / `28.1 tok/s`, but the 35B
+  A3B short guard repeated below floor at `84.1` then `93.4 tok/s`; restoring
+  the `double` accumulator recovered the short guard to `104.4 tok/s`.
   A `std::partial_sort_copy` top-k buffer variant built and passed the same
   guard at `104.4 tok/s` short and `90.2 tok/s` sustained, but a same-session
   promoted-build comparison measured `104.1` / `90.2`, so it was not promoted:
   it added sampler buffer/clone complexity without a sustained decode gain.
+  Jackrong Qwopus3.6 27B v2 MTP BF16 was converted to STRIX_LEAN ROCmFP4 at
+  `4.34 BPW`. At native `262144` context with reasoning on, q4 main/draft KV,
+  and `n-max 4`, ROCm0 initially measured `34.9` / `29.6 tok/s`; increasing
+  only the batch to `-b 1024 -ub 512` moved sustained decode to `29.9 tok/s`.
+  Follow-up batch shapes `1280/512`, `1536/512`, and `1536/768` measured
+  `29.8`, `29.9`, and `29.8 tok/s` sustained respectively, so the smaller
+  `1024/512` profile remains promoted. Light acceptance filters `p-min 0.05`
+  and `0.10` also tied at `29.9 tok/s` sustained without beating the default.
+  Lower draft-depth checks with the same promoted batch rejected `n-max 1`,
+  `2`, and `3`, which measured only `19.9`, `26.6`, and `27.3 tok/s`
+  sustained. Qwopus therefore stays on `n-max 4`, unlike the 35B A3B profile
+  where `n-max 3` plus q8 main KV is best.
+  `--backend-sampling` tied sustained decode at `29.9 tok/s` but lowered prompt
+  throughput, so it is not promoted. Thread split checks at target/draft
+  `12/32` and `24/32` also tied `29.9 tok/s` sustained; the simpler default
+  `16/32` thread shape remains the recommended Qwopus profile.
+  KV isolation confirmed this is not like the 35B A3B q8-main profile:
+  draft-only q8 KV measured `35.1` / `29.8 tok/s`, and full q8 main plus q8
+  draft KV measured `36.6` / `26.0 tok/s`. The full-q8 path improves burst
+  only and regresses sustained decode. Split accepted-KV checks also regressed:
+  q8 K only measured `35.7` / `22.3 tok/s`, and q8 V only measured `34.2` /
+  `24.7 tok/s`. Qwopus therefore keeps q4 main and q4 draft KV.
+  Vulkan0 measured `40.0` / `27.7 tok/s`, with Vulkan `n-max 3` and `n-max 5`
+  slower sustained; Vulkan `-b 1024 -ub 512` repeated the same `27.7 tok/s`
+  sustained band. q8 main KV regressed this model on both ROCm0 and Vulkan0.
   A normal-path shortcut that only normalized `data[0].p` and filled the rest
   of the top-k probabilities only for debug logging was rejected after the
   35B A3B short guard fell to `92.7 tok/s`, below the `100.0 tok/s` floor.
@@ -152,6 +188,24 @@ Current status:
   Skipping the per-draft `common_sampler_reset()` in the MTP path was rejected
   after the 35B A3B short guard dropped to `68.3 tok/s`; that reset remains
   required to preserve the expected sampler/logit state for this helper.
+  A small MTP host-path cleanup now delays `llama_get_embeddings_pre_norm_ith()`
+  until the draft loop has confirmed that another draft token will be queued.
+  This avoids unused embedding-row pointer fetches on p-min rejects and final
+  `n-max` draft tokens. It passed the dense 27B guard at `34.0` / `28.1 tok/s`,
+  the 35B A3B guard at `104.4` / `90.1 tok/s`, and the Qwopus best ROCm0
+  profile at `35.0` / `29.8 tok/s`. The default all-regression gate also
+  passed after this cleanup and ended with no KFD PIDs running. The 2026-05-25
+  serial pass measured Qwen3.6 27B MTP at `33.9` / `27.9 tok/s`, ROCm runtime
+  FAST `45.66` / `57.81` / `88.27` / `155.05` us and dual-scale `49.16` /
+  `51.58` / `83.34` / `151.42` us for `n=1/2/4/8`, ROCm FlashAttention
+  `70.86` / `66.51` us for 64d dual-scale / FAST and `189.45` / `172.73` us
+  for Qwen-style 128d dual-scale / FAST, and ROCm CPY source-to-dual
+  `1106.89` / `1008.56` / `1006.60` us with source-to-FAST `1050.49` /
+  `958.98` / `950.50` us for F32/F16/BF16.
+  A second attempt to skip the final `n-max` `common_sampler_accept()` call was
+  rejected: the 35B A3B short check still reached `104.5 tok/s`, but sustained
+  decode fell to `81.1 tok/s`, below the `85.0 tok/s` floor. Reverting only
+  that sampler-accept change recovered the guard to `104.3` / `90.0 tok/s`.
   Retesting the internal MTP sampler candidate count on the 35B A3B
   reasoning-on profile rejected both directions around the promoted `top_k=10`
   setting: `top_k=5` fell to `77.3 tok/s` sustained and `top_k=20` fell to
@@ -579,6 +633,15 @@ Current status:
   outward, and stop a candidate once its partial error cannot beat the current
   best scale. The candidate set is unchanged, so this avoids a slower linear
   scan without falling back to a lower-quality shortcut.
+- Vulkan source-to-ROCmFP4 runtime quantization now also prunes lower scale
+  candidates once clipping the block max alone cannot beat the current best
+  error. This mirrors the CPU/HIP scale search bound and keeps the candidate
+  set exact. The 2026-05-25 Vulkan CPY guard passed after this shader change:
+  F32/F16/BF16-to-dual measured `9525.39`, `2350.54`, and `2418.09` us/run,
+  dual-to-F32 `516.65` us/run, F32/F16/BF16-to-FAST `10111.85`, `2923.67`,
+  and `2949.42` us/run, and FAST-to-F32 `509.65` us/run. The full promoted
+  gate passed after rebuild with Qwen3.6 27B MTP at `33.9` / `28.0 tok/s` and
+  no KFD PIDs left running.
 - Vulkan backend CPY also supports `F16 -> Q4_0_ROCMFP4`,
   `F16 -> Q4_0_ROCMFP4_FAST`, `BF16 -> Q4_0_ROCMFP4`, and
   `BF16 -> Q4_0_ROCMFP4_FAST`. The runtime quantization shader can load
@@ -598,11 +661,14 @@ Current status:
 - Vulkan CPY is now covered by a dedicated regression guard so copy-path
   changes cannot silently fall back or regress outside the ROCm-only CPY gate.
   The guard runs same-type and source/dequant CPY correctness before measuring
-  the large copy performance shape.
+  the large copy performance shape, and now streams the performance phase
+  through `tee` so long Vulkan runs do not look idle to the command runner.
+  The ceilings were tightened after the lower-scale pruning gain, so the old
+  slow source-to-quant path no longer passes this guard.
   On Strix Halo RADV Vulkan, the large guarded shape currently measures
-  F32/F16/BF16-to-dual at `16465.10`, `3691.97`, and `3924.08` us/run,
-  dual-to-F32 at `509.58` us/run, F32/F16/BF16-to-FAST at `13823.23`,
-  `3284.38`, and `3395.53` us/run, and FAST-to-F32 at `521.84` us/run.
+  F32/F16/BF16-to-dual at `9525.39`, `2350.54`, and `2418.09` us/run,
+  dual-to-F32 at `516.65` us/run, F32/F16/BF16-to-FAST at `10111.85`,
+  `2923.67`, and `2949.42` us/run, and FAST-to-F32 at `509.65` us/run.
 - Vulkan scalar FlashAttention can now decode ROCmFP4 and ROCmFP4_FAST K/V
   cache blocks. ROCmFP4 K/V is forced to the scalar FA path because the current
   custom decode is not a coopmat/native matrix-core FP4 path.
@@ -873,12 +939,19 @@ Current status:
     including Qwen3.6 27B MTP at `33.8` / `27.9 tok/s` and Qwen3.6 35B A3B MTP
     at `104.1` / `89.3 tok/s`.
   - A matching contiguous-pointer cleanup inside the MTP `draft()` loop was
-    tested and rejected. It replaced per-row
-    `llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)` calls with one
-    `llama_get_embeddings_pre_norm(ctx_dft)` pointer per draft decode
-    iteration. The 27B MTP guard held at `33.8` / `27.9 tok/s`, but the 35B A3B
-    repeat measured `104.3` / `88.7` and `104.3` / `89.2 tok/s`, below the
-    promoted `89.3 tok/s` sustained band, so the code change was removed.
+  tested and rejected. It replaced per-row
+  `llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch)` calls with one
+  `llama_get_embeddings_pre_norm(ctx_dft)` pointer per draft decode
+  iteration. The 27B MTP guard held at `33.8` / `27.9 tok/s`, but the 35B A3B
+  repeat measured `104.3` / `88.7` and `104.3` / `89.2 tok/s`, below the
+  promoted `89.3 tok/s` sustained band, so the code change was removed.
+  - A single-sequence MTP `draft()` fast path was tested and rejected on
+    2026-05-25. It removed the active-sequence bookkeeping loop for the common
+    `n_seq == 1` case and passed the dense 27B guard at `33.7` / `28.0 tok/s`,
+    but the 35B A3B sustained guard collapsed to `25.7 tok/s` despite a
+    passing `103.1 tok/s` short check. Reverting that path restored the 35B A3B
+    guard to `104.3` / `90.3 tok/s`, so the shared multi-sequence draft loop
+    remains the promoted implementation.
   - A dual-scale-only finite-pack CPU quantizer shortcut was tested and
     rejected on 2026-05-24. It passed correctness, but even after isolating
     the shared scale chooser it regressed the protected FAST quant path
