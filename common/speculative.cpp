@@ -667,9 +667,8 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
                 auto * smpl = smpls[seq_id].get();
 
-                const auto * cur_p = common_sampler_sample_top_k_probs(smpl, ctx_dft, i_batch, MTP_DRAFT_TOP_K);
-                h_row = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch);
-                ++i_batch;
+                const int i_batch_cur = i_batch++;
+                const auto * cur_p = common_sampler_sample_top_k_probs(smpl, ctx_dft, i_batch_cur, MTP_DRAFT_TOP_K);
 
                 if (log_debug) {
                     for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
@@ -701,6 +700,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                     continue;
                 }
 
+                h_row = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch_cur);
                 common_speculative_batch_add_one_seq(batch, id, dp.n_past + i + 1, seq_id, true);
                 std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_row, row_bytes);
             }
