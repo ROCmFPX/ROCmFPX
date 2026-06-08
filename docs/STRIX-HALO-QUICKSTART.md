@@ -1,5 +1,8 @@
 # Strix Halo Quickstart
 
+Strix Halo / RDNA3.5 (`gfx1151`) install guide. For other AMD GPUs (RDNA2,
+RDNA3, RDNA4), see [`BUILD-AMD-ARCHITECTURES.md`](BUILD-AMD-ARCHITECTURES.md).
+
 Use this repository when you want the ready-to-build llama.cpp fork with
 ROCmFP4, MTP, ROCm/HIP, and Vulkan integration already applied.
 
@@ -52,6 +55,10 @@ vulkaninfo --summary
 ```bash
 env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh
 ```
+
+For RDNA2, RDNA3, or RDNA4 desktop GPUs, see
+[`BUILD-AMD-ARCHITECTURES.md`](BUILD-AMD-ARCHITECTURES.md) and run the matching
+wrapper script (`build-rdna2.sh`, `build-rdna3.sh`, or `build-rdna4.sh`).
 
 The build script enables ROCm/HIP and Vulkan, disables NVIDIA CUDA, targets
 `gfx1151`, and writes binaries under:

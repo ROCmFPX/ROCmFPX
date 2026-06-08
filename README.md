@@ -43,46 +43,62 @@ Current strongest reproduced local result:
 The benchmark policy is intentionally conservative: a microbenchmark win is not
 promoted unless end-to-end decode guards hold or improve.
 
+## Documentation
+
+| Guide | Who it's for |
+|---|---|
+| [`docs/STRIX-HALO-QUICKSTART.md`](docs/STRIX-HALO-QUICKSTART.md) | Strix Halo users — full install, quantize, run, validate |
+| [`docs/BUILD-AMD-ARCHITECTURES.md`](docs/BUILD-AMD-ARCHITECTURES.md) | **All AMD GPUs** — RDNA2 through RDNA4 build flags and scripts |
+| [`docs/ROCmFP4-REPRODUCIBILITY.md`](docs/ROCmFP4-REPRODUCIBILITY.md) | Regression guards and proof commands |
+| [`docs/ROCmFP4-MTP-COMPARISON.md`](docs/ROCmFP4-MTP-COMPARISON.md) | Benchmark history and promoted profiles |
+| [`ggml/rocmfp4/README.md`](ggml/rocmfp4/README.md) | Format details and expert HIP tuning knobs |
+
 ## Repository Layout
 
-- `ggml/rocmfp4/` - ROCmFP4 format definitions, CPU reference quant/dequant, and
-  HIP helper kernels.
-- `ggml/src/ggml-cuda/` - upstream HIP/CUDA backend files with AMD ROCmFP4
-  integration. The Strix build disables NVIDIA CUDA but keeps these upstream
-  paths because llama.cpp uses this directory for HIP too.
-- `ggml/src/ggml-vulkan/vulkan-shaders/` - Vulkan shader support for ROCmFP4.
-- `scripts/build-strix-rocmfp4-mtp.sh` - reproducible Strix Halo build script.
-- `scripts/check-rocmfp4-*.sh` - focused correctness and performance guards.
-- `docs/ROCmFP4-MTP-COMPARISON.md` - benchmark history, rejected experiments,
-  and promoted profiles.
-- `docs/ROCmFP4-REPRODUCIBILITY.md` - promotion rules and proof commands.
-- `docs/STRIX-HALO-QUICKSTART.md` - install, build, quantize, run, and
-  validation path for Strix Halo users.
+- `ggml/rocmfp4/` — ROCmFP4 format definitions, CPU reference quant/dequant, and
+  HIP helper kernels
+- `ggml/src/ggml-cuda/` — upstream HIP/CUDA backend files with AMD ROCmFP4
+  integration (HIP builds use this directory even with `-DGGML_CUDA=OFF`)
+- `ggml/src/ggml-vulkan/vulkan-shaders/` — Vulkan shader support for ROCmFP4
+- `scripts/build-*.sh` — build scripts per AMD GPU generation
+- `scripts/check-rocmfp4-*.sh` — correctness and performance regression guards
 
 ## Build
-
-Recommended Strix Halo ROCm + Vulkan build:
 
 ```bash
 git clone https://github.com/charlie12345/rocmfp4-llama.git
 cd rocmfp4-llama
 git checkout mtp-rocmfp4-strix
-env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh
 ```
 
-See `docs/STRIX-HALO-QUICKSTART.md` for prerequisites, runtime commands, MTP
-flags, and troubleshooting. If this GitHub repository is private, public users
-cannot clone it until the owner makes it public or invites them.
+Pick the script that matches your GPU:
 
-The build script creates:
+| Your GPU | Build command | Output folder |
+|---|---|---|
+| Strix Halo / RDNA3.5 | `env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh` | `build-strix-rocmfp4/` |
+| RDNA2 (RX 6000 / 7600) | `env JOBS=16 scripts/build-rdna2.sh` | `build-rdna2/` |
+| RDNA3 (RX 7000) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
+| RDNA4 (RX 9000) | `env JOBS=16 scripts/build-rdna4.sh` | `build-rdna4/` |
+| Windows RDNA2 | `build-hip.bat` | `build-hip/` |
+
+Not sure which GPU you have? See
+[`docs/BUILD-AMD-ARCHITECTURES.md`](docs/BUILD-AMD-ARCHITECTURES.md) for the full
+`gfx` target table, runtime environment variables, and Vulkan-only builds.
+
+Strix Halo users: follow
+[`docs/STRIX-HALO-QUICKSTART.md`](docs/STRIX-HALO-QUICKSTART.md) for
+prerequisites, MTP flags, and troubleshooting.
+
+Key binaries after a successful build:
 
 ```text
-build-strix-rocmfp4/bin/llama-cli
-build-strix-rocmfp4/bin/llama-server
-build-strix-rocmfp4/bin/llama-quantize
-build-strix-rocmfp4/bin/test-backend-ops
-build-strix-rocmfp4/bin/test-quantize-fns
-build-strix-rocmfp4/bin/test-quantize-perf
+bin/llama-cli
+bin/llama-server
+bin/llama-quantize
+bin/llama-bench
+bin/test-backend-ops
+bin/test-quantize-fns
+bin/test-quantize-perf
 ```
 
 ## Quantize a Model
