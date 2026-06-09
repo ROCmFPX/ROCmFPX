@@ -724,6 +724,8 @@ struct vk_device_struct {
 
     bool dot2_f16 {};
 
+    bool dot2_f16 {};
+
     bool pipeline_executable_properties_support {};
 
     size_t idx;
