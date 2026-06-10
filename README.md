@@ -48,7 +48,7 @@ promoted unless end-to-end decode guards hold or improve.
 | Guide | Who it's for |
 |---|---|
 | [`docs/STRIX-HALO-QUICKSTART.md`](docs/STRIX-HALO-QUICKSTART.md) | Strix Halo users — full install, quantize, run, validate |
-| [`docs/BUILD-AMD-ARCHITECTURES.md`](docs/BUILD-AMD-ARCHITECTURES.md) | **All AMD GPUs** — RDNA2 through RDNA4 build flags and scripts |
+| [`docs/BUILD-AMD-ARCHITECTURES.md`](docs/BUILD-AMD-ARCHITECTURES.md) | AMD GPU build flags and scripts, including RDNA2 through RDNA4 plus experimental gfx906 |
 | [`docs/ROCmFP4-REPRODUCIBILITY.md`](docs/ROCmFP4-REPRODUCIBILITY.md) | Regression guards and proof commands |
 | [`docs/ROCmFP4-MTP-COMPARISON.md`](docs/ROCmFP4-MTP-COMPARISON.md) | Benchmark history and promoted profiles |
 | [`ggml/rocmfp4/README.md`](ggml/rocmfp4/README.md) | Format details and expert HIP tuning knobs |
@@ -79,6 +79,7 @@ Pick the script that matches your GPU:
 | RDNA2 (RX 6000 / 7600) | `env JOBS=16 scripts/build-rdna2.sh` | `build-rdna2/` |
 | RDNA3 (RX 7000) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
 | RDNA4 (RX 9000) | `env JOBS=16 scripts/build-rdna4.sh` | `build-rdna4/` |
+| Vega 20 / gfx906 experimental (MI50 / MI60) | `env JOBS=16 scripts/build-gfx906.sh` | `build-gfx906/` |
 | Windows RDNA2 | `build-hip.bat` | `build-hip/` |
 
 Not sure which GPU you have? See
