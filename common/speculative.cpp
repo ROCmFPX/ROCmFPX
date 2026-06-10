@@ -458,8 +458,15 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             s.reset(common_sampler_init(llama_get_model(ctx_dft), sparams));
         }
 
-        llama_set_embeddings_pre_norm(ctx_tgt, true);
-        llama_set_embeddings_pre_norm(ctx_dft, true);
+        char arch_dft[64] = {};
+        llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_dft, sizeof(arch_dft));
+        const bool full_hidden_rows =
+            std::strcmp(arch_dft, "gemma4_assistant") == 0 ||
+            std::strcmp(arch_dft, "gemma4-assistant") == 0;
+
+        llama_set_embeddings_pre_norm(ctx_tgt, true, !full_hidden_rows);
+        llama_set_embeddings_pre_norm(ctx_dft, true, !full_hidden_rows);
+        llama_set_mtp_source(ctx_dft, ctx_tgt);
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 

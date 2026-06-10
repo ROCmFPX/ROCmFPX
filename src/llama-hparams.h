@@ -178,6 +178,9 @@ struct llama_hparams {
     // for Classifiers
     uint32_t n_cls_out = 1;
 
+    // input embedding dimension (0 = use n_embd)
+    uint32_t n_embd_inp_impl = 0;
+
     // output embedding dimension (0 = use n_embd)
     uint32_t n_embd_out_impl = 0;
 

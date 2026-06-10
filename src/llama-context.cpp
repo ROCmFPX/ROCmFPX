@@ -30,6 +30,13 @@ static llm_graph_type ctx_type_to_graph_type(llama_context_type ctx_type) {
     throw std::runtime_error("Unsupported ctx type");
 }
 
+namespace {
+struct src_mctx_reset_on_exit {
+    llama_memory_context_ptr * slot;
+    ~src_mctx_reset_on_exit() { if (slot) slot->reset(); }
+};
+}
+
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
@@ -66,6 +73,7 @@ llama_context::llama_context(
     cparams.yarn_beta_slow   = params.yarn_beta_slow   >= 0.0f ? params.yarn_beta_slow   : hparams.yarn_beta_slow;
     cparams.embeddings       = params.embeddings;
     cparams.embeddings_pre_norm = false;
+    cparams.embeddings_pre_norm_masked = false;
     cparams.offload_kqv      = params.offload_kqv;
     cparams.no_perf          = params.no_perf;
     cparams.pooling_type     = params.pooling_type;
@@ -83,6 +91,7 @@ llama_context::llama_context(
     cparams.cb_eval_user_data = params.cb_eval_user_data;
 
     cparams.ctx_type          = params.ctx_type;
+    cparams.ctx_other         = params.ctx_other;
 
     // Initialize backend samplers here so they are part of the sampling graph
     // before the reserve passes run later in this function. This avoids a later
@@ -440,6 +449,20 @@ void llama_context::sched_reserve() {
             throw std::runtime_error("failed to initialize memory module");
         }
     }
+
+    llama_context * src_for_reserve = src_ctx ? src_ctx : cparams.ctx_other;
+    const bool owns_src_snapshot = src_for_reserve && !src_mctx_for_decode;
+    if (owns_src_snapshot) {
+        auto * src_memory = src_for_reserve->get_memory();
+        if (!src_memory) {
+            throw std::runtime_error("MTP source context has no memory module");
+        }
+        src_mctx_for_decode = src_memory->init_full();
+        if (!src_mctx_for_decode) {
+            throw std::runtime_error("failed to initialize MTP source memory snapshot");
+        }
+    }
+    src_mctx_reset_on_exit reserve_src_drop{owns_src_snapshot ? &src_mctx_for_decode : nullptr};
 
     // avoid reserving graphs with zero outputs - assume one output per sequence
     const int n_outputs = n_seqs;
@@ -895,8 +918,15 @@ float * llama_context::get_embeddings_pre_norm_ith(int32_t i) {
             throw std::runtime_error("no pre-norm embeddings");
         }
 
+        const uint32_t n_embd = model.hparams.n_embd_out();
+        if (!cparams.embeddings_pre_norm_masked) {
+            if (i < 0 || (size_t)(i + 1) * n_embd > embd_pre_norm.size) {
+                throw std::runtime_error(format("out of range [0, %zu)", embd_pre_norm.size / n_embd));
+            }
+            return embd_pre_norm.data + (size_t) i * n_embd;
+        }
+
         const int64_t j = output_resolve_row(i);
-        const uint32_t n_embd = model.hparams.n_embd;
         return embd_pre_norm.data + j*n_embd;
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: invalid pre-norm embeddings id %d, reason: %s\n", __func__, i, err.what());
@@ -1088,10 +1118,21 @@ void llama_context::set_embeddings(bool value) {
     //sched_need_reserve = true;
 }
 
-void llama_context::set_embeddings_pre_norm(bool value) {
-    LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
+void llama_context::set_embeddings_pre_norm(bool value, bool masked) {
+    LLAMA_LOG_DEBUG("%s: value = %d, masked = %d\n", __func__, value, masked);
 
     cparams.embeddings_pre_norm = value;
+    cparams.embeddings_pre_norm_masked = masked;
+}
+
+void llama_context::set_mtp_source(llama_context * src) {
+    if (src_ctx == src) {
+        return;
+    }
+
+    src_ctx = src;
+    src_mctx_for_decode.reset();
+    sched_need_reserve = true;
 }
 
 void llama_context::set_causal_attn(bool value) {
@@ -1441,7 +1482,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
         ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
         GGML_ASSERT(backend_h != nullptr);
 
-        const uint32_t n_embd = hparams.n_embd;
+        const uint32_t n_embd = hparams.n_embd_out();
         GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_pre_norm.size);
         ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm.data, 0, n_tokens*n_embd*sizeof(float));
     }
@@ -1678,6 +1719,21 @@ int llama_context::decode(const llama_batch & batch_inp) {
     embd_seq.clear();
     output_swaps.clear();
 
+    src_mctx_reset_on_exit decode_src_drop{&src_mctx_for_decode};
+    llama_context * src_for_decode = src_ctx ? src_ctx : cparams.ctx_other;
+    if (src_for_decode) {
+        auto * src_memory = src_for_decode->get_memory();
+        if (!src_memory) {
+            LLAMA_LOG_ERROR("%s: MTP source context has no memory module\n", __func__);
+            return -2;
+        }
+        src_mctx_for_decode = src_memory->init_full();
+        if (!src_mctx_for_decode) {
+            LLAMA_LOG_ERROR("%s: failed to snapshot MTP source memory\n", __func__);
+            return -2;
+        }
+    }
+
     sched_reserve();
 
     bool did_optimize = false;
@@ -1737,6 +1793,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     };
 
     int64_t n_outputs_prev = 0;
+    int64_t n_tokens_prev  = 0;
 
     do {
         const auto & ubatch = mctx->get_ubatch();
@@ -1886,12 +1943,15 @@ int llama_context::decode(const llama_batch & batch_inp) {
             ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
             GGML_ASSERT(backend_h != nullptr);
 
-            const uint32_t n_embd = hparams.n_embd;
-            float * embd_pre_norm_out = embd_pre_norm.data + n_outputs_prev*n_embd;
+            const bool masked    = cparams.embeddings_pre_norm_masked;
+            const int64_t n_rows = masked ? n_outputs      : (int64_t) ubatch.n_tokens;
+            const int64_t offset = masked ? n_outputs_prev : n_tokens_prev;
 
-            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-            GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_pre_norm.size);
-            ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_outputs*n_embd*sizeof(float));
+            const uint32_t n_embd = hparams.n_embd_out();
+            float * embd_pre_norm_out = embd_pre_norm.data + offset*n_embd;
+
+            GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_pre_norm.size);
+            ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_rows*n_embd*sizeof(float));
         }
 
         // Copy backend sampling output if this ubatch produced any sampling tensors.
@@ -1908,6 +1968,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
 
         n_outputs_prev += n_outputs;
+        n_tokens_prev  += ubatch.n_tokens;
     } while (mctx->next());
 
     // set to total number of outputs in the batch, for use in llama_get_logits_ith
@@ -1978,7 +2039,6 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const auto n_batch    = cparams.n_batch;
     const auto n_vocab    = vocab.n_tokens();
-    const auto n_embd     = hparams.n_embd;
     const auto n_embd_out = hparams.n_embd_out();
 
     bool has_logits        = true;
@@ -1997,7 +2057,10 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     logits.size        = has_logits        ? n_vocab*n_outputs_max     : 0;
     embd.size          = has_embd          ? n_embd_out*n_outputs_max  : 0;
-    embd_pre_norm.size = has_embd_pre_norm ? n_embd*n_outputs_max      : 0;
+    embd_pre_norm.size = has_embd_pre_norm ? n_embd_out*n_outputs_max  : 0;
+    if (has_embd_pre_norm && !cparams.embeddings_pre_norm_masked) {
+        embd_pre_norm.size = (size_t) n_embd_out * n_batch;
+    }
 
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
@@ -2259,6 +2322,8 @@ llm_graph_params llama_context::graph_params(
         /*.cvec        =*/ cvec.get(),
         /*.loras       =*/ loras.get(),
         /*.mctx        =*/ mctx,
+        /*.src_mctx    =*/ src_mctx_for_decode.get(),
+        /*.src_model   =*/ (src_ctx ? &src_ctx->get_model() : (cparams.ctx_other ? llama_get_model(cparams.ctx_other) : nullptr)),
         /*.cross       =*/ &cross,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
@@ -3329,6 +3394,7 @@ llama_context_params llama_context_default_params() {
         /*.kv_unified                  =*/ false,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
+        /*.ctx_other                   =*/ nullptr,
     };
 
     return result;
@@ -3547,8 +3613,12 @@ float * llama_get_embeddings_seq(llama_context * ctx, llama_seq_id seq_id) {
     return ctx->get_embeddings_seq(seq_id);
 }
 
-void llama_set_embeddings_pre_norm(llama_context * ctx, bool value) {
-    ctx->set_embeddings_pre_norm(value);
+void llama_set_embeddings_pre_norm(llama_context * ctx, bool value, bool masked) {
+    ctx->set_embeddings_pre_norm(value, masked);
+}
+
+void llama_set_mtp_source(llama_context * ctx, llama_context * src) {
+    ctx->set_mtp_source(src);
 }
 
 float * llama_get_embeddings_pre_norm(llama_context * ctx) {
