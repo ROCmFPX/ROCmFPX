@@ -6,6 +6,7 @@
 #include "llama-graph.h"
 #include "llama-adapter.h"
 #include "llama-impl.h"
+#include "llama-memory.h"
 
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
@@ -110,7 +111,8 @@ struct llama_context {
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
     void set_embeddings (bool value);
-    void set_embeddings_pre_norm(bool value);
+    void set_embeddings_pre_norm(bool value, bool masked = false);
+    void set_mtp_source(llama_context * src);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -274,6 +276,9 @@ private:
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
     std::unique_ptr<llama_memory_i> memory;
+
+    llama_context *          src_ctx = nullptr;
+    llama_memory_context_ptr src_mctx_for_decode;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};

@@ -93,9 +93,10 @@ LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_c
 // pre-norm embeddings (hidden state before the final output norm)
 //
 
-// mirrors:
-// LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
-LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value);
+// Set whether the context outputs pre-norm embeddings.
+// If masked == true, output only rows where batch.logits != 0.
+LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value, bool masked = false);
+LLAMA_API void llama_set_mtp_source(struct llama_context * ctx, struct llama_context * src);
 
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);

@@ -29,6 +29,7 @@ struct llama_cparams {
 
     bool embeddings;
     bool embeddings_pre_norm; // also extract the hidden state before the final output norm
+    bool embeddings_pre_norm_masked; // extract only rows where batch.logits != 0
     bool causal_attn;
     bool offload_kqv;
     bool flash_attn;
@@ -44,6 +45,8 @@ struct llama_cparams {
 
     enum llama_context_type ctx_type;
     enum llama_pooling_type pooling_type;
+
+    struct llama_context * ctx_other;
 
     ggml_backend_sched_eval_callback cb_eval;
     void * cb_eval_user_data;
