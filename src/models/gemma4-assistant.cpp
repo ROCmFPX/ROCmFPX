@@ -10,8 +10,12 @@ void llama_model_gemma4_assistant::load_arch_hparams(llama_model_loader & ml) {
 
     hparams.f_attention_scale = 1.0f;
 
-    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
-    GGML_ASSERT(hparams.nextn_predict_layers == hparams.n_layer && "Gemma4 assistant requires all layers to be nextn layers");
+    if (!ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false)) {
+        hparams.nextn_predict_layers = hparams.n_layer;
+    }
+    if (hparams.nextn_predict_layers != hparams.n_layer) {
+        throw std::runtime_error("Gemma4 assistant requires all layers to be nextn layers");
+    }
 
     ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA,          hparams.rope_freq_base_train_swa, false);
     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW,    hparams.n_swa);
