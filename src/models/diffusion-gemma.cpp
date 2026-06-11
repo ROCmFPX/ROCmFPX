@@ -6,6 +6,16 @@
 #include <thread>
 #include <vector>
 
+template <typename T>
+static T dg_cast(float v) {
+    return static_cast<T>(v);
+}
+
+template <>
+ggml_fp16_t dg_cast<ggml_fp16_t>(float v) {
+    return ggml_fp32_to_fp16(v);
+}
+
 // DiffusionGemma: block text-diffusion MoE on a Gemma-4 backbone. A single no-cache bidirectional
 // forward over [prompt | canvas] reproduces the two-pass (causal encoder prefill + bidirectional
 // decoder denoise, zero self-conditioning) result. Three things are region-aware, split at
@@ -32,7 +42,7 @@ public:
         // swa clips keys outside the sliding window, but only for prompt (causal) queries.
         const auto fill = [&](auto * data, bool swa) {
             using T = std::remove_reference_t<decltype(*data)>;
-            std::fill(data, data + n_tokens * n_tokens, llama_cast<T>(-INFINITY));
+            std::fill(data, data + n_tokens * n_tokens, dg_cast<T>(-INFINITY));
             for (int64_t q = 0; q < n_tokens; ++q) {
                 const bool q_is_canvas = q >= P;
                 const uint64_t row = q * n_tokens;
@@ -57,7 +67,7 @@ public:
                         allow = false;
                     }
                     if (allow) {
-                        data[row + k] = llama_cast<T>(0.0f);
+                        data[row + k] = dg_cast<T>(0.0f);
                     }
                 }
             }
@@ -124,7 +134,7 @@ public:
 
         const auto fill = [&](auto * data, bool swa) {
             using T = std::remove_reference_t<decltype(*data)>;
-            std::fill(data, data + n_kv * C, llama_cast<T>(-INFINITY));
+            std::fill(data, data + n_kv * C, dg_cast<T>(-INFINITY));
             for (int64_t q = 0; q < C; ++q) {            // canvas query (position P+q)
                 const uint64_t row = q * n_kv;
                 for (int64_t k = 0; k < n_kv; ++k) {     // key: k<P prompt (pos k), else canvas
@@ -135,7 +145,7 @@ public:
                         allow = true;                     // bidirectional over the canvas
                     }
                     if (allow) {
-                        data[row + k] = llama_cast<T>(0.0f);
+                        data[row + k] = dg_cast<T>(0.0f);
                     }
                 }
             }
@@ -165,7 +175,7 @@ public:
 
 void llama_model_diffusion_gemma::load_arch_hparams(llama_model_loader & ml) {
     hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
-    ml.get_key_or_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, hparams.is_swa_impl, hparams.n_layer());
+    ml.get_key_or_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, hparams.swa_layers, hparams.n_layer);
 
     // bidirectional decoder; the forward fills its own region-aware mask
     hparams.causal_attn = false;
@@ -186,7 +196,7 @@ void llama_model_diffusion_gemma::load_arch_hparams(llama_model_loader & ml) {
         throw std::runtime_error("DiffusionGemma requires a positive diffusion.canvas_length");
     }
 
-    switch (hparams.n_layer()) {
+    switch (hparams.n_layer) {
         case 30: type = LLM_TYPE_26B_A4B; break;
         default: type = LLM_TYPE_UNKNOWN;
     }
@@ -602,7 +612,7 @@ static void dg_ensure_pkv_store(const llama_model_diffusion_gemma & m, int64_t P
     m.pkv_k.clear();
     m.pkv_v.clear();
 
-    const int     n_layer = (int) m.hparams.n_layer();
+    const int     n_layer = (int) m.hparams.n_layer;
     const int64_t cap     = P;
 
     ggml_init_params ip = {
