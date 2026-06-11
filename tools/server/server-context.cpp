@@ -3327,8 +3327,7 @@ private:
         }
 
         const std::string formatted_prompt = prompt_json.get<std::string>();
-        const int32_t default_n_predict = params_base.n_predict > 0 ? params_base.n_predict : 256;
-        const int32_t n_predict = json_value(data, "n_predict", json_value(data, "max_tokens", default_n_predict));
+        const int32_t n_predict = json_value(data, "n_predict", json_value(data, "max_tokens", params_base.n_predict));
 
         char canvas_str[32];
         int64_t canvas_length = 0;
@@ -3427,6 +3426,8 @@ private:
 
         llama_tokens response_tokens;
         std::vector<llama_token> output_tokens(max_ub);
+        bool hit_token_limit   = false;
+        bool hit_context_limit = false;
 
         std::lock_guard<std::mutex> lock(diffusion_mutex);
         llama_memory_t mem = llama_get_memory(ctx_tgt);
@@ -3444,6 +3445,7 @@ private:
                             "diffusion generation needs -c and -ub >= prompt_tokens + canvas_length (%d + %d = %d)",
                             prefix_len, (int32_t) canvas_length, max_length));
                 }
+                hit_context_limit = true;
                 break;
             }
 
@@ -3467,7 +3469,8 @@ private:
             const llama_token * canvas = output_tokens.data() + prefix_len;
             const size_t cut = trim_canvas(canvas, (size_t) canvas_length);
             response_tokens.insert(response_tokens.end(), canvas, canvas + cut);
-            if (cut < (size_t) canvas_length || (n_predict > 0 && (int32_t) response_tokens.size() >= n_predict)) {
+            hit_token_limit = n_predict > 0 && (int32_t) response_tokens.size() >= n_predict;
+            if (cut < (size_t) canvas_length || hit_token_limit) {
                 break;
             }
             prefix.insert(prefix.end(), canvas, canvas + cut);
@@ -3475,10 +3478,12 @@ private:
 
         if (n_predict > 0 && (int32_t) response_tokens.size() > n_predict) {
             response_tokens.resize(n_predict);
+            hit_token_limit = true;
         }
 
         const std::string content = common_detokenize(vocab, response_tokens, false);
         const int32_t n_prompt_tokens = (int32_t) common_tokenize(vocab, formatted_prompt, true, true).size();
+        const char * finish_reason = (hit_token_limit || hit_context_limit) ? "length" : "stop";
         json usage = {
             {"completion_tokens", (int32_t) response_tokens.size()},
             {"prompt_tokens", n_prompt_tokens},
@@ -3490,7 +3495,7 @@ private:
             return {
                 {"choices", json::array({
                     {
-                        {"finish_reason", "stop"},
+                        {"finish_reason", finish_reason},
                         {"index", 0},
                         {"message", {
                             {"role", "assistant"},
@@ -3514,7 +3519,7 @@ private:
                         {"text", content},
                         {"index", 0},
                         {"logprobs", nullptr},
-                        {"finish_reason", "stop"},
+                        {"finish_reason", finish_reason},
                     },
                 })},
                 {"created", std::time(nullptr)},
