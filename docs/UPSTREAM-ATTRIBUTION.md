@@ -40,6 +40,10 @@ the upstream sources are listed here explicitly.
 
 ### DiffusionGemma Support
 
+The upstream DiffusionGemma source branch used locally was
+`upstream-diffusiongemma-pr24423`, corresponding to upstream llama.cpp PR
+`#24423`.
+
 Local commits:
 
 - `2fc27ded0` - `add upstream diffusion gemma support`
@@ -78,4 +82,3 @@ Upstream/source commits used or referenced during the port:
 ROCmFP4-specific additions in the local port include preserving local ROCmFP4
 quantized tensor behavior, resolving graph conflicts, and keeping the Strix
 build/test path working.
-
