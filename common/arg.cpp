@@ -2681,9 +2681,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.chunk_size = value;
         }
     ).set_examples({LLAMA_EXAMPLE_RETRIEVAL}));
+    const char * chunk_separator_default = params.chunk_separator.empty() ? "\\n" : params.chunk_separator.c_str();
     add_opt(common_arg(
         {"--chunk-separator"}, "STRING",
-        string_format("separator between chunks (default: '%s')", params.chunk_separator.c_str()),
+        string_format("separator between chunks (default: '%s')", chunk_separator_default),
         [](common_params & params, const std::string & value) {
             params.chunk_separator = value;
         }
@@ -3789,32 +3790,32 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--diffusion-steps"}, "N",
         string_format("number of diffusion steps (default: %d)", params.diffusion.steps),
         [](common_params & params, int value) { params.diffusion.steps = value; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-blocks"}, "N",
         string_format("max block-autoregressive blocks for block-diffusion models (default: %d)", params.diffusion.blocks),
         [](common_params & params, int value) { params.diffusion.blocks = value; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-visual"},
         string_format("enable visual diffusion mode (show progressive generation) (default: %s)", params.diffusion.visual_mode ? "true" : "false"),
         [](common_params & params) { params.diffusion.visual_mode = true; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-visual-progress"},
         string_format("show the step progress bar in visual mode (default: %s)", params.diffusion.visual_progress ? "true" : "false"),
         [](common_params & params) { params.diffusion.visual_progress = true; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-visual-interval"}, "N",
         string_format("redraw the visual canvas every Nth step; all steps are still computed (default: %d)", params.diffusion.visual_interval),
         [](common_params & params, int value) { params.diffusion.visual_interval = value; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eps"}, "F",
         string_format("epsilon for timesteps (default: %.6f)", (double) params.diffusion.eps),
         [](common_params & params, const std::string & value) { params.diffusion.eps = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-algorithm"}, "N",
         string_format(
@@ -3822,27 +3823,27 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             "2=DIFFUSION_ALGORITHM_MARGIN_BASED, 3=DIFFUSION_ALGORITHM_RANDOM, "
             "4=DIFFUSION_ALGORITHM_CONFIDENCE_BASED (default: %d)", params.diffusion.algorithm),
         [](common_params & params, int value) { params.diffusion.algorithm = value; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-alg-temp"}, "F",
         string_format("dream algorithm temperature (default: %.3f)", (double) params.diffusion.alg_temp),
         [](common_params & params, const std::string & value) { params.diffusion.alg_temp = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-block-length"}, "N",
         string_format("llada block length for generation (default: %d)", params.diffusion.block_length),
         [](common_params & params, int value) { params.diffusion.block_length = value; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-cfg-scale"}, "F",
         string_format("llada classifier-free guidance scale (default: %.3f)", (double) params.diffusion.cfg_scale),
         [](common_params & params, const std::string & value) { params.diffusion.cfg_scale = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-add-gumbel-noise"}, "F",
         string_format("add gumbel noise to the logits if temp > 0.0 (default: %s)", params.diffusion.add_gumbel_noise ? "true" : "false"),
         [](common_params & params, const std::string & value) { params.diffusion.add_gumbel_noise = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eb"}, "MODE",
         "entropy-bound decoder for canvas/block-diffusion models (DiffusionGemma): auto|on|off (default: auto)",
@@ -3852,37 +3853,37 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             else if (value == "auto") { params.diffusion.eb_mode = 0; }
             else { throw std::invalid_argument("--diffusion-eb must be auto|on|off"); }
         }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eb-t-min"}, "F",
         "entropy-bound: temperature at the last step (default: from model metadata, else 0.4)",
         [](common_params & params, const std::string & value) { params.diffusion.eb_t_min = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eb-t-max"}, "F",
         "entropy-bound: temperature at the first step (default: from model metadata, else 0.8)",
         [](common_params & params, const std::string & value) { params.diffusion.eb_t_max = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eb-entropy-bound"}, "F",
         "entropy-bound: accept lowest-entropy tokens within this MI bound (default: from model metadata, else 0.1)",
         [](common_params & params, const std::string & value) { params.diffusion.eb_entropy_bound = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eb-stability"}, "N",
         "entropy-bound: steps the argmax canvas must hold to stop (default: from model metadata, else 1)",
         [](common_params & params, int value) { params.diffusion.eb_stability = value; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eb-confidence"}, "F",
         "entropy-bound: stop once mean canvas entropy drops below this (default: from model metadata, else 0.005)",
         [](common_params & params, const std::string & value) { params.diffusion.eb_confidence = std::stof(value); }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-eb-max-steps"}, "N",
         "entropy-bound: max denoising steps (default: from model metadata, else 48)",
         [](common_params & params, int value) { params.diffusion.eb_max_steps = value; }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         {"--diffusion-kv-cache"}, "MODE",
         "entropy-bound: prefix KV cache (PREFILL prompt once, decode canvas-only per step): auto|on|off "
@@ -3893,7 +3894,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             else if (value == "auto") { params.diffusion.eb_kv_cache = 0; }
             else { throw std::invalid_argument("--diffusion-kv-cache must be auto|on|off"); }
         }
-    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_SERVER }));
     add_opt(common_arg(
         { "-lr", "--learning-rate" }, "ALPHA",
         string_format("adamw or sgd optimizer alpha (default: %.2g); note: sgd alpha recommended ~10x (no momentum)", (double) params.lr.lr0),

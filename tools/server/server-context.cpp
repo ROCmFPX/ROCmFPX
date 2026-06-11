@@ -8,6 +8,7 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "diffusion.h"
 #include "llama.h"
 #include "log.h"
 #include "sampling.h"
@@ -16,11 +17,15 @@
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <cstddef>
 #include <cinttypes>
+#include <ctime>
 #include <exception>
 #include <memory>
 #include <filesystem>
+#include <mutex>
 #include <utility>
 
 // fix problem with std::min and std::max
@@ -615,6 +620,7 @@ struct server_metrics {
 
 struct server_context_impl {
     friend struct server_context;
+    friend struct server_routes;
 
 public:
     // only use these pointers outside of this class:
@@ -653,6 +659,7 @@ private:
     common_init_result_ptr llama_init;
 
     llama_context * ctx_tgt = nullptr;
+    mutable std::mutex diffusion_mutex;
 
     llama_batch batch {};
 
@@ -3297,6 +3304,239 @@ private:
         return slots.back().n_ctx;
     }
 
+    json diffusion_completion_json(
+            const json & data,
+            task_response_type res_type,
+            const std::string & completion_id,
+            const std::string & served_model_name) const {
+        if (!llama_model_is_diffusion(model_tgt)) {
+            throw std::runtime_error("model is not a diffusion model");
+        }
+        if (json_value(data, "stream", false)) {
+            throw std::runtime_error("streaming responses are not supported for diffusion models yet");
+        }
+        if (res_type == TASK_RESPONSE_TYPE_OAI_RESP ||
+            res_type == TASK_RESPONSE_TYPE_ANTHROPIC ||
+            res_type == TASK_RESPONSE_TYPE_OAI_ASR) {
+            throw std::runtime_error("this OpenAI-compatible endpoint is not supported for diffusion models yet; use /v1/chat/completions or /v1/completions");
+        }
+
+        const auto & prompt_json = data.at("prompt");
+        if (!prompt_json.is_string()) {
+            throw std::runtime_error("diffusion server currently supports one text prompt per request");
+        }
+
+        const std::string formatted_prompt = prompt_json.get<std::string>();
+        const int32_t default_n_predict = params_base.n_predict > 0 ? params_base.n_predict : 256;
+        const int32_t n_predict = json_value(data, "n_predict", json_value(data, "max_tokens", default_n_predict));
+
+        char canvas_str[32];
+        int64_t canvas_length = 0;
+        if (llama_model_meta_val_str(model_tgt, "diffusion.canvas_length", canvas_str, sizeof(canvas_str)) >= 0) {
+            canvas_length = strtol(canvas_str, nullptr, 10);
+        }
+        if (canvas_length <= 0) {
+            throw std::runtime_error("llama-server diffusion responses currently require a canvas diffusion model");
+        }
+
+        llama_token mask_token_id = llama_vocab_mask(vocab);
+        if (mask_token_id == LLAMA_TOKEN_NULL) {
+            throw std::runtime_error("diffusion model does not expose a mask token");
+        }
+
+        auto meta_f = [&](const char * key, float def) -> float {
+            char buf[32];
+            return llama_model_meta_val_str(model_tgt, key, buf, sizeof(buf)) >= 0 ? strtof(buf, nullptr) : def;
+        };
+        auto meta_i = [&](const char * key, int32_t def) -> int32_t {
+            char buf[32];
+            return llama_model_meta_val_str(model_tgt, key, buf, sizeof(buf)) >= 0 ? (int32_t) strtol(buf, nullptr, 10) : def;
+        };
+
+        diffusion_params diff_params;
+        char shift_logits_str[8];
+        if (llama_model_meta_val_str(model_tgt, "diffusion.shift_logits", shift_logits_str, sizeof(shift_logits_str)) >= 0) {
+            diff_params.shift_logits = strcmp(shift_logits_str, "true") == 0;
+        } else {
+            diff_params.shift_logits = false;
+        }
+        diff_params.schedule            = DIFFUSION_TRANSFER_SCHEDULE_TIMESTEP_BASED;
+        diff_params.eps                 = params_base.diffusion.eps > 0 ? params_base.diffusion.eps : 1e-3f;
+        diff_params.mask_token_id       = mask_token_id;
+        diff_params.seed                = params_base.sampling.seed;
+        diff_params.temperature         = json_value(data, "temperature", params_base.sampling.temp);
+        diff_params.steps               = params_base.diffusion.steps;
+        diff_params.algorithm           = static_cast<diffusion_algorithm>(params_base.diffusion.algorithm);
+        diff_params.top_p               = json_value(data, "top_p", params_base.sampling.top_p);
+        diff_params.top_k               = json_value(data, "top_k", params_base.sampling.top_k);
+        diff_params.add_gumbel_noise    = params_base.diffusion.add_gumbel_noise;
+        diff_params.suppress_mask_token = true;
+        diff_params.self_conditioning   = true;
+
+        diffusion_eb_params eb_params;
+        eb_params.max_denoising_steps  = meta_i("diffusion.eb_max_steps", 48);
+        eb_params.t_min                = meta_f("diffusion.eb_t_min", 0.4f);
+        eb_params.t_max                = meta_f("diffusion.eb_t_max", 0.8f);
+        eb_params.entropy_bound        = meta_f("diffusion.eb_entropy_bound", 0.1f);
+        eb_params.stability_threshold  = meta_i("diffusion.eb_stability_threshold", 1);
+        eb_params.confidence_threshold = meta_f("diffusion.eb_confidence_threshold", 0.005f);
+        if (params_base.diffusion.eb_t_min         >= 0) { eb_params.t_min                = params_base.diffusion.eb_t_min; }
+        if (params_base.diffusion.eb_t_max         >= 0) { eb_params.t_max                = params_base.diffusion.eb_t_max; }
+        if (params_base.diffusion.eb_entropy_bound >= 0) { eb_params.entropy_bound        = params_base.diffusion.eb_entropy_bound; }
+        if (params_base.diffusion.eb_stability     >= 0) { eb_params.stability_threshold  = params_base.diffusion.eb_stability; }
+        if (params_base.diffusion.eb_confidence    >= 0) { eb_params.confidence_threshold = params_base.diffusion.eb_confidence; }
+        if (params_base.diffusion.eb_max_steps     >  0) { eb_params.max_denoising_steps  = params_base.diffusion.eb_max_steps; }
+        eb_params.seed     = params_base.sampling.seed;
+        eb_params.kv_cache = params_base.diffusion.eb_kv_cache != 2;
+
+        const bool use_eb = params_base.diffusion.eb_mode != 2;
+
+        auto trim_canvas = [&](const llama_token * canvas, size_t n) -> size_t {
+            size_t cut = n;
+            for (size_t i = 0; i < n; i++) {
+                if (llama_vocab_is_eog(vocab, canvas[i])) {
+                    cut = i;
+                    break;
+                }
+            }
+            for (size_t i = 0; i + 1 < cut; i++) {
+                bool loop = false;
+                for (size_t stride = 1; stride <= 2 && !loop; stride++) {
+                    size_t reps = 0;
+                    for (size_t j = i; j + stride < n && canvas[j] == canvas[j + stride]; j += stride) {
+                        reps++;
+                    }
+                    loop = reps >= 6;
+                }
+                if (loop) {
+                    cut = i;
+                    break;
+                }
+            }
+            return cut;
+        };
+
+        llama_tokens prefix = common_tokenize(vocab, formatted_prompt, true, true);
+        if ((uint32_t) prefix.size() >= llama_n_ctx(ctx_tgt)) {
+            throw std::runtime_error("input is longer than the server context");
+        }
+
+        const int32_t blocks_from_n = n_predict > 0 ? (n_predict + (int32_t) canvas_length - 1) / (int32_t) canvas_length : 1;
+        const int32_t n_blocks      = std::max(1, std::max(params_base.diffusion.blocks, blocks_from_n));
+        const int32_t max_ub        = std::min((int32_t) llama_n_ubatch(ctx_tgt), (int32_t) llama_n_ctx(ctx_tgt));
+
+        llama_tokens response_tokens;
+        std::vector<llama_token> output_tokens(max_ub);
+
+        std::lock_guard<std::mutex> lock(diffusion_mutex);
+        llama_memory_t mem = llama_get_memory(ctx_tgt);
+        if (mem) {
+            llama_memory_clear(mem, true);
+        }
+        llama_diffusion_set_sc(model_tgt, nullptr, 0.0f, 1.0f, true);
+
+        for (int32_t b = 0; b < n_blocks; b++) {
+            const int32_t prefix_len = (int32_t) prefix.size();
+            const int32_t max_length = prefix_len + (int32_t) canvas_length;
+            if (max_length > max_ub) {
+                if (b == 0) {
+                    throw std::runtime_error(string_format(
+                            "diffusion generation needs -c and -ub >= prompt_tokens + canvas_length (%d + %d = %d)",
+                            prefix_len, (int32_t) canvas_length, max_length));
+                }
+                break;
+            }
+
+            diff_params.max_length = max_length;
+            eb_params.max_length   = max_length;
+
+            int32_t n_generated = 0;
+            if (use_eb) {
+                diffusion_generate_entropy_bound(ctx_tgt, prefix.data(), output_tokens.data(), prefix_len, eb_params, n_generated);
+            } else {
+                diffusion_generate(ctx_tgt, prefix.data(), output_tokens.data(), prefix_len, diff_params, n_generated);
+            }
+
+            if (n_generated <= prefix_len) {
+                if (b == 0) {
+                    throw std::runtime_error("diffusion generation failed");
+                }
+                break;
+            }
+
+            const llama_token * canvas = output_tokens.data() + prefix_len;
+            const size_t cut = trim_canvas(canvas, (size_t) canvas_length);
+            response_tokens.insert(response_tokens.end(), canvas, canvas + cut);
+            if (cut < (size_t) canvas_length || (n_predict > 0 && (int32_t) response_tokens.size() >= n_predict)) {
+                break;
+            }
+            prefix.insert(prefix.end(), canvas, canvas + cut);
+        }
+
+        if (n_predict > 0 && (int32_t) response_tokens.size() > n_predict) {
+            response_tokens.resize(n_predict);
+        }
+
+        const std::string content = common_detokenize(vocab, response_tokens, false);
+        const int32_t n_prompt_tokens = (int32_t) common_tokenize(vocab, formatted_prompt, true, true).size();
+        json usage = {
+            {"completion_tokens", (int32_t) response_tokens.size()},
+            {"prompt_tokens", n_prompt_tokens},
+            {"total_tokens", n_prompt_tokens + (int32_t) response_tokens.size()},
+            {"prompt_tokens_details", json { {"cached_tokens", 0} }},
+        };
+
+        if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+            return {
+                {"choices", json::array({
+                    {
+                        {"finish_reason", "stop"},
+                        {"index", 0},
+                        {"message", {
+                            {"role", "assistant"},
+                            {"content", content},
+                        }},
+                    },
+                })},
+                {"created", std::time(nullptr)},
+                {"model", served_model_name},
+                {"system_fingerprint", std::string(llama_build_info())},
+                {"object", "chat.completion"},
+                {"usage", usage},
+                {"id", completion_id},
+            };
+        }
+
+        if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
+            return {
+                {"choices", json::array({
+                    {
+                        {"text", content},
+                        {"index", 0},
+                        {"logprobs", nullptr},
+                        {"finish_reason", "stop"},
+                    },
+                })},
+                {"created", std::time(nullptr)},
+                {"model", served_model_name},
+                {"system_fingerprint", std::string(llama_build_info())},
+                {"object", "text_completion"},
+                {"usage", usage},
+                {"id", completion_id},
+            };
+        }
+
+        return {
+            {"index", 0},
+            {"content", content},
+            {"tokens", response_tokens},
+            {"stop", true},
+            {"model", served_model_name},
+            {"tokens_predicted", (int32_t) response_tokens.size()},
+            {"tokens_evaluated", n_prompt_tokens},
+        };
+    }
+
     server_response_reader get_response_reader() {
         return server_response_reader(queue_tasks, queue_results, HTTP_POLLING_SECONDS);
     }
@@ -3418,6 +3658,14 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
     auto & rd = res->rd;
 
     try {
+        if (llama_model_is_diffusion(ctx_server.model_tgt)) {
+            if (!files.empty()) {
+                throw std::runtime_error("multimodal input is not supported for diffusion models yet");
+            }
+            res->ok(ctx_server.diffusion_completion_json(data, res_type, completion_id, meta->model_name));
+            return res;
+        }
+
         std::vector<server_task> tasks;
 
         const auto & prompt = data.at("prompt");
