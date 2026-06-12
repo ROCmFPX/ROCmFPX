@@ -21,6 +21,7 @@ import type {
 } from '$lib/types/api';
 import type { DatabaseMessageExtraMcpPrompt, DatabaseMessageExtraMcpResource } from '$lib/types';
 import { modelsStore } from '$lib/stores/models.svelte';
+import { capImageDataURLSize } from '$lib/utils/cap-img-size';
 
 export class ChatService {
 	/**
@@ -838,9 +839,11 @@ export class ChatService {
 		);
 
 		for (const image of imageFiles) {
+			const base64Url = await capImageDataURLSize(image.base64Url, 0);
+
 			contentParts.push({
 				type: ContentPartType.IMAGE_URL,
-				image_url: { url: image.base64Url }
+				image_url: { url: base64Url }
 			});
 		}
 
