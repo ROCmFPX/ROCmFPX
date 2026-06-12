@@ -86,6 +86,8 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
+    const bool is_router_server = params.model.path.empty();
+
     common_params_print_info(params);
 
     if (!is_router_server) {
@@ -128,7 +130,6 @@ int main(int argc, char ** argv) {
     server_routes routes(params, ctx_server);
     server_tools tools;
 
-    bool is_router_server = params.model.path.empty();
     std::optional<server_models_routes> models_routes{};
     if (is_router_server) {
         // setup server instances manager
