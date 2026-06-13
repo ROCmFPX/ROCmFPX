@@ -777,6 +777,19 @@ float16_t dequantFuncIQ4_NL(const in decodeBufIQ4_NL bl, const in uint blockCoor
     float16_t ret = float16_t(kvalues_iq4nl[qs]) * d;
     return ret;
 }
+
+f16vec4 dequantFuncIQ4_NL_v(const in decodeBufIQ4_NL bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t d = bl.block.d;
+    const uint idx = coordInBlock[1];
+    const uint shift = (idx & 0x10) >> 2;
+    const uint qs_i = (idx & 0xC) >> 1;
+    const uint qsw = uint32_t(bl.block.qs[qs_i])
+                   | (uint32_t(bl.block.qs[qs_i + 1u]) << 16);
+    const u8vec4 q = unpack8((qsw >> shift) & 0x0F0F0F0Fu);
+    return f16vec4(vec4(kvalues_iq4nl[q.x], kvalues_iq4nl[q.y],
+                        kvalues_iq4nl[q.z], kvalues_iq4nl[q.w]) * vec4(float(d)));
+}
 #endif
 
 #if defined(DATA_A_MXFP4)
