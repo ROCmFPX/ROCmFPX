@@ -43,6 +43,29 @@ Current strongest reproduced local result:
 The benchmark policy is intentionally conservative: a microbenchmark win is not
 promoted unless end-to-end decode guards hold or improve.
 
+## Validation Matrix
+
+| Target | Script | Status |
+|---|---|---|
+| Strix Halo / RDNA3.5 (`gfx1151`) | `scripts/build-strix-rocmfp4-mtp.sh` | Validated locally on Framework Desktop / Ryzen AI MAX+ 395 |
+| RDNA3 (`gfx1100` class) | `scripts/build-rdna3.sh` | Build target provided; community validation wanted |
+| RDNA2 (`gfx1030` class) | `scripts/build-rdna2.sh` | Build target provided; community validation wanted |
+| RDNA4 (`gfx1200` class) | `scripts/build-rdna4.sh` | Experimental; requires ROCm support for `gfx1200` device libraries |
+| Vulkan fallback | Manual CMake path | Recommended when HIP support is incomplete or a GPU is not mapped cleanly |
+
+## Latest Validated Snapshot
+
+- Validated integration snapshot: `4860505ee`
+- Validation date: `2026-06-13`
+
+This snapshot passed the promoted Strix Halo gate with:
+
+- ROCmFP4 quantization tests
+- MTMD C API smoke test
+- ROCm copy and FlashAttention backend tests
+- ROCmFP4 copy, FlashAttention, and runtime regression guards
+- Qwen3.6 35B A3B MTP ROCmFP4 smoke test
+
 ## Documentation
 
 | Guide | Who it's for |
@@ -76,8 +99,8 @@ Pick the script that matches your GPU:
 | Your GPU | Build command | Output folder |
 |---|---|---|
 | Strix Halo / RDNA3.5 | `env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh` | `build-strix-rocmfp4/` |
-| RDNA2 (RX 6000 / 7600) | `env JOBS=16 scripts/build-rdna2.sh` | `build-rdna2/` |
-| RDNA3 (RX 7000) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
+| RDNA2 (RX 6000) | `env JOBS=16 scripts/build-rdna2.sh` | `build-rdna2/` |
+| RDNA3 (RX 7000, including RX 7600-class cards) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
 | RDNA4 (RX 9000) | `env JOBS=16 scripts/build-rdna4.sh` | `build-rdna4/` |
 | Vega 20 / gfx906 experimental (MI50 / MI60) | `env JOBS=16 scripts/build-gfx906.sh` | `build-gfx906/` |
 | Windows RDNA2 | `build-hip.bat` | `build-hip/` |

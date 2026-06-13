@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT/build-strix-rocmfp4}"
 JOBS="${JOBS:-$(nproc)}"
+HIP_ARCH="${CMAKE_HIP_ARCHITECTURES:-gfx1151}"
 ROCM_WMMA_INCLUDE="${ROCM_WMMA_INCLUDE:-/home/caf/strix-fp4/third_party/rocWMMA/library/include}"
 HIP_EXTRA_FLAGS="${CMAKE_HIP_FLAGS:-}"
 
@@ -25,7 +26,8 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DGGML_HIP_FORCE_MMQ=ON \
     -DGGML_VULKAN=ON \
     -DGGML_CUDA=OFF \
-    -DCMAKE_HIP_ARCHITECTURES="${CMAKE_HIP_ARCHITECTURES:-gfx1151}" \
+    -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH" \
+    -DGPU_TARGETS="$HIP_ARCH" \
     -DCMAKE_HIP_FLAGS="$HIP_EXTRA_FLAGS" \
     -DLLAMA_BUILD_SERVER=ON \
     -DLLAMA_BUILD_WEBUI=OFF \
