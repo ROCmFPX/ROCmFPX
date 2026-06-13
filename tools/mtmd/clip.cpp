@@ -516,7 +516,7 @@ ggml_tensor * clip_graph::build_inp() {
 }
 
 ggml_tensor * clip_graph::build_inp_raw(int channels) {
-    ggml_tensor * inp_raw = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, img.nx, img.ny, channels);
+    ggml_tensor * inp_raw = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, img.nx, img.ny, channels, n_batch);
     ggml_set_name(inp_raw, "inp_raw");
     ggml_set_input(inp_raw);
     return inp_raw;
@@ -834,7 +834,7 @@ ggml_tensor * clip_graph::build_patch_merge_permute(ggml_tensor * cur, int scale
 }
 
 static ggml_cgraph * clip_image_build_graph(clip_ctx * ctx, const clip_image_f32_batch & imgs) {
-    GGML_ASSERT(imgs.entries.size() == 1 && "n_batch > 1 is not supported");
+    GGML_ASSERT(!imgs.entries.empty());
 
     const clip_image_f32 & img = *imgs.entries[0];
     std::unique_ptr<clip_graph> builder;
@@ -983,6 +983,8 @@ static ggml_cgraph * clip_image_build_graph(clip_ctx * ctx, const clip_image_f32
         default:
             GGML_ABORT("missing cgraph builder");
     }
+
+    builder->n_batch = imgs.entries.size();
 
     return builder->build();
 }
@@ -3367,12 +3369,16 @@ bool clip_image_encode(struct clip_ctx * ctx, const int n_threads, clip_image_f3
 
 bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_image_f32_batch * imgs_c_ptr, float * vec) {
     const clip_image_f32_batch & imgs = *imgs_c_ptr;
-    int batch_size = imgs.entries.size();
+    const int n_batch_cur = imgs.entries.size();
+    const int n_batch_max = clip_model_n_batch_max(ctx);
 
-    // TODO @ngxson : implement batch size > 1 as a loop
-    //                we don't need true batching support because the cgraph will gonna be big anyway
-    if (batch_size != 1) {
-        return false; // only support batch size of 1
+    if (n_batch_cur < 1 || n_batch_cur > n_batch_max) {
+        return false;
+    }
+    for (int i = 1; i < n_batch_cur; ++i) {
+        if (imgs.entries[i]->nx != imgs.entries[0]->nx || imgs.entries[i]->ny != imgs.entries[0]->ny) {
+            return false;
+        }
     }
 
     // if buffers are not allocated, we need to do a warmup run to allocate them
@@ -3443,12 +3449,12 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         // └─────┘ │
         //   ──────┘ x B
 
-        for (size_t i = 0; i < imgs.entries.size(); i++) {
-            const int nx = imgs.entries[i]->nx;
-            const int ny = imgs.entries[i]->ny;
+        {
+            const int nx = imgs.entries[0]->nx;
+            const int ny = imgs.entries[0]->ny;
             const int n = nx * ny;
 
-            for (int b = 0; b < batch_size; b++) {
+            for (int b = 0; b < n_batch_cur; b++) {
                 float * batch_entry = inp_raw.data() + b * (3*n);
                 for (int y = 0; y < ny; y++) {
                     for (int x = 0; x < nx; x++) {
@@ -4351,6 +4357,17 @@ bool clip_has_whisper_encoder(const struct clip_ctx * ctx) {
             return true;
         default:
             return false;
+    }
+}
+
+int clip_model_n_batch_max(const struct clip_ctx * ctx) {
+    switch (ctx->proj_type()) {
+        case PROJECTOR_TYPE_QWEN2VL:
+        case PROJECTOR_TYPE_QWEN25VL:
+        case PROJECTOR_TYPE_QWEN3VL:
+            return 2;
+        default:
+            return 1;
     }
 }
 

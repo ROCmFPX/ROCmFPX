@@ -31,6 +31,10 @@ struct mtmd_bitmap {
     std::vector<unsigned char> data;
     std::string id; // optional user-defined id, for ex: can be set to image hash, useful for KV cache tracking
     bool is_audio = false; // true if the bitmap is audio
+
+    bool can_batch_with(const mtmd_bitmap & other) const {
+        return !is_audio && !other.is_audio && nx == other.nx && ny == other.ny;
+    }
 };
 
 // position indexing for decoder model
@@ -661,17 +665,55 @@ struct mtmd_tokenizer {
     int32_t tokenize(mtmd_input_chunks * output) {
         cur.entries.clear();
         std::vector<std::string> parts = split_text(input_text, ctx->media_marker);
-        size_t i_bm = 0; // index of the current bitmap
-        for (auto & part : parts) {
-            if (part == ctx->media_marker) {
-                // this is a marker, we should add the next bitmap
-                if (i_bm >= bitmaps.size()) {
+
+        int n_merge_frames = 1;
+        if (ctx->ctx_v) {
+            n_merge_frames = clip_model_n_batch_max(ctx->ctx_v);
+            GGML_ASSERT(n_merge_frames <= 2 && "only two-frame MTMD merging is supported");
+        }
+
+        std::vector<std::vector<const mtmd_bitmap *>> merged_bitmaps;
+        if (n_merge_frames > 1) {
+            size_t i_bm_scan = 0;
+            for (size_t i = 0; i < parts.size(); ++i) {
+                if (parts[i] != ctx->media_marker) {
+                    continue;
+                }
+                if (i_bm_scan >= bitmaps.size()) {
                     LOG_ERR("%s: error: number of bitmaps (%zu) does not match number of markers (%zu)\n",
                             __func__, bitmaps.size(), parts.size() - 1);
                     return 1;
                 }
-                const mtmd_bitmap * bitmap = bitmaps[i_bm++];
-                int32_t res = add_media(bitmap);
+                if (i + 1 < parts.size()
+                        && parts[i + 1] == ctx->media_marker
+                        && i_bm_scan + 1 < bitmaps.size()
+                        && bitmaps[i_bm_scan]->can_batch_with(*bitmaps[i_bm_scan + 1])) {
+                    LOG_DBG("%s: merging 2 frames at bitmap index %zu and %zu\n", __func__, i_bm_scan, i_bm_scan + 1);
+                    merged_bitmaps.push_back({ bitmaps[i_bm_scan], bitmaps[i_bm_scan + 1] });
+                    parts.erase(parts.begin() + i + 1);
+                    i_bm_scan += 2;
+                } else {
+                    LOG_DBG("%s: no merging for bitmap index %zu\n", __func__, i_bm_scan);
+                    merged_bitmaps.push_back({ bitmaps[i_bm_scan] });
+                    ++i_bm_scan;
+                }
+            }
+        } else {
+            for (const mtmd_bitmap * bitmap : bitmaps) {
+                merged_bitmaps.push_back({ bitmap });
+            }
+        }
+
+        size_t i_bm = 0; // index of the current bitmap group
+        for (auto & part : parts) {
+            if (part == ctx->media_marker) {
+                // this is a marker, we should add the next bitmap
+                if (i_bm >= merged_bitmaps.size()) {
+                    LOG_ERR("%s: error: number of bitmaps (%zu) does not match number of markers (%zu)\n",
+                            __func__, merged_bitmaps.size(), parts.size() - 1);
+                    return 1;
+                }
+                int32_t res = add_media(merged_bitmaps[i_bm++]);
                 if (res != 0) {
                     return res;
                 }
@@ -704,9 +746,9 @@ struct mtmd_tokenizer {
             add_text({llama_vocab_eos(vocab)});
         }
 
-        if (i_bm != bitmaps.size()) {
+        if (i_bm != merged_bitmaps.size()) {
             LOG_ERR("%s: error: number of bitmaps (%zu) does not match number of markers (%zu)\n",
-                    __func__, bitmaps.size(), parts.size() - 1);
+                    __func__, merged_bitmaps.size(), parts.size() - 1);
             return 1;
         }
 
@@ -742,8 +784,10 @@ struct mtmd_tokenizer {
         }
     }
 
-    int32_t add_media(const mtmd_bitmap * bitmap) {
-        if (!bitmap->is_audio) {
+    int32_t add_media(const std::vector<const mtmd_bitmap *> & media) {
+        GGML_ASSERT(!media.empty());
+
+        if (!media[0]->is_audio) {
             // handle image
 
             if (!ctx->ctx_v) {
@@ -755,24 +799,35 @@ struct mtmd_tokenizer {
                 add_text(ctx->img_beg, true); // add image begin token
             }
 
-            // sanity check
-            GGML_ASSERT(bitmap->nx > 0 && bitmap->ny > 0);
-            GGML_ASSERT(bitmap->data.size() == (size_t)bitmap->nx * bitmap->ny * 3);
-            GGML_ASSERT(ctx->image_preproc != nullptr);
-
-            // convert mtmd_bitmap to clip_image_u8
-            clip_image_u8_ptr img_u8(clip_image_u8_init());
-            img_u8->nx = bitmap->nx;
-            img_u8->ny = bitmap->ny;
-            img_u8->buf.resize(bitmap->data.size());
-            std::memcpy(img_u8->buf.data(), bitmap->data.data(), img_u8->nx * img_u8->ny * 3);
-
-            // preprocess image
             clip_image_f32_batch batch_f32;
-            bool ok = ctx->image_preproc->preprocess(*img_u8, batch_f32);
-            if (!ok) {
-                LOG_ERR("Unable to preprocess image\n");
-                return 2;
+
+            for (const mtmd_bitmap * bitmap : media) {
+                // sanity check
+                GGML_ASSERT(!bitmap->is_audio);
+                GGML_ASSERT(bitmap->nx > 0 && bitmap->ny > 0);
+                GGML_ASSERT(bitmap->data.size() == (size_t)bitmap->nx * bitmap->ny * 3);
+                GGML_ASSERT(ctx->image_preproc != nullptr);
+
+                // convert mtmd_bitmap to clip_image_u8
+                clip_image_u8_ptr img_u8(clip_image_u8_init());
+                img_u8->nx = bitmap->nx;
+                img_u8->ny = bitmap->ny;
+                img_u8->buf.resize(bitmap->data.size());
+                std::memcpy(img_u8->buf.data(), bitmap->data.data(), img_u8->nx * img_u8->ny * 3);
+
+                // preprocess image
+                clip_image_f32_batch tmp_batch;
+                bool ok = ctx->image_preproc->preprocess(*img_u8, tmp_batch);
+                if (!ok) {
+                    LOG_ERR("Unable to preprocess image\n");
+                    return 2;
+                }
+
+                for (auto & entry : tmp_batch.entries) {
+                    batch_f32.entries.emplace_back(std::move(entry));
+                }
+                batch_f32.grid_x = tmp_batch.grid_x;
+                batch_f32.grid_y = tmp_batch.grid_y;
             }
 
             // handle llava-uhd style preprocessing
@@ -785,11 +840,13 @@ struct mtmd_tokenizer {
                 || ctx->slice_tmpl == MTMD_SLICE_TMPL_STEP3VL
                 || (ctx->slice_tmpl == MTMD_SLICE_TMPL_LFM2 && has_tiling_grid)
             ) {
+                GGML_ASSERT(media.size() == 1);
+
                 const int n_col = batch_f32.grid_x;
                 const int n_row = batch_f32.grid_y;
                 // split batch into chunks of single images
                 // NOTE: batch_f32 will be invalidated after this call
-                auto chunks = split_batch_to_chunk(std::move(batch_f32), bitmap->id);
+                auto chunks = split_batch_to_chunk(std::move(batch_f32), media[0]->id);
                 GGML_ASSERT(chunks.size() > 0);
 
                 auto ov_chunk = std::move(chunks.front());
@@ -842,6 +899,10 @@ struct mtmd_tokenizer {
                 size_t n_tokens = 0;
                 for (const auto & entry : batch_f32.entries) {
                     n_tokens += clip_n_output_tokens(ctx->ctx_v, entry.get());
+                    if (clip_model_n_batch_max(ctx->ctx_v) == 2) {
+                        // Qwen-VL frame pairs share one output embedding sequence.
+                        break;
+                    }
                 }
 
                 mtmd_image_tokens_ptr image_tokens(new mtmd_image_tokens);
@@ -864,7 +925,7 @@ struct mtmd_tokenizer {
                     GGML_ASSERT(n_tokens == (size_t)image_tokens->n_tokens());
                 }
                 image_tokens->batch_f32 = std::move(batch_f32);
-                image_tokens->id = bitmap->id; // optional
+                image_tokens->id = media[0]->id; // optional
 
                 LOG_DBG("image_tokens->nx = %d\n", image_tokens->nx);
                 LOG_DBG("image_tokens->ny = %d\n", image_tokens->ny);
@@ -888,6 +949,8 @@ struct mtmd_tokenizer {
 
         } else {
             // handle audio
+            GGML_ASSERT(media.size() == 1);
+            const mtmd_bitmap * bitmap = media[0];
 
             if (!ctx->ctx_a) {
                 LOG_ERR("%s: error: model does not support audio input\n", __func__);
