@@ -1,4 +1,8 @@
 
+#ifdef GL_NV_cooperative_matrix_decode_vector
+#extension GL_NV_cooperative_matrix_decode_vector : enable
+#endif
+
 #include "types.glsl"
 
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer decodeBufF32 {
@@ -25,6 +29,19 @@ float16_t dequantFuncQ1_0(const in decodeBufQ1_0 bl, const in uint blockCoords[2
     return bit != 0u ? d : -d;
 }
 
+f16vec4 dequantFuncQ1_0_v(const in decodeBufQ1_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t d  = bl.block.d;
+    const float16_t md = -d;
+    const uint idx = coordInBlock[1];
+    const uint qs_nib = uint(bl.block.qs[idx >> 3]) >> (idx & 0x4u);
+    return f16vec4(
+        (qs_nib & 1u) != 0u ? d : md,
+        (qs_nib & 2u) != 0u ? d : md,
+        (qs_nib & 4u) != 0u ? d : md,
+        (qs_nib & 8u) != 0u ? d : md);
+}
+
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufQ4_0 {
    block_q4_0_packed16 block;
 };
@@ -42,8 +59,25 @@ float16_t dequantFuncQ4_0(const in decodeBufQ4_0 bl, const in uint blockCoords[2
     return ret;
 }
 
+f16vec4 dequantFuncQ4_0_v(const in decodeBufQ4_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t d = bl.block.d;
+    const uint idx = coordInBlock[1];
+    const uint shift = (idx & 0x10) >> 2;
+    const uint qs_i = (idx & 0xE) >> 1;
+    const uint qsw = uint32_t(bl.block.qs[qs_i])
+                   | (uint32_t(bl.block.qs[qs_i + 1u]) << 16);
+    const uint q4 = (qsw >> shift) & 0x0F0F0F0Fu;
+    const u8vec4 q = unpack8(q4);
+    return f16vec4((vec4(q) - vec4(8.0)) * vec4(float(d)));
+}
+
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufQ4_1 {
    block_q4_1 block;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufQ4_1_packed32 {
+   block_q4_1_packed32 block;
 };
 
 float16_t dequantFuncQ4_1(const in decodeBufQ4_1 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
@@ -60,8 +94,25 @@ float16_t dequantFuncQ4_1(const in decodeBufQ4_1 bl, const in uint blockCoords[2
     return ret;
 }
 
+f16vec4 dequantFuncQ4_1_v(const in decodeBufQ4_1 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    decodeBufQ4_1_packed32 bl32 = decodeBufQ4_1_packed32(bl);
+    const float16_t d = bl.block.d;
+    const float16_t m = bl.block.m;
+    const uint idx = coordInBlock[1];
+    const uint shift = (idx & 0x10) >> 2;
+    const uint qs_w = (idx & 0xC) >> 2;
+    const uint qsw = uint32_t(bl32.block.qs[qs_w]);
+    const u8vec4 q = unpack8((qsw >> shift) & 0x0F0F0F0Fu);
+    return f16vec4(vec4(q) * vec4(float(d)) + vec4(float(m)));
+}
+
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufQ5_0 {
    block_q5_0 block;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufQ5_0_packed16 {
+   block_q5_0_packed16 block;
 };
 
 float16_t dequantFuncQ5_0(const in decodeBufQ5_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
@@ -82,8 +133,30 @@ float16_t dequantFuncQ5_0(const in decodeBufQ5_0 bl, const in uint blockCoords[2
     return ret;
 }
 
+f16vec4 dequantFuncQ5_0_v(const in decodeBufQ5_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    decodeBufQ5_0_packed16 bl16 = decodeBufQ5_0_packed16(bl);
+    const float16_t d = bl.block.d;
+    const uint idx = coordInBlock[1];
+    const uint shift = (idx & 0x10) >> 2;
+    const uint qs_i = (idx & 0xC) >> 1;
+    const uint qsw = uint32_t(bl16.block.qs[qs_i])
+                   | (uint32_t(bl16.block.qs[qs_i + 1u]) << 16);
+    const u8vec4 ql = unpack8((qsw >> shift) & 0x0F0F0F0Fu);
+
+    const uint uint_qh = uint(bl16.block.qh[1]) << 16 | uint(bl16.block.qh[0]);
+    const uint qh_pack = uint_qh >> idx;
+    const uvec4 qh_high = (uvec4(qh_pack, qh_pack >> 1u, qh_pack >> 2u, qh_pack >> 3u) & uvec4(0x01u)) << 4u;
+
+    return f16vec4((vec4(ql) + vec4(qh_high) - vec4(16.0)) * vec4(float(d)));
+}
+
 layout(buffer_reference, std430, buffer_reference_align = 8) buffer decodeBufQ5_1 {
    block_q5_1 block;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer decodeBufQ5_1_packed32 {
+   block_q5_1_packed32 block;
 };
 
 float16_t dequantFuncQ5_1(const in decodeBufQ5_1 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
@@ -105,6 +178,23 @@ float16_t dequantFuncQ5_1(const in decodeBufQ5_1 bl, const in uint blockCoords[2
     return ret;
 }
 
+f16vec4 dequantFuncQ5_1_v(const in decodeBufQ5_1 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    decodeBufQ5_1_packed32 bl32 = decodeBufQ5_1_packed32(bl);
+    const float16_t d = bl.block.d;
+    const float16_t m = bl.block.m;
+    const uint idx = coordInBlock[1];
+    const uint shift = (idx & 0x10) >> 2;
+    const uint qs_w = (idx & 0xC) >> 2;
+    const uint qsw = uint32_t(bl32.block.qs[qs_w]);
+    const u8vec4 ql = unpack8((qsw >> shift) & 0x0F0F0F0Fu);
+
+    const uint qh_pack = bl.block.qh >> idx;
+    const uvec4 qh_high = (uvec4(qh_pack, qh_pack >> 1u, qh_pack >> 2u, qh_pack >> 3u) & uvec4(0x01u)) << 4u;
+
+    return f16vec4((vec4(ql) + vec4(qh_high)) * vec4(float(d)) + vec4(float(m)));
+}
+
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufQ8_0 {
    block_q8_0_packed16 block;
 };
@@ -119,6 +209,17 @@ float16_t dequantFuncQ8_0(const in decodeBufQ8_0 bl, const in uint blockCoords[2
     int32_t qs = unpack8(bl.block.qs[(iqs & 0x1E) >> 1])[iqs & 1];
     float16_t ret = float16_t(qs) * d;
     return ret;
+}
+
+f16vec4 dequantFuncQ8_0_v(const in decodeBufQ8_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t d = bl.block.d;
+    const uint idx = coordInBlock[1];
+    const uint base = idx >> 1u;
+    const uint w =  uint(uint16_t(bl.block.qs[base]))
+                 | (uint(uint16_t(bl.block.qs[base + 1u])) << 16u);
+    const i8vec4 qi = unpack8(int32_t(w));
+    return f16vec4(vec4(qi) * vec4(float(d)));
 }
 
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufQ2_K {
