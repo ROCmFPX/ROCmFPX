@@ -13,15 +13,14 @@ shared vec2 sum[BLOCK_SIZE];
 void main() {
     const uint row = gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x;
     const uint tid = gl_LocalInvocationID.x;
-    const uint ncols = p.ne00;
 
     const uint a_base = get_aoffset() + src0_idx(row * p.ne00);
     const uint d_base = get_doffset() + dst_idx(row * p.ne10);
 
     sum[tid] = vec2(0.0f, 0.0f);
 
-    [[unroll]] for (uint col = tid; col < ncols; col += BLOCK_SIZE) {
-        const float xi = float(data_a[a_base + col*p.nb00]);
+    [[unroll]] for (uint i0 = tid; i0 < p.ne00; i0 += BLOCK_SIZE) {
+        const float xi = float(data_a[a_base + i0*p.nb00]);
         sum[tid].x += xi;
         sum[tid].y += xi * xi;
     }
@@ -35,11 +34,11 @@ void main() {
         barrier();
     }
 
-    const float mean = sum[0].x / ncols;
-    const float var = sum[0].y / ncols - mean * mean;
+    const float mean = sum[0].x / p.ne00;
+    const float var = sum[0].y / p.ne00 - mean * mean;
     const float inv_std = inversesqrt(var + p.param1);
 
-    [[unroll]] for (uint col = tid; col < ncols; col += BLOCK_SIZE) {
-        data_d[d_base + col*p.nb10] = D_TYPE((float(data_a[a_base + col*p.nb00]) - mean) * inv_std);
+    [[unroll]] for (uint i0 = tid; i0 < p.ne00; i0 += BLOCK_SIZE) {
+        data_d[d_base + i0*p.nb10] = D_TYPE((float(data_a[a_base + i0*p.nb00]) - mean) * inv_std);
     }
 }
