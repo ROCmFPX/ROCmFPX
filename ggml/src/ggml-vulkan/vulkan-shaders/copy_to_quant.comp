@@ -610,6 +610,79 @@ uint rocmfpx_fp6_quantize_code(float x, float inv_scale) {
     return mag == 0u ? 0u : ((x < 0.0 ? 32u : 0u) | mag);
 }
 
+int rocmfpx_fp6_decode_value(uint code) {
+    const int mag = int(code & 31u);
+    return (code & 32u) != 0u ? -mag : mag;
+}
+
+float rocmfpx_fp6_mse_for_scale(uint src_idx, uint offset, uint e, float best_err) {
+    const float scale = ue4m3_to_fp32(uint8_t(e));
+    const float inv_scale = scale > 0.0 ? 1.0 / scale : 0.0;
+    float err = 0.0;
+
+    [[unroll]] for (uint j = 0u; j < 16u; ++j) {
+        const float x = load_s(src_idx + offset + j);
+        const uint code = rocmfpx_fp6_quantize_code(x, inv_scale);
+        const float y = float(rocmfpx_fp6_decode_value(code)) * scale;
+        const float d = x - y;
+
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+uint rocmfpx_choose_scale_fp6_mse(uint src_idx, uint offset) {
+    float max_abs = 0.0;
+    [[unroll]] for (uint j = 0u; j < 16u; ++j) {
+        max_abs = max(max_abs, abs(load_s(src_idx + offset + j)));
+    }
+
+    if (max_abs <= 0.0) {
+        return 0u;
+    }
+
+    const uint start_e = rocmfpx_nearest_scale_ue4m3(max_abs / 31.0);
+    uint best_e = start_e;
+    float best_err = 3.402823466e+38;
+    bool lower_done = false;
+
+    for (uint delta = 0u; delta <= 125u; ++delta) {
+        const int e0 = int(start_e) - int(delta);
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale = ue4m3_to_fp32(uint8_t(uint(e0)));
+            const float clip_delta = max_abs - 31.0 * scale;
+            if (clip_delta > 0.0 && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = rocmfpx_fp6_mse_for_scale(src_idx, offset, uint(e0), best_err);
+                if (err < best_err || (err == best_err && uint(e0) < best_e)) {
+                    best_err = err;
+                    best_e = uint(e0);
+                }
+            }
+        }
+
+        const uint e1 = start_e + delta;
+        if (delta != 0u && e1 >= 1u && e1 <= 126u) {
+            const float err = rocmfpx_fp6_mse_for_scale(src_idx, offset, e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
+                best_err = err;
+                best_e = e1;
+            }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126u) {
+            break;
+        }
+    }
+
+    return best_e;
+}
+
 void rocmfpx_fp6_set_bits(inout uint qs[24], uint bit_pos, uint code) {
     [[unroll]] for (uint bit = 0u; bit < 6u; ++bit) {
         const uint dst_bit = bit_pos + bit;
@@ -630,12 +703,7 @@ void quantize(uint dst_idx, uint src_idx)
 
     [[unroll]] for (uint part = 0u; part < 2u; ++part) {
         const uint offset = part * 16u;
-        float max_abs = 0.0;
-        [[unroll]] for (uint j = 0u; j < 16u; ++j) {
-            max_abs = max(max_abs, abs(load_s(src_idx + offset + j)));
-        }
-
-        const uint e = rocmfpx_nearest_scale_ue4m3(max_abs / 31.0);
+        const uint e = rocmfpx_choose_scale_fp6_mse(src_idx, offset);
         const float d = ue4m3_to_fp32(uint8_t(e));
         const float id = d > 0.0 ? 1.0 / d : 0.0;
         data_q[dst_idx].e[part] = uint8_t(e);
