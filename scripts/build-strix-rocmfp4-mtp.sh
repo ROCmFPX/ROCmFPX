@@ -9,6 +9,9 @@ JOBS="${JOBS:-$(nproc)}"
 HIP_ARCH="${CMAKE_HIP_ARCHITECTURES:-gfx1151}"
 ROCM_WMMA_INCLUDE="${ROCM_WMMA_INCLUDE:-/home/caf/strix-fp4/third_party/rocWMMA/library/include}"
 HIP_EXTRA_FLAGS="${CMAKE_HIP_FLAGS:-}"
+ROCMFP4_DECODE_TUNE="${ROCMFP4_DECODE_TUNE:-stable}"
+DECODE_TUNE_PROFILE="${ROCMFPX_DECODE_TUNE:-$ROCMFP4_DECODE_TUNE}"
+source "$ROOT/scripts/rocmfp4-decode-tune-flags.sh"
 
 if [[ "${GGML_HIP_ROCWMMA_FATTN:-OFF}" == "ON" ]]; then
     if [[ -d "$ROCM_WMMA_INCLUDE/rocwmma/internal" ]]; then
@@ -17,6 +20,17 @@ if [[ "${GGML_HIP_ROCWMMA_FATTN:-OFF}" == "ON" ]]; then
     else
         echo "Warning: rocWMMA headers not found at $ROCM_WMMA_INCLUDE" >&2
     fi
+fi
+
+if ! tune_flags="$(rocmfp4_decode_tune_flags "$DECODE_TUNE_PROFILE")"; then
+    echo "Unknown decode tuning profile '$DECODE_TUNE_PROFILE'" >&2
+    echo "Known profiles: $(rocmfp4_decode_tune_known_profiles)" >&2
+    exit 2
+fi
+
+if [[ -n "$tune_flags" ]]; then
+    HIP_EXTRA_FLAGS="$tune_flags ${HIP_EXTRA_FLAGS}"
+    echo "Decode tuning profile: $DECODE_TUNE_PROFILE"
 fi
 
 cmake -S "$ROOT" -B "$BUILD_DIR" \
