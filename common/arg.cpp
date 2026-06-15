@@ -1921,6 +1921,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_sampling());
     add_opt(common_arg(
+        {"--strict-json"},
+        "force output to be valid JSON object syntax by applying the built-in `{}` schema (use llama-completion -no-cnv for raw structured output)",
+        [](common_params & params) {
+            params.sampling.grammar = {COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT, json_schema_to_grammar(json::parse("{}"))};
+        }
+    ).set_sampling());
+    add_opt(common_arg(
         {"-bs", "--backend-sampling"},
         "enable backend sampling (experimental) (default: disabled)",
         [](common_params & params) {

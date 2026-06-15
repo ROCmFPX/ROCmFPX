@@ -227,6 +227,13 @@ llama_context::llama_context(
         if (graph_reuse_disable) {
             LLAMA_LOG_WARN("%s: graph reuse disabled\n", __func__);
         }
+
+        const char * LLAMA_GRAPH_BUILD_TIMING = getenv("LLAMA_GRAPH_BUILD_TIMING");
+        graph_build_timing = LLAMA_GRAPH_BUILD_TIMING ? (atoi(LLAMA_GRAPH_BUILD_TIMING) != 0) : graph_build_timing;
+
+        if (graph_build_timing) {
+            LLAMA_LOG_INFO("%s: graph build timing enabled\n", __func__);
+        }
     }
 
     // With SPLIT_MODE_TENSOR both contexts share meta-backend buffers;
@@ -1345,6 +1352,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         n_reused++;
     } else {
+        const int64_t t_rebuild_start_us = graph_build_timing ? ggml_time_us() : 0;
+
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
@@ -1352,7 +1361,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         //const auto t_start_us = ggml_time_us();
 
+        const int64_t t_build_start_us = graph_build_timing ? ggml_time_us() : 0;
         gf = model.build_graph(gparams);
+        if (graph_build_timing) {
+            const int64_t t_build_end_us = ggml_time_us();
+            t_graph_build_us   += t_build_end_us - t_build_start_us;
+            t_graph_rebuild_us += t_build_end_us - t_rebuild_start_us;
+            n_graph_builds++;
+        }
 
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -3218,11 +3234,30 @@ llama_perf_context_data llama_context::perf_get_data() const {
     return data;
 }
 
+void llama_context::perf_print_graph_build_data() const {
+    if (!graph_build_timing && n_graph_builds == 0) {
+        return;
+    }
+
+    const double t_build_ms   = 1e-3 * t_graph_build_us;
+    const double t_rebuild_ms = 1e-3 * t_graph_rebuild_us;
+    const double avg_build_ms = n_graph_builds > 0 ? t_build_ms   / n_graph_builds : 0.0;
+    const double avg_total_ms = n_graph_builds > 0 ? t_rebuild_ms / n_graph_builds : 0.0;
+
+    LLAMA_LOG_INFO("%s:  graph rebuilds = %10d\n", __func__, n_graph_builds);
+    LLAMA_LOG_INFO("%s: graph build time = %10.2f ms / %5d builds (%8.2f ms per build)\n",
+            __func__, t_build_ms, n_graph_builds, avg_build_ms);
+    LLAMA_LOG_INFO("%s: graph reset+build = %10.2f ms / %5d builds (%8.2f ms per build)\n",
+            __func__, t_rebuild_ms, n_graph_builds, avg_total_ms);
+}
+
 void llama_context::perf_reset() {
     t_start_us  = ggml_time_us();
     t_eval_us   = n_eval = 0;
     t_p_eval_us = n_p_eval = 0;
-    n_reused    = 0;
+    t_graph_build_us = t_graph_rebuild_us = 0;
+    n_reused         = 0;
+    n_graph_builds   = 0;
 }
 
 llama_memory_breakdown llama_context::memory_breakdown() const {
@@ -4119,6 +4154,13 @@ void llama_perf_context_print(const llama_context * ctx) {
             __func__, data.t_eval_ms, data.n_eval, data.t_eval_ms / data.n_eval, 1e3 / data.t_eval_ms * data.n_eval);
     LLAMA_LOG_INFO("%s:       total time = %10.2f ms / %5d tokens\n", __func__, (t_end_ms - data.t_start_ms), (data.n_p_eval + data.n_eval));
     LLAMA_LOG_INFO("%s:    graphs reused = %10d\n", __func__, data.n_reused);
+    ctx->perf_print_graph_build_data();
+}
+
+void llama_perf_context_print_graph_build(const llama_context * ctx) {
+    if (ctx != nullptr) {
+        ctx->perf_print_graph_build_data();
+    }
 }
 
 void llama_perf_context_reset(llama_context * ctx) {

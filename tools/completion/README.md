@@ -220,6 +220,7 @@ llama-completion.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --ignore-eos -n -1
 | `--grammar-file FNAME` | file to read grammar from |
 | `-j, --json-schema SCHEMA` | JSON schema to constrain generations (https://json-schema.org/), e.g. `{}` for any JSON object<br/>For schemas w/ external $refs, use --grammar + example/json_schema_to_grammar.py instead |
 | `-jf, --json-schema-file FILE` | File containing a JSON schema to constrain generations (https://json-schema.org/), e.g. `{}` for any JSON object<br/>For schemas w/ external $refs, use --grammar + example/json_schema_to_grammar.py instead |
+| `--strict-json` | Force valid JSON object syntax by applying the built-in `{}` schema |
 | `-bs, --backend-sampling` | enable backend sampling (experimental) (default: disabled)<br/>(env: LLAMA_ARG_BACKEND_SAMPLING) |
 
 

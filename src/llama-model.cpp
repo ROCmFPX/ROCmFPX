@@ -1174,7 +1174,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const auto & tensor_split = params.tensor_split;
 
     const int n_layer      = hparams.n_layer;
-    const int n_gpu_layers = this->n_gpu_layers();
+    int n_gpu_layers = this->n_gpu_layers();
 
     const bool use_mmap_buffer = true;
 

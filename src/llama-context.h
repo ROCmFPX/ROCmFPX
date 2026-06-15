@@ -186,6 +186,7 @@ struct llama_context {
     //
 
     llama_perf_context_data perf_get_data() const;
+    void perf_print_graph_build_data() const;
     void perf_reset();
 
     llama_memory_breakdown memory_breakdown() const;
@@ -378,11 +379,16 @@ private:
     // env: LLAMA_GRAPH_REUSE_DISABLE
     bool graph_reuse_disable = false;
 
+    // env: LLAMA_GRAPH_BUILD_TIMING
+    bool graph_build_timing = false;
+
     // perf
     mutable int64_t t_start_us  = 0;
     mutable int64_t t_load_us   = 0;
     mutable int64_t t_p_eval_us = 0;
     mutable int64_t t_eval_us   = 0;
+    mutable int64_t t_graph_build_us   = 0;
+    mutable int64_t t_graph_rebuild_us = 0;
 
     mutable int64_t t_compute_start_us = 0;
     mutable int64_t n_queued_tokens    = 0;
@@ -391,4 +397,5 @@ private:
     mutable int32_t n_eval   = 0; // number of eval calls
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
+    mutable int32_t n_graph_builds = 0; // number of graph rebuilds after reuse misses
 };
