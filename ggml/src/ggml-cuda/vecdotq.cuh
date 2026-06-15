@@ -349,6 +349,50 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
 #define VDR_ROCMFP4_Q8_1_MMQ  GGML_ROCMFP4_Q8_1_MMQ_VDR
 #define VDR_ROCMFP4_FAST_Q8_1_MMVQ GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR
 #define VDR_ROCMFP4_FAST_Q8_1_MMQ  GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR
+#define VDR_ROCMFP3_Q8_1_MMVQ 2
+#define VDR_ROCMFP6_Q8_1_MMVQ 2
+#define VDR_ROCMFP8_Q8_1_MMVQ 2
+
+static __device__ __forceinline__ uint32_t rocmfpx_get_bits_vec_cuda(const uint8_t * src, const int bit_pos, const int nbits) {
+    uint32_t code = 0;
+
+#pragma unroll
+    for (int bit = 0; bit < nbits; ++bit) {
+        const int src_bit = bit_pos + bit;
+        code |= ((uint32_t) ((src[src_bit >> 3] >> (src_bit & 7)) & 1u)) << bit;
+    }
+
+    return code;
+}
+
+static __device__ __forceinline__ int rocmfpx_decode_fp3_code_vec_cuda(const uint32_t code) {
+    const uint32_t mag_code = code & 3u;
+    const int mag = mag_code == 3u ? 4 : (int) mag_code;
+    return (code & 4u) ? -mag : mag;
+}
+
+static __device__ __forceinline__ int rocmfpx_decode_fp6_code_vec_cuda(const uint32_t code) {
+    const int mag = (int) (code & 31u);
+    return (code & 32u) ? -mag : mag;
+}
+
+static __device__ __forceinline__ int rocmfpx_pack4_fp3_vec_cuda(const uint8_t * qs, const int base) {
+    const char4 v = make_char4(
+        (int8_t) rocmfpx_decode_fp3_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 0)*3, 3)),
+        (int8_t) rocmfpx_decode_fp3_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 1)*3, 3)),
+        (int8_t) rocmfpx_decode_fp3_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 2)*3, 3)),
+        (int8_t) rocmfpx_decode_fp3_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 3)*3, 3)));
+    return *((const int *) &v);
+}
+
+static __device__ __forceinline__ int rocmfpx_pack4_fp6_vec_cuda(const uint8_t * qs, const int base) {
+    const char4 v = make_char4(
+        (int8_t) rocmfpx_decode_fp6_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 0)*6, 6)),
+        (int8_t) rocmfpx_decode_fp6_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 1)*6, 6)),
+        (int8_t) rocmfpx_decode_fp6_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 2)*6, 6)),
+        (int8_t) rocmfpx_decode_fp6_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + 3)*6, 6)));
+    return *((const int *) &v);
+}
 
 static __device__ __forceinline__ float vec_dot_rocmfp4_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
@@ -390,6 +434,94 @@ static __device__ __forceinline__ float vec_dot_rocmfp4_fast_q8_1(
     }
 
     return __low2float(bq8_1->ds) * rocmfp4_ue4m3_to_fp32_half_finite(bq4->e) * sumi;
+}
+
+static __device__ __forceinline__ float vec_dot_rocmfpx_fp3_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_rocmfp3 * bq3 = (const block_rocmfp3 *) vbq + kbx;
+
+    uint32_t qs0, qs1, qs2;
+    memcpy(&qs0, bq3->qs + 0, 4);
+    memcpy(&qs1, bq3->qs + 4, 4);
+    memcpy(&qs2, bq3->qs + 8, 4);
+
+    const uint32_t qs[4] = { qs0, qs1, qs2, 0 };
+
+    int sumi0 = 0;
+    int sumi1 = 0;
+
+#pragma unroll
+    for (int i = 0; i < VDR_ROCMFP3_Q8_1_MMVQ; ++i) {
+        const int base = 4 * (iqs + i);
+        const int start_bit = 12 * (iqs + i);
+        const int reg_idx = start_bit >> 5;
+        const int reg_shift = start_bit & 31;
+        const uint32_t val_low = qs[reg_idx];
+        const uint32_t val_high = qs[reg_idx + 1];
+        const uint32_t bits12 = ((val_low >> reg_shift) | (val_high << (32 - reg_shift))) & 0xFFFu;
+
+        const char4 v = make_char4(
+            (int8_t) rocmfpx_decode_fp3_code_vec_cuda(bits12 & 7u),
+            (int8_t) rocmfpx_decode_fp3_code_vec_cuda((bits12 >> 3) & 7u),
+            (int8_t) rocmfpx_decode_fp3_code_vec_cuda((bits12 >> 6) & 7u),
+            (int8_t) rocmfpx_decode_fp3_code_vec_cuda((bits12 >> 9) & 7u));
+        const int val_packed = *((const int *) &v);
+
+        const int u = get_int_b4(bq8_1->qs, iqs + i);
+
+        if (base < QK_ROCMFP3/2) {
+            sumi0 = ggml_cuda_dp4a(val_packed, u, sumi0);
+        } else {
+            sumi1 = ggml_cuda_dp4a(val_packed, u, sumi1);
+        }
+    }
+
+    const float db = __low2float(bq8_1->ds);
+    return db * (rocmfpx_ue4m3_to_fp32_finite(bq3->e[0]) * sumi0 + rocmfpx_ue4m3_to_fp32_finite(bq3->e[1]) * sumi1);
+}
+
+static __device__ __forceinline__ float vec_dot_rocmfpx_fp6_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_rocmfp6 * bq6 = (const block_rocmfp6 *) vbq + kbx;
+
+    int sumi0 = 0;
+    int sumi1 = 0;
+
+#pragma unroll
+    for (int i = 0; i < VDR_ROCMFP6_Q8_1_MMVQ; ++i) {
+        const int base = 4 * (iqs + i);
+        const int v = rocmfpx_pack4_fp6_vec_cuda(bq6->qs, base);
+        const int u = get_int_b4(bq8_1->qs, iqs + i);
+
+        if (base < QK_ROCMFP6/2) {
+            sumi0 = ggml_cuda_dp4a(v, u, sumi0);
+        } else {
+            sumi1 = ggml_cuda_dp4a(v, u, sumi1);
+        }
+    }
+
+    const float db = __low2float(bq8_1->ds);
+    return db * (rocmfpx_ue4m3_to_fp32_finite(bq6->e[0]) * sumi0 + rocmfpx_ue4m3_to_fp32_finite(bq6->e[1]) * sumi1);
+}
+
+static __device__ __forceinline__ float vec_dot_rocmfpx_fp8_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_rocmfp8 * bq8 = (const block_rocmfp8 *) vbq + kbx;
+
+    int v[VDR_ROCMFP8_Q8_1_MMVQ];
+    int u[VDR_ROCMFP8_Q8_1_MMVQ];
+
+#pragma unroll
+    for (int i = 0; i < VDR_ROCMFP8_Q8_1_MMVQ; ++i) {
+        v[i] = get_int_b1(bq8->qs, iqs + i);
+        u[i] = get_int_b4(bq8_1->qs, iqs + i);
+    }
+
+    return vec_dot_q8_0_q8_1_impl<float, VDR_ROCMFP8_Q8_1_MMVQ>(
+        v, u, rocmfpx_ue4m3_to_fp32_finite(bq8->e), __low2half(bq8_1->ds));
 }
 
 #define VDR_NVFP4_Q8_1_MMVQ 4

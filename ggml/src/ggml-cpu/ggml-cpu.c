@@ -15,6 +15,7 @@
 #include "ggml.h"
 #include "common.h"
 #include "../../rocmfp4/rocmfp4.h"
+#include "../../rocmfpx/rocmfpx.h"
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
@@ -209,6 +210,93 @@ typedef pthread_t ggml_thread_t;
 #include <TargetConditionals.h>
 #endif
 
+static void ggml_vec_dot_rocmfpx_fp3_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_UNUSED(bs);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+    assert(nrc == 1);
+    GGML_UNUSED(nrc);
+    assert(n % QK_ROCMFP3 == 0);
+    assert(QK_ROCMFP3 == QK8_0);
+
+    const block_rocmfp3 * GGML_RESTRICT x = (const block_rocmfp3 *) vx;
+    const block_q8_0    * GGML_RESTRICT y = (const block_q8_0 *) vy;
+
+    const int nb = n / QK_ROCMFP3;
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        float tmp[QK_ROCMFP3];
+        rocmfpx_dequantize_row_fp3(x + ib, tmp, QK_ROCMFP3);
+
+        const float dy = GGML_CPU_FP16_TO_FP32(y[ib].d);
+        for (int j = 0; j < QK_ROCMFP3; ++j) {
+            sumf += tmp[j] * (float) y[ib].qs[j] * dy;
+        }
+    }
+
+    *s = sumf;
+}
+
+static void ggml_vec_dot_rocmfpx_fp6_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_UNUSED(bs);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+    assert(nrc == 1);
+    GGML_UNUSED(nrc);
+    assert(n % QK_ROCMFP6 == 0);
+    assert(QK_ROCMFP6 == QK8_0);
+
+    const block_rocmfp6 * GGML_RESTRICT x = (const block_rocmfp6 *) vx;
+    const block_q8_0    * GGML_RESTRICT y = (const block_q8_0 *) vy;
+
+    const int nb = n / QK_ROCMFP6;
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        float tmp[QK_ROCMFP6];
+        rocmfpx_dequantize_row_fp6(x + ib, tmp, QK_ROCMFP6);
+
+        const float dy = GGML_CPU_FP16_TO_FP32(y[ib].d);
+        for (int j = 0; j < QK_ROCMFP6; ++j) {
+            sumf += tmp[j] * (float) y[ib].qs[j] * dy;
+        }
+    }
+
+    *s = sumf;
+}
+
+static void ggml_vec_dot_rocmfpx_fp8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_UNUSED(bs);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+    assert(nrc == 1);
+    GGML_UNUSED(nrc);
+    assert(n % QK_ROCMFP8 == 0);
+    assert(QK_ROCMFP8 == QK8_0);
+
+    const block_rocmfp8 * GGML_RESTRICT x = (const block_rocmfp8 *) vx;
+    const block_q8_0    * GGML_RESTRICT y = (const block_q8_0 *) vy;
+
+    const int nb = n / QK_ROCMFP8;
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const float dx = rocmfpx_ue4m3_to_fp32(x[ib].e);
+        const float dy = GGML_CPU_FP16_TO_FP32(y[ib].d);
+        const float d  = dx * dy;
+
+        int sumi = 0;
+        for (int j = 0; j < QK_ROCMFP8; ++j) {
+            sumi += (int) x[ib].qs[j] * (int) y[ib].qs[j];
+        }
+
+        sumf += d * (float) sumi;
+    }
+
+    *s = sumf;
+}
+
 static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_F32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_fp32,
@@ -247,6 +335,24 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_Q4_0_ROCMFP4_FAST] = {
         .from_float               = rocmfp4_quantize_row_q4_0_fast,
         .vec_dot                  = rocmfp4_vec_dot_q4_0_fast_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q3_0_ROCMFPX] = {
+        .from_float               = rocmfpx_quantize_row_fp3,
+        .vec_dot                  = ggml_vec_dot_rocmfpx_fp3_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q6_0_ROCMFPX] = {
+        .from_float               = rocmfpx_quantize_row_fp6,
+        .vec_dot                  = ggml_vec_dot_rocmfpx_fp6_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q8_0_ROCMFPX] = {
+        .from_float               = rocmfpx_quantize_row_fp8,
+        .vec_dot                  = ggml_vec_dot_rocmfpx_fp8_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },

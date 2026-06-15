@@ -74,12 +74,16 @@ This snapshot passed the promoted Strix Halo gate with:
 | [`docs/BUILD-AMD-ARCHITECTURES.md`](docs/BUILD-AMD-ARCHITECTURES.md) | AMD GPU build flags and scripts, including RDNA2 through RDNA4 plus experimental gfx906 |
 | [`docs/ROCmFP4-REPRODUCIBILITY.md`](docs/ROCmFP4-REPRODUCIBILITY.md) | Regression guards and proof commands |
 | [`docs/ROCmFP4-MTP-COMPARISON.md`](docs/ROCmFP4-MTP-COMPARISON.md) | Benchmark history and promoted profiles |
+| [`docs/ROCmFP4-DECODE-SPEED-EXPERIMENTS.md`](docs/ROCmFP4-DECODE-SPEED-EXPERIMENTS.md) | Opt-in decode tuning profiles, graph timing, and future quantization research notes |
+| [`docs/ROCmFPX-EXPERIMENT.md`](docs/ROCmFPX-EXPERIMENT.md) | Experimental ROCmFP3/ROCmFP6/ROCmFP8 format staging |
 | [`ggml/rocmfp4/README.md`](ggml/rocmfp4/README.md) | Format details and expert HIP tuning knobs |
 
 ## Repository Layout
 
 - `ggml/rocmfp4/` — ROCmFP4 format definitions, CPU reference quant/dequant, and
   HIP helper kernels
+- `ggml/rocmfpx/` — isolated experimental ROCmFP3/ROCmFP6/ROCmFP8 formats
+  with CPU reference paths plus ROCm/HIP and Vulkan staging hooks
 - `ggml/src/ggml-cuda/` — upstream HIP/CUDA backend files with AMD ROCmFP4
   integration (HIP builds use this directory even with `-DGGML_CUDA=OFF`)
 - `ggml/src/ggml-vulkan/vulkan-shaders/` — Vulkan shader support for ROCmFP4

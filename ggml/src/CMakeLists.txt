@@ -208,6 +208,8 @@ add_library(ggml-base
             ggml-quants.h
             ../rocmfp4/rocmfp4.c
             ../rocmfp4/rocmfp4.h
+            ../rocmfpx/rocmfpx.c
+            ../rocmfpx/rocmfpx.h
             gguf.cpp)
 
 set_target_properties(ggml-base PROPERTIES

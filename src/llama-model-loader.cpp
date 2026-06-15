@@ -45,6 +45,9 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_FAST_COHERENT: return "Q4_0_ROCMFP4_FAST_COHERENT";
         case LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX:    return "Q4_0_ROCMFP4_STRIX";
         case LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN: return "Q4_0_ROCMFP4_STRIX_LEAN";
+        case LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX: return "Q3_0_ROCMFPX";
+        case LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX: return "Q6_0_ROCMFPX";
+        case LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX: return "Q8_0_ROCMFPX";
         case LLAMA_FTYPE_MOSTLY_Q4_1:     return "Q4_1";
         case LLAMA_FTYPE_MOSTLY_Q5_0:     return "Q5_0";
         case LLAMA_FTYPE_MOSTLY_Q5_1:     return "Q5_1";
@@ -749,6 +752,9 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_Q4_0:    ftype = LLAMA_FTYPE_MOSTLY_Q4_0;    break;
             case GGML_TYPE_Q4_0_ROCMFP4: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4; break;
             case GGML_TYPE_Q4_0_ROCMFP4_FAST: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_FAST; break;
+            case GGML_TYPE_Q3_0_ROCMFPX: ftype = LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX; break;
+            case GGML_TYPE_Q6_0_ROCMFPX: ftype = LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX; break;
+            case GGML_TYPE_Q8_0_ROCMFPX: ftype = LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX; break;
             case GGML_TYPE_Q4_1:    ftype = LLAMA_FTYPE_MOSTLY_Q4_1;    break;
             case GGML_TYPE_Q5_0:    ftype = LLAMA_FTYPE_MOSTLY_Q5_0;    break;
             case GGML_TYPE_Q5_1:    ftype = LLAMA_FTYPE_MOSTLY_Q5_1;    break;
@@ -1164,7 +1170,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         ggml_backend_buffer_type_t buft = nullptr;
 
         // check overrides
-        if (tensor_buft_overrides) {
+        if (!buft && tensor_buft_overrides) {
             std::string tensor_name = tn.str();
             for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
                 std::regex pattern(overrides->pattern);

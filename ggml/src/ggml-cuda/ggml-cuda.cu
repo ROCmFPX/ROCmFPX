@@ -5239,6 +5239,16 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     }
                     return false;
                 }
+#if defined(GGML_USE_HIP)
+                // The generic HIP F16 x F16 -> F32 MUL_MAT path is not stable on
+                // the local ROCm gfx1151 runtime used for this branch. Report it
+                // unsupported so graph placement can use a correct fallback.
+                if (op->op == GGML_OP_MUL_MAT &&
+                        a->type == GGML_TYPE_F16 && b->type == GGML_TYPE_F16 &&
+                        op->type == GGML_TYPE_F32) {
+                    return false;
+                }
+#endif // defined(GGML_USE_HIP)
 #ifdef GGML_USE_MUSA
                 const int cc = ggml_cuda_info().devices[dev_ctx->device].cc;
                 if (b->ne[2]*b->ne[3] > 1 && !ggml_is_transposed(a) && !ggml_is_transposed(b)) {
@@ -5264,6 +5274,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_MXFP4:
                     case GGML_TYPE_Q4_0_ROCMFP4:
                     case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+                    case GGML_TYPE_Q3_0_ROCMFPX:
+                    case GGML_TYPE_Q6_0_ROCMFPX:
+                    case GGML_TYPE_Q8_0_ROCMFPX:
                     case GGML_TYPE_NVFP4:
                     case GGML_TYPE_Q2_K:
                     case GGML_TYPE_Q3_K:
@@ -5303,6 +5316,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q8_0:
                     case GGML_TYPE_Q4_0_ROCMFP4:
                     case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+                    case GGML_TYPE_Q3_0_ROCMFPX:
+                    case GGML_TYPE_Q6_0_ROCMFPX:
+                    case GGML_TYPE_Q8_0_ROCMFPX:
                         return true;
                     default:
                         return false;
@@ -5317,7 +5333,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 return (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_BF16 ||
                        op->type == GGML_TYPE_Q4_0 || op->type == GGML_TYPE_Q4_1 || op->type == GGML_TYPE_Q5_0 ||
                        op->type == GGML_TYPE_Q5_1 || op->type == GGML_TYPE_Q8_0 || op->type == GGML_TYPE_IQ4_NL ||
-                       op->type == GGML_TYPE_Q4_0_ROCMFP4 || op->type == GGML_TYPE_Q4_0_ROCMFP4_FAST) &&
+                       op->type == GGML_TYPE_Q4_0_ROCMFP4 || op->type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
+                       op->type == GGML_TYPE_Q3_0_ROCMFPX || op->type == GGML_TYPE_Q6_0_ROCMFPX ||
+                       op->type == GGML_TYPE_Q8_0_ROCMFPX) &&
                        op->src[0]->type == GGML_TYPE_F32 &&
                        (op->src[1]->type == GGML_TYPE_I64 || op->src[1]->type == GGML_TYPE_I32);
             } break;
@@ -5379,11 +5397,56 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
                     return true;
                 }
+                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q3_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_Q3_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_Q3_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_Q3_0_ROCMFPX && src1_type == GGML_TYPE_F32) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q6_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_Q6_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_Q6_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_Q6_0_ROCMFPX && src1_type == GGML_TYPE_F32) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q8_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_Q8_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_Q8_0_ROCMFPX) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_Q8_0_ROCMFPX && src1_type == GGML_TYPE_F32) {
+                    return true;
+                }
                 if (src0_type == GGML_TYPE_Q4_0_ROCMFP4 && src1_type == GGML_TYPE_Q4_0_ROCMFP4) {
                     return op->src[0]->ne[0] % QK_ROCMFP4 == 0;
                 }
                 if (src0_type == GGML_TYPE_Q4_0_ROCMFP4_FAST && src1_type == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
                     return op->src[0]->ne[0] % QK_ROCMFP4 == 0;
+                }
+                if (src0_type == GGML_TYPE_Q3_0_ROCMFPX && src1_type == GGML_TYPE_Q3_0_ROCMFPX) {
+                    return op->src[0]->ne[0] % QK_ROCMFP3 == 0;
+                }
+                if (src0_type == GGML_TYPE_Q6_0_ROCMFPX && src1_type == GGML_TYPE_Q6_0_ROCMFPX) {
+                    return op->src[0]->ne[0] % QK_ROCMFP6 == 0;
+                }
+                if (src0_type == GGML_TYPE_Q8_0_ROCMFPX && src1_type == GGML_TYPE_Q8_0_ROCMFPX) {
+                    return op->src[0]->ne[0] % QK_ROCMFP8 == 0;
                 }
                 if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q5_0) {
                     return true;

@@ -1,3 +1,60 @@
+#if defined(DATA_A_ROCMFPX_FP3)
+uint rocmfpx_mm_fp3_get_bits(uint ib, uint bit_pos) {
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 3u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int rocmfpx_mm_fp3_decode(uint code) {
+    const uint mag_code = code & 3u;
+    const int mag = mag_code == 3u ? 4 : int(mag_code);
+    return (code & 4u) != 0u ? -mag : mag;
+}
+
+float rocmfpx_mm_fp3_value(uint ib, uint idx) {
+    const float d = ue4m3_to_fp32(data_a[ib].e[idx >= 16u ? 1u : 0u]);
+    return float(rocmfpx_mm_fp3_decode(rocmfpx_mm_fp3_get_bits(ib, idx * 3u))) * d;
+}
+
+vec4 rocmfpx_mm_fp3_vec4(uint ib, uint idx) {
+    return vec4(rocmfpx_mm_fp3_value(ib, idx + 0u),
+                rocmfpx_mm_fp3_value(ib, idx + 1u),
+                rocmfpx_mm_fp3_value(ib, idx + 2u),
+                rocmfpx_mm_fp3_value(ib, idx + 3u));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP6)
+uint rocmfpx_mm_fp6_get_bits(uint ib, uint bit_pos) {
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 6u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int rocmfpx_mm_fp6_decode(uint code) {
+    const int mag = int(code & 31u);
+    return (code & 32u) != 0u ? -mag : mag;
+}
+
+float rocmfpx_mm_fp6_value(uint ib, uint idx) {
+    const float d = ue4m3_to_fp32(data_a[ib].e[idx >= 16u ? 1u : 0u]);
+    return float(rocmfpx_mm_fp6_decode(rocmfpx_mm_fp6_get_bits(ib, idx * 6u))) * d;
+}
+
+vec4 rocmfpx_mm_fp6_vec4(uint ib, uint idx) {
+    return vec4(rocmfpx_mm_fp6_value(ib, idx + 0u),
+                rocmfpx_mm_fp6_value(ib, idx + 1u),
+                rocmfpx_mm_fp6_value(ib, idx + 2u),
+                rocmfpx_mm_fp6_value(ib, idx + 3u));
+}
+#endif
+
 void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
 #if defined(DATA_A_F32) || defined(DATA_A_F16)
 #if LOAD_VEC_A == 8
@@ -127,6 +184,41 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const i8vec2 v0 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs])).xy; // vec4 used due to #12147
             const i8vec2 v1 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs + 1])).xy;
             const vec4 v = vec4(v0.x, v0.y, v1.x, v1.y) * d;
+
+            buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
+            buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
+#elif defined(DATA_A_ROCMFPX_FP3)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+
+            const uint ib = idx / 8;
+            const uint iqs = (idx & 0x07) * 4;
+            const vec4 v = rocmfpx_mm_fp3_vec4(ib, iqs);
+
+            buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
+            buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
+#elif defined(DATA_A_ROCMFPX_FP6)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+
+            const uint ib = idx / 8;
+            const uint iqs = (idx & 0x07) * 4;
+            const vec4 v = rocmfpx_mm_fp6_vec4(ib, iqs);
+
+            buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
+            buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
+#elif defined(DATA_A_ROCMFPX_FP8)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+
+            const uint ib = idx / 8;
+            const uint iqs = (idx & 0x07) * 4;
+
+            const float d = ue4m3_to_fp32(data_a[ib].e);
+            const vec4 v = vec4(float(data_a[ib].qs[iqs + 0u]),
+                                float(data_a[ib].qs[iqs + 1u]),
+                                float(data_a[ib].qs[iqs + 2u]),
+                                float(data_a[ib].qs[iqs + 3u])) * d;
 
             buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
             buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);

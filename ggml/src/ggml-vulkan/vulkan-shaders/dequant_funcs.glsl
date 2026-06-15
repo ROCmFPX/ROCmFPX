@@ -488,6 +488,88 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP3)
+uint rocmfpx_fp3_get_bits(uint ib, uint bit_pos, uint a_offset) {
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 3u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(data_a[a_offset + ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int rocmfpx_fp3_decode_code(uint code) {
+    const uint mag_code = code & 3u;
+    const int mag = mag_code == 3u ? 4 : int(mag_code);
+    return (code & 4u) != 0u ? -mag : mag;
+}
+
+float rocmfpx_fp3_dequant(uint ib, uint idx, uint a_offset) {
+    const float d = ue4m3_to_fp32(data_a[a_offset + ib].e[idx >= 16u ? 1u : 0u]);
+    return float(rocmfpx_fp3_decode_code(rocmfpx_fp3_get_bits(ib, idx * 3u, a_offset))) * d;
+}
+
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(rocmfpx_fp3_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp3_dequant(ib, iqs + 1u, a_offset));
+}
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(rocmfpx_fp3_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp3_dequant(ib, iqs + 1u, a_offset),
+                rocmfpx_fp3_dequant(ib, iqs + 2u, a_offset),
+                rocmfpx_fp3_dequant(ib, iqs + 3u, a_offset));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP6)
+uint rocmfpx_fp6_get_bits(uint ib, uint bit_pos, uint a_offset) {
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 6u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(data_a[a_offset + ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int rocmfpx_fp6_decode_code(uint code) {
+    const int mag = int(code & 31u);
+    return (code & 32u) != 0u ? -mag : mag;
+}
+
+float rocmfpx_fp6_dequant(uint ib, uint idx, uint a_offset) {
+    const float d = ue4m3_to_fp32(data_a[a_offset + ib].e[idx >= 16u ? 1u : 0u]);
+    return float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, idx * 6u, a_offset))) * d;
+}
+
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(rocmfpx_fp6_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 1u, a_offset));
+}
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(rocmfpx_fp6_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 1u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 2u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 3u, a_offset));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP8)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    const float d = ue4m3_to_fp32(data_a[a_offset + ib].e);
+    return vec2(float(data_a[a_offset + ib].qs[iqs + 0u]) * d,
+                float(data_a[a_offset + ib].qs[iqs + 1u]) * d);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const float d = ue4m3_to_fp32(data_a[a_offset + ib].e);
+    return vec4(float(data_a[a_offset + ib].qs[iqs + 0u]) * d,
+                float(data_a[a_offset + ib].qs[iqs + 1u]) * d,
+                float(data_a[a_offset + ib].qs[iqs + 2u]) * d,
+                float(data_a[a_offset + ib].qs[iqs + 3u]) * d);
+}
+#endif
+
 #if defined(DATA_A_NVFP4)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint sub = iqs >> 4;
@@ -548,6 +630,12 @@ vec2 get_dm(uint ib, uint a_offset) {
 #endif
 
 #if defined(DATA_A_ROCMFP4_FAST)
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(1, 0);
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FAMILY)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(1, 0);
 }

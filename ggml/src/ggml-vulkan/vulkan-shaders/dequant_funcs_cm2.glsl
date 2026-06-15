@@ -850,6 +850,106 @@ float16_t dequantFuncROCMFP4Fast(const in decodeBufROCMFP4Fast bl, const in uint
 }
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP3)
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFPXFP3 {
+   block_rocmfpx_fp3 block;
+};
+
+uint rocmfpx_cm2_fp3_get_bits(const in decodeBufROCMFPXFP3 bl, uint bit_pos)
+{
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 3u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(bl.block.qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int rocmfpx_cm2_fp3_decode(uint code)
+{
+    const uint mag_code = code & 3u;
+    const int mag = mag_code == 3u ? 4 : int(mag_code);
+    return (code & 4u) != 0u ? -mag : mag;
+}
+
+float16_t dequantFuncROCMFPXFP3(const in decodeBufROCMFPXFP3 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const float d = ue4m3_to_fp32(bl.block.e[idx >= 16u ? 1u : 0u]);
+    return float16_t(float(rocmfpx_cm2_fp3_decode(rocmfpx_cm2_fp3_get_bits(bl, idx * 3u))) * d);
+}
+
+f16vec4 dequantFuncROCMFPXFP3_v(const in decodeBufROCMFPXFP3 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    return f16vec4(float16_t(float(rocmfpx_cm2_fp3_decode(rocmfpx_cm2_fp3_get_bits(bl, (idx + 0u) * 3u))) * ue4m3_to_fp32(bl.block.e[(idx + 0u) >= 16u ? 1u : 0u])),
+                   float16_t(float(rocmfpx_cm2_fp3_decode(rocmfpx_cm2_fp3_get_bits(bl, (idx + 1u) * 3u))) * ue4m3_to_fp32(bl.block.e[(idx + 1u) >= 16u ? 1u : 0u])),
+                   float16_t(float(rocmfpx_cm2_fp3_decode(rocmfpx_cm2_fp3_get_bits(bl, (idx + 2u) * 3u))) * ue4m3_to_fp32(bl.block.e[(idx + 2u) >= 16u ? 1u : 0u])),
+                   float16_t(float(rocmfpx_cm2_fp3_decode(rocmfpx_cm2_fp3_get_bits(bl, (idx + 3u) * 3u))) * ue4m3_to_fp32(bl.block.e[(idx + 3u) >= 16u ? 1u : 0u])));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP6)
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFPXFP6 {
+   block_rocmfpx_fp6 block;
+};
+
+uint rocmfpx_cm2_fp6_get_bits(const in decodeBufROCMFPXFP6 bl, uint bit_pos)
+{
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 6u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(bl.block.qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int rocmfpx_cm2_fp6_decode(uint code)
+{
+    const int mag = int(code & 31u);
+    return (code & 32u) != 0u ? -mag : mag;
+}
+
+float16_t dequantFuncROCMFPXFP6(const in decodeBufROCMFPXFP6 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const float d = ue4m3_to_fp32(bl.block.e[idx >= 16u ? 1u : 0u]);
+    return float16_t(float(rocmfpx_cm2_fp6_decode(rocmfpx_cm2_fp6_get_bits(bl, idx * 6u))) * d);
+}
+
+f16vec4 dequantFuncROCMFPXFP6_v(const in decodeBufROCMFPXFP6 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    return f16vec4(float16_t(float(rocmfpx_cm2_fp6_decode(rocmfpx_cm2_fp6_get_bits(bl, (idx + 0u) * 6u))) * ue4m3_to_fp32(bl.block.e[(idx + 0u) >= 16u ? 1u : 0u])),
+                   float16_t(float(rocmfpx_cm2_fp6_decode(rocmfpx_cm2_fp6_get_bits(bl, (idx + 1u) * 6u))) * ue4m3_to_fp32(bl.block.e[(idx + 1u) >= 16u ? 1u : 0u])),
+                   float16_t(float(rocmfpx_cm2_fp6_decode(rocmfpx_cm2_fp6_get_bits(bl, (idx + 2u) * 6u))) * ue4m3_to_fp32(bl.block.e[(idx + 2u) >= 16u ? 1u : 0u])),
+                   float16_t(float(rocmfpx_cm2_fp6_decode(rocmfpx_cm2_fp6_get_bits(bl, (idx + 3u) * 6u))) * ue4m3_to_fp32(bl.block.e[(idx + 3u) >= 16u ? 1u : 0u])));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP8)
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFPXFP8 {
+   block_rocmfpx_fp8 block;
+};
+
+float16_t dequantFuncROCMFPXFP8(const in decodeBufROCMFPXFP8 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const float d = ue4m3_to_fp32(bl.block.e);
+    return float16_t(float(int(bl.block.qs[idx])) * d);
+}
+
+f16vec4 dequantFuncROCMFPXFP8_v(const in decodeBufROCMFPXFP8 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const float d = ue4m3_to_fp32(bl.block.e);
+    return f16vec4(vec4(float(int(bl.block.qs[idx + 0u])),
+                        float(int(bl.block.qs[idx + 1u])),
+                        float(int(bl.block.qs[idx + 2u])),
+                        float(int(bl.block.qs[idx + 3u]))) * d);
+}
+#endif
+
 #if defined(DATA_A_NVFP4)
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufNVFP4 {
    block_nvfp4 block;
@@ -918,6 +1018,15 @@ float16_t dequantFuncNVFP4(const in decodeBufNVFP4 bl, const in uint blockCoords
 #define dequantFuncA dequantFuncROCMFP4
 #elif defined(DATA_A_ROCMFP4_FAST)
 #define dequantFuncA dequantFuncROCMFP4Fast
+#elif defined(DATA_A_ROCMFPX_FP3)
+#define dequantFuncA dequantFuncROCMFPXFP3
+#define dequantFuncA_v dequantFuncROCMFPXFP3_v
+#elif defined(DATA_A_ROCMFPX_FP6)
+#define dequantFuncA dequantFuncROCMFPXFP6
+#define dequantFuncA_v dequantFuncROCMFPXFP6_v
+#elif defined(DATA_A_ROCMFPX_FP8)
+#define dequantFuncA dequantFuncROCMFPXFP8
+#define dequantFuncA_v dequantFuncROCMFPXFP8_v
 #elif defined(DATA_A_NVFP4)
 #define dequantFuncA dequantFuncNVFP4
 #elif defined(DATA_A_F32)

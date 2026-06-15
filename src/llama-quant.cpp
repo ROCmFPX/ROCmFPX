@@ -386,6 +386,9 @@ static ggml_type tensor_type_fallback(quantize_state_impl & qs, const ggml_tenso
             case GGML_TYPE_TQ2_0:   return_type = GGML_TYPE_Q4_0;   break;
             case GGML_TYPE_Q4_0_ROCMFP4:
             case GGML_TYPE_Q4_0_ROCMFP4_FAST: return_type = GGML_TYPE_Q4_0; break;
+            case GGML_TYPE_Q3_0_ROCMFPX:
+            case GGML_TYPE_Q6_0_ROCMFPX:
+            case GGML_TYPE_Q8_0_ROCMFPX: return_type = GGML_TYPE_Q8_0; break;
             case GGML_TYPE_Q4_K:    return_type = GGML_TYPE_Q5_0;   break;
             case GGML_TYPE_Q5_K:    return_type = GGML_TYPE_Q5_1;   break;
             case GGML_TYPE_Q6_K:    return_type = GGML_TYPE_Q8_0;   break;
@@ -435,6 +438,33 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
         }
         return std::make_pair(i_layer, n_layer);
     };
+    auto rocmfpx_sensitive_tensor_type = [] (llama_ftype ftype) {
+        switch (ftype) {
+            case LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX: return GGML_TYPE_Q4_0_ROCMFP4_FAST;
+            case LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX: return GGML_TYPE_Q6_0_ROCMFPX;
+            case LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX: return GGML_TYPE_Q8_0_ROCMFPX;
+            default:                              return GGML_TYPE_COUNT;
+        }
+    };
+    auto rocmfpx_q3_needs_down_boost = [&](int i_layer, int n_layer) -> bool {
+        return i_layer < n_layer/16 || use_more_bits(i_layer, n_layer) || i_layer >= (2*n_layer)/3;
+    };
+    auto rocmfpx_q3_attn_kv_type = [&](int i_layer, int n_layer) -> ggml_type {
+        return i_layer < n_layer/2 ? GGML_TYPE_Q5_K : GGML_TYPE_Q4_K;
+    };
+    auto rocmfpx_q6_needs_down_boost = [&](int i_layer, int n_layer) -> bool {
+        return i_layer < n_layer/16 || i_layer >= 7*n_layer/8;
+    };
+    auto rocmfpx_q6_needs_attn_boost = [&](int i_layer, int n_layer) -> bool {
+        return i_layer < n_layer/16;
+    };
+    auto layer_from_name = [](const std::string & tensor_name, int n_layer) -> std::pair<int, int> {
+        int i_layer = 0;
+        if (sscanf(tensor_name.c_str(), "blk.%d.", &i_layer) == 1) {
+            return { i_layer, n_layer };
+        }
+        return { 0, n_layer };
+    };
 
     // for arches that share the same tensor between the token embeddings and the output, we quantize the token embeddings
     // with the quantization of the output tensor
@@ -459,6 +489,9 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                     ((ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_FAST_COHERENT ||
                       ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
                       ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN) ? GGML_TYPE_Q4_0_ROCMFP4_FAST : GGML_TYPE_Q4_0_ROCMFP4);
+            }
+            else if (ggml_type rocmfpx_type = rocmfpx_sensitive_tensor_type(ftype); rocmfpx_type < GGML_TYPE_COUNT) {
+                new_type = rocmfpx_type;
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_MXFP4_MOE) {
                 new_type = GGML_TYPE_Q8_0;
@@ -497,6 +530,9 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
                 // transformer layers on the fast ROCmFP4 path.
                 new_type = (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_LEAN ||
                             ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN) ? GGML_TYPE_Q5_K : GGML_TYPE_Q6_K;
+            }
+            else if (ggml_type rocmfpx_type = rocmfpx_sensitive_tensor_type(ftype); rocmfpx_type < GGML_TYPE_COUNT) {
+                new_type = rocmfpx_type;
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS ||
                 ftype == LLAMA_FTYPE_MOSTLY_IQ1_S   || ftype == LLAMA_FTYPE_MOSTLY_IQ1_M) {
@@ -537,7 +573,17 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
         }
     } else if (category_is_attn_v(category)) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX) {
+            auto info = layer_from_name(name, qs.model.hparams.n_layer);
+            new_type = rocmfpx_q3_attn_kv_type(info.first, info.second);
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            auto info = layer_from_name(name, qs.model.hparams.n_layer);
+            if (rocmfpx_q6_needs_attn_boost(info.first, info.second)) {
+                new_type = GGML_TYPE_Q8_0_ROCMFPX;
+            }
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
             ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN) {
             // Strix Halo quality/speed recipe: keep attention V in the
             // dual-scale ROCmFP4 layout. Together with ATTENTION_K below this
@@ -581,21 +627,37 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             // nearly negligible increase in model size by quantizing this tensor with more bits:
             if (new_type == GGML_TYPE_Q3_K || new_type == GGML_TYPE_Q4_K) new_type = GGML_TYPE_Q5_K;
         }
-        if (qs.model.hparams.n_expert == 8) {
+        if (qs.model.hparams.n_expert == 8 &&
+            ftype != LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX &&
+            ftype != LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX &&
+            ftype != LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX) {
             // for the 8-expert model, bumping this to Q8_0 trades just ~128MB
             // TODO: explore better strategies
             new_type = GGML_TYPE_Q8_0;
         }
         ++qs.i_attention_wv;
     } else if (category == tensor_category::ATTENTION_K) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX) {
+            auto info = layer_from_name(name, qs.model.hparams.n_layer);
+            new_type = rocmfpx_q3_attn_kv_type(info.first, info.second);
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            auto info = layer_from_name(name, qs.model.hparams.n_layer);
+            if (rocmfpx_q6_needs_attn_boost(info.first, info.second)) {
+                new_type = GGML_TYPE_Q8_0_ROCMFPX;
+            }
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
             ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN) {
             // Matching K/V in the dual-scale custom layout improved PPL more
             // than attention-V alone while keeping the large tensors on the
             // faster single-scale ROCmFP4 path.
             new_type = GGML_TYPE_Q4_0_ROCMFP4;
         }
-        else if (qs.model.hparams.n_expert == 8) {
+        else if (qs.model.hparams.n_expert == 8 &&
+            ftype != LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX &&
+            ftype != LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX &&
+            ftype != LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX) {
             // for the 8-expert model, bumping this to Q8_0 trades just ~128MB
             // TODO: explore better strategies
             new_type = GGML_TYPE_Q8_0;
@@ -607,7 +669,18 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             new_type = GGML_TYPE_IQ2_S;
         }
     } else if (category == tensor_category::ATTENTION_Q) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XS) {
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX) {
+            // Q projection carries arithmetic/reasoning detail; Q5_K is a
+            // small size premium that restores strict JSON following.
+            new_type = GGML_TYPE_Q5_K;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            auto info = layer_from_name(name, qs.model.hparams.n_layer);
+            if (rocmfpx_q6_needs_attn_boost(info.first, info.second)) {
+                new_type = GGML_TYPE_Q8_0_ROCMFPX;
+            }
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XS) {
             new_type = GGML_TYPE_IQ3_XXS;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS) {
@@ -616,7 +689,17 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
     } else if (category == tensor_category::FFN_DOWN) {
         auto info = layer_info(qs.i_ffn_down, qs.n_ffn_down, name.c_str());
         int i_layer = info.first, n_layer = info.second;
-        if      (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX) {
+            if (rocmfpx_q3_needs_down_boost(i_layer, n_layer)) {
+                new_type = GGML_TYPE_Q5_K;
+            }
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            if (rocmfpx_q6_needs_down_boost(i_layer, n_layer)) {
+                new_type = GGML_TYPE_Q8_0_ROCMFPX;
+            }
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
             // Down projections carry residual-stream detail. Spend extra bits
             // here so the experimental FP4 tensors do not dominate perplexity.
             // The final third is less sensitive on Qwen3-4B in the Strix FP4
@@ -666,7 +749,16 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
         }
         ++qs.i_ffn_down;
     } else if (category == tensor_category::ATTENTION_OUTPUT) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX) {
+            new_type = GGML_TYPE_Q5_K;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            auto info = layer_from_name(name, qs.model.hparams.n_layer);
+            if (rocmfpx_q6_needs_attn_boost(info.first, info.second)) {
+                new_type = GGML_TYPE_Q8_0_ROCMFPX;
+            }
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
             // Output projections are another high-leverage location; Q5_K is
             // a modest size increase that helps preserve chat coherence.
             new_type = GGML_TYPE_Q5_K;
@@ -691,7 +783,13 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
         }
     }
     else if (category == tensor_category::ATTENTION_QKV) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M || ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L || ftype == LLAMA_FTYPE_MOSTLY_IQ3_M) {
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX) {
+            new_type = GGML_TYPE_Q4_K;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            new_type = GGML_TYPE_Q8_0_ROCMFPX;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M || ftype == LLAMA_FTYPE_MOSTLY_Q3_K_L || ftype == LLAMA_FTYPE_MOSTLY_IQ3_M) {
             new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M) new_type = GGML_TYPE_Q5_K;
@@ -700,7 +798,18 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
     else if (category == tensor_category::FFN_GATE) {
         auto info = layer_info(qs.i_ffn_gate, qs.n_ffn_gate, name.c_str());
         int i_layer = info.first, n_layer = info.second;
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4 && use_more_bits(i_layer, n_layer)) {
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX) {
+            if (i_layer < n_layer/16 || use_more_bits(i_layer, n_layer)) {
+                new_type = GGML_TYPE_Q6_0_ROCMFPX;
+            }
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            // Keep gate projections on FP6; selective Q8 boosts here were
+            // the main reason the Q6 preset overshot stock Q6_K size.
+            GGML_UNUSED(i_layer);
+            GGML_UNUSED(n_layer);
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4 && use_more_bits(i_layer, n_layer)) {
             // Gate projections are the cheapest place to buy back coherence in
             // this preset. Keep selected layers at Q5_K, but leave FFN-up in
             // ROCmFP4 to avoid sliding back to a bulky/slower mostly-Q5 mix.
@@ -714,7 +823,11 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
     else if (category == tensor_category::FFN_UP) {
         auto info = layer_info(qs.i_ffn_up, qs.n_ffn_up, name.c_str());
         int i_layer = info.first, n_layer = info.second;
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
+        if (ftype == LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX) {
+            GGML_UNUSED(i_layer);
+            GGML_UNUSED(n_layer);
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
             GGML_UNUSED(i_layer);
             GGML_UNUSED(n_layer);
         }
@@ -869,6 +982,9 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_FAST_COHERENT: return GGML_TYPE_Q4_0_ROCMFP4_FAST;
         case LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX: return GGML_TYPE_Q4_0_ROCMFP4_FAST;
         case LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN: return GGML_TYPE_Q4_0_ROCMFP4_FAST;
+        case LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX: return GGML_TYPE_Q3_0_ROCMFPX;
+        case LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX: return GGML_TYPE_Q6_0_ROCMFPX;
+        case LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX: return GGML_TYPE_Q8_0_ROCMFPX;
         case LLAMA_FTYPE_MOSTLY_Q4_1: return GGML_TYPE_Q4_1;
         case LLAMA_FTYPE_MOSTLY_Q5_0: return GGML_TYPE_Q5_0;
         case LLAMA_FTYPE_MOSTLY_Q5_1: return GGML_TYPE_Q5_1;

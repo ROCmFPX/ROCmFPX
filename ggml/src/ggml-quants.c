@@ -6,6 +6,7 @@
 #include "ggml-cpu/ggml-cpu-impl.h"
 #include "ggml-cpu.h"
 #include "../rocmfp4/rocmfp4.h"
+#include "../rocmfpx/rocmfpx.h"
 
 #include <math.h>
 #include <string.h>
@@ -5377,6 +5378,27 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
             {
                 if (!rocmfp4_validate_row_data_fast(data, nbytes)) {
                     fprintf(stderr, "%s: invalid ROCmFP4 fast row data\n", __func__);
+                    return false;
+                }
+            } break;
+        case GGML_TYPE_Q3_0_ROCMFPX:
+            {
+                if (!rocmfpx_validate_row_data_fp3(data, nbytes)) {
+                    fprintf(stderr, "%s: invalid ROCmFPx FP3 row data\n", __func__);
+                    return false;
+                }
+            } break;
+        case GGML_TYPE_Q6_0_ROCMFPX:
+            {
+                if (!rocmfpx_validate_row_data_fp6(data, nbytes)) {
+                    fprintf(stderr, "%s: invalid ROCmFPx FP6 row data\n", __func__);
+                    return false;
+                }
+            } break;
+        case GGML_TYPE_Q8_0_ROCMFPX:
+            {
+                if (!rocmfpx_validate_row_data_fp8(data, nbytes)) {
+                    fprintf(stderr, "%s: invalid ROCmFPx FP8 row data\n", __func__);
                     return false;
                 }
             } break;

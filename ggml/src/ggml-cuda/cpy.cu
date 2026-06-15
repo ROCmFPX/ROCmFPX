@@ -152,6 +152,42 @@ static __device__ void cpy_blck_rocmfp4_fast_f32(const char * cxi, char * cdsti)
     }
 }
 
+static __device__ void cpy_blck_rocmfpx_fp3_f32(const char * cxi, char * cdsti) {
+    float * cdstf = (float *) cdsti;
+
+#pragma unroll
+    for (int j = 0; j < QK_ROCMFP3; j += 2) {
+        float2 dq;
+        dequantize_rocmfpx_fp3(cxi, 0, j, dq);
+        cdstf[j + 0] = dq.x;
+        cdstf[j + 1] = dq.y;
+    }
+}
+
+static __device__ void cpy_blck_rocmfpx_fp6_f32(const char * cxi, char * cdsti) {
+    float * cdstf = (float *) cdsti;
+
+#pragma unroll
+    for (int j = 0; j < QK_ROCMFP6; j += 2) {
+        float2 dq;
+        dequantize_rocmfpx_fp6(cxi, 0, j, dq);
+        cdstf[j + 0] = dq.x;
+        cdstf[j + 1] = dq.y;
+    }
+}
+
+static __device__ void cpy_blck_rocmfpx_fp8_f32(const char * cxi, char * cdsti) {
+    float * cdstf = (float *) cdsti;
+
+#pragma unroll
+    for (int j = 0; j < QK_ROCMFP8; j += 2) {
+        float2 dq;
+        dequantize_rocmfpx_fp8(cxi, 0, j, dq);
+        cdstf[j + 0] = dq.x;
+        cdstf[j + 1] = dq.y;
+    }
+}
+
 static __global__ void cpy_rocmfp4_f32_contiguous(const block_rocmfp4 * cx, float * cdst, const int64_t ne) {
     const int64_t packed_idx = (int64_t) blockDim.x*blockIdx.x + threadIdx.x;
     const int64_t packed_count = (ne / QK_ROCMFP4) * (QK_ROCMFP4/2);
@@ -187,6 +223,45 @@ static __global__ void cpy_rocmfp4_fast_f32_contiguous(const block_rocmfp4_fast 
 
     cdst[base + j]                  = d * (float) rocmfp4_decode_i8(q);
     cdst[base + j + QK_ROCMFP4/2]   = d * (float) rocmfp4_decode_i8(q >> 4);
+}
+
+static __global__ void cpy_rocmfpx_fp3_f32_contiguous(const block_rocmfp3 * cx, float * cdst, const int64_t ne) {
+    const int64_t i = (int64_t) blockDim.x*blockIdx.x + threadIdx.x;
+
+    if (i >= ne) {
+        return;
+    }
+
+    const int64_t ib = i / QK_ROCMFP3;
+    const int j = i % QK_ROCMFP3;
+    const float d = rocmfpx_ue4m3_to_fp32_finite(cx[ib].e[j >= QK_ROCMFP3/2]);
+    cdst[i] = d * (float) rocmfpx_decode_fp3_code_cuda(rocmfpx_get_bits_cuda(cx[ib].qs, j*3, 3));
+}
+
+static __global__ void cpy_rocmfpx_fp6_f32_contiguous(const block_rocmfp6 * cx, float * cdst, const int64_t ne) {
+    const int64_t i = (int64_t) blockDim.x*blockIdx.x + threadIdx.x;
+
+    if (i >= ne) {
+        return;
+    }
+
+    const int64_t ib = i / QK_ROCMFP6;
+    const int j = i % QK_ROCMFP6;
+    const float d = rocmfpx_ue4m3_to_fp32_finite(cx[ib].e[j >= QK_ROCMFP6/2]);
+    cdst[i] = d * (float) rocmfpx_decode_fp6_code_cuda(rocmfpx_get_bits_cuda(cx[ib].qs, j*6, 6));
+}
+
+static __global__ void cpy_rocmfpx_fp8_f32_contiguous(const block_rocmfp8 * cx, float * cdst, const int64_t ne) {
+    const int64_t i = (int64_t) blockDim.x*blockIdx.x + threadIdx.x;
+
+    if (i >= ne) {
+        return;
+    }
+
+    const int64_t ib = i / QK_ROCMFP8;
+    const int j = i % QK_ROCMFP8;
+    const float d = rocmfpx_ue4m3_to_fp32_finite(cx[ib].e);
+    cdst[i] = d * (float) cx[ib].qs[j];
 }
 
 template <cpy_kernel_t cpy_blck, int qk>
@@ -486,6 +561,107 @@ static void ggml_cpy_bf16_rocmfp4_fast_hip(
         (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
+template <cpy_kernel_t cpy_blck, int qk>
+static void ggml_cpy_to_rocmfpx_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+
+    GGML_ASSERT(ne % qk == 0);
+    const int64_t num_qblocks = ne / qk;
+    const int64_t num_blocks = (num_qblocks + GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE - 1) / GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_f32_q<cpy_blck, qk><<<num_blocks, GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE, 0, stream>>>
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
+static void ggml_cpy_f32_rocmfpx_fp3_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+    ggml_cpy_to_rocmfpx_hip<cpy_blck_f32_rocmfpx_fp3, QK_ROCMFP3>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_f16_rocmfpx_fp3_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+    ggml_cpy_to_rocmfpx_hip<cpy_blck_f16_rocmfpx_fp3, QK_ROCMFP3>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_bf16_rocmfpx_fp3_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+    ggml_cpy_to_rocmfpx_hip<cpy_blck_bf16_rocmfpx_fp3, QK_ROCMFP3>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_f32_rocmfpx_fp6_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+    ggml_cpy_to_rocmfpx_hip<cpy_blck_f32_rocmfpx_fp6, QK_ROCMFP6>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_f16_rocmfpx_fp6_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+    ggml_cpy_to_rocmfpx_hip<cpy_blck_f16_rocmfpx_fp6, QK_ROCMFP6>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_bf16_rocmfpx_fp6_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+    ggml_cpy_to_rocmfpx_hip<cpy_blck_bf16_rocmfpx_fp6, QK_ROCMFP6>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_f32_rocmfpx_fp8_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+
+    GGML_ASSERT(ne % QK_ROCMFP8 == 0);
+    const int64_t num_qblocks = ne / QK_ROCMFP8;
+    const int64_t num_blocks = (num_qblocks + GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE - 1) / GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_f32_q<cpy_blck_f32_rocmfpx_fp8, QK_ROCMFP8><<<num_blocks, GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE, 0, stream>>>
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
+static void ggml_cpy_f16_rocmfpx_fp8_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+
+    GGML_ASSERT(ne % QK_ROCMFP8 == 0);
+    const int64_t num_qblocks = ne / QK_ROCMFP8;
+    const int64_t num_blocks = (num_qblocks + GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE - 1) / GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_f32_q<cpy_blck_f16_rocmfpx_fp8, QK_ROCMFP8><<<num_blocks, GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE, 0, stream>>>
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
+static void ggml_cpy_bf16_rocmfpx_fp8_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+
+    GGML_ASSERT(ne % QK_ROCMFP8 == 0);
+    const int64_t num_qblocks = ne / QK_ROCMFP8;
+    const int64_t num_blocks = (num_qblocks + GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE - 1) / GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_f32_q<cpy_blck_bf16_rocmfpx_fp8, QK_ROCMFP8><<<num_blocks, GGML_ROCMFP4_CPY_QUANT_BLOCK_SIZE, 0, stream>>>
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
 static void ggml_cpy_rocmfp4_f32_hip(
     const char * cx, char * cdst, const int64_t ne,
     const int64_t ne00, const int64_t ne01, const int64_t ne02,
@@ -536,6 +712,88 @@ static void ggml_cpy_rocmfp4_fast_f32_contiguous_hip(
     GGML_ASSERT(num_blocks < UINT_MAX);
     cpy_rocmfp4_fast_f32_contiguous<<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>(
             (const block_rocmfp4_fast *) cx, (float *) cdst, ne);
+}
+
+template <cpy_kernel_t cpy_blck, int qk>
+static void ggml_cpy_rocmfpx_to_f32_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02,
+    const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+    const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13,
+    cudaStream_t stream) {
+    GGML_ASSERT(ne % qk == 0);
+    const int64_t num_qblocks = ne / qk;
+    const int64_t num_blocks = (num_qblocks + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_q_f32<cpy_blck, qk><<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03,
+        ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
+static void ggml_cpy_rocmfpx_fp3_f32_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02,
+    const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+    const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13,
+    cudaStream_t stream) {
+    ggml_cpy_rocmfpx_to_f32_hip<cpy_blck_rocmfpx_fp3_f32, QK_ROCMFP3>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_rocmfpx_fp3_f32_contiguous_hip(
+    const char * cx, char * cdst, const int64_t ne, cudaStream_t stream) {
+    GGML_ASSERT(ne % QK_ROCMFP3 == 0);
+    const int64_t num_blocks = (ne + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_rocmfpx_fp3_f32_contiguous<<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>(
+            (const block_rocmfp3 *) cx, (float *) cdst, ne);
+}
+
+static void ggml_cpy_rocmfpx_fp6_f32_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02,
+    const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+    const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13,
+    cudaStream_t stream) {
+    ggml_cpy_rocmfpx_to_f32_hip<cpy_blck_rocmfpx_fp6_f32, QK_ROCMFP6>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, stream);
+}
+
+static void ggml_cpy_rocmfpx_fp6_f32_contiguous_hip(
+    const char * cx, char * cdst, const int64_t ne, cudaStream_t stream) {
+    GGML_ASSERT(ne % QK_ROCMFP6 == 0);
+    const int64_t num_blocks = (ne + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_rocmfpx_fp6_f32_contiguous<<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>(
+            (const block_rocmfp6 *) cx, (float *) cdst, ne);
+}
+
+static void ggml_cpy_rocmfpx_fp8_f32_hip(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02,
+    const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+    const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13,
+    cudaStream_t stream) {
+    GGML_ASSERT(ne % QK_ROCMFP8 == 0);
+    const int64_t num_qblocks = ne / QK_ROCMFP8;
+    const int64_t num_blocks = (num_qblocks + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_q_f32<cpy_blck_rocmfpx_fp8_f32, QK_ROCMFP8><<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03,
+         ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
+static void ggml_cpy_rocmfpx_fp8_f32_contiguous_hip(
+    const char * cx, char * cdst, const int64_t ne, cudaStream_t stream) {
+    GGML_ASSERT(ne % QK_ROCMFP8 == 0);
+    const int64_t num_blocks = (ne + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_rocmfpx_fp8_f32_contiguous<<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>(
+            (const block_rocmfp8 *) cx, (float *) cdst, ne);
 }
 
 template <int block_bytes>
@@ -670,6 +928,15 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
     } else if (src0->type == GGML_TYPE_Q4_0_ROCMFP4_FAST && src1->type == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
         ggml_cpy_rocmfp4_rocmfp4_hip<sizeof(block_rocmfp4_fast)>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_Q3_0_ROCMFPX && src1->type == GGML_TYPE_Q3_0_ROCMFPX) {
+        ggml_cpy_rocmfp4_rocmfp4_hip<sizeof(block_rocmfp3)>
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_Q6_0_ROCMFPX && src1->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_cpy_rocmfp4_rocmfp4_hip<sizeof(block_rocmfp6)>
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_Q8_0_ROCMFPX && src1->type == GGML_TYPE_Q8_0_ROCMFPX) {
+        ggml_cpy_rocmfp4_rocmfp4_hip<sizeof(block_rocmfp8)>
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
         if (can_be_transposed) {
             ggml_cpy_scalar_cuda<float, float, true>
@@ -730,6 +997,33 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
     } else if (src0->type == GGML_TYPE_BF16 && src1->type == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
         ggml_cpy_bf16_rocmfp4_fast_hip
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q3_0_ROCMFPX) {
+        ggml_cpy_f32_rocmfpx_fp3_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_Q3_0_ROCMFPX) {
+        ggml_cpy_f16_rocmfpx_fp3_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_BF16 && src1->type == GGML_TYPE_Q3_0_ROCMFPX) {
+        ggml_cpy_bf16_rocmfpx_fp3_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_cpy_f32_rocmfpx_fp6_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_cpy_f16_rocmfpx_fp6_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_BF16 && src1->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_cpy_bf16_rocmfpx_fp6_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q8_0_ROCMFPX) {
+        ggml_cpy_f32_rocmfpx_fp8_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_Q8_0_ROCMFPX) {
+        ggml_cpy_f16_rocmfpx_fp8_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_BF16 && src1->type == GGML_TYPE_Q8_0_ROCMFPX) {
+        ggml_cpy_bf16_rocmfpx_fp8_hip
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_Q4_0_ROCMFP4 && src1->type == GGML_TYPE_F32) {
         if (contiguous_srcs) {
             ggml_cpy_rocmfp4_f32_contiguous_hip(src0_ddc, src1_ddc, ne, main_stream);
@@ -742,6 +1036,27 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
             ggml_cpy_rocmfp4_fast_f32_contiguous_hip(src0_ddc, src1_ddc, ne, main_stream);
         } else {
             ggml_cpy_rocmfp4_fast_f32_hip
+                    (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+        }
+    } else if (src0->type == GGML_TYPE_Q3_0_ROCMFPX && src1->type == GGML_TYPE_F32) {
+        if (contiguous_srcs) {
+            ggml_cpy_rocmfpx_fp3_f32_contiguous_hip(src0_ddc, src1_ddc, ne, main_stream);
+        } else {
+            ggml_cpy_rocmfpx_fp3_f32_hip
+                    (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+        }
+    } else if (src0->type == GGML_TYPE_Q6_0_ROCMFPX && src1->type == GGML_TYPE_F32) {
+        if (contiguous_srcs) {
+            ggml_cpy_rocmfpx_fp6_f32_contiguous_hip(src0_ddc, src1_ddc, ne, main_stream);
+        } else {
+            ggml_cpy_rocmfpx_fp6_f32_hip
+                    (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+        }
+    } else if (src0->type == GGML_TYPE_Q8_0_ROCMFPX && src1->type == GGML_TYPE_F32) {
+        if (contiguous_srcs) {
+            ggml_cpy_rocmfpx_fp8_f32_contiguous_hip(src0_ddc, src1_ddc, ne, main_stream);
+        } else {
+            ggml_cpy_rocmfpx_fp8_f32_hip
                     (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         }
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q5_0) {

@@ -162,6 +162,9 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_FAST_COHERENT = 104, // ROCmFP4 fast with Q6_K token embeddings
         LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX    = 105, // ROCmFP4 Strix Halo quality/speed recipe
         LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN = 106, // ROCmFP4 Strix Halo size-biased K/V recipe
+        LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX          = 110, // ROCmFPx experimental 6-bit reference layout
+        LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX          = 111, // ROCmFPx experimental 8-bit reference layout
+        LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX          = 112, // ROCmFPx experimental 3-bit reference layout
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -1559,6 +1562,7 @@ extern "C" {
 
     LLAMA_API struct llama_perf_context_data llama_perf_context      (const struct llama_context * ctx);
     LLAMA_API void                           llama_perf_context_print(const struct llama_context * ctx);
+    LLAMA_API void                           llama_perf_context_print_graph_build(const struct llama_context * ctx);
     LLAMA_API void                           llama_perf_context_reset(      struct llama_context * ctx);
 
     // NOTE: the following work only with samplers constructed via llama_sampler_chain_init

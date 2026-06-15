@@ -1,0 +1,267 @@
+# ROCmFPx Experiment
+
+The ROCmFPx experiment is the staging area for possible AMD-native
+`ROCmFP3`, `ROCmFP6`, and `ROCmFP8` quant formats.
+
+The implementation lives in:
+
+```text
+ggml/rocmfpx/
+```
+
+The first stage defines block layouts, finite UE4M3 scale-byte decoding,
+pack/unpack, quantize/dequantize, validation, and a deterministic reference
+test. `Q3_0_ROCMFPX`, `Q6_0_ROCMFPX`, and `Q8_0_ROCMFPX` are now promoted to
+very experimental GGUF tensor types with CPU reference paths plus ROCm/HIP and
+Vulkan acceleration hooks.
+
+ROCm/HIP and Vulkan kernels are wired for the new ROCmFPx family in the same
+style as ROCmFP4. They support GPU copy/dequantization (`CPY` to/from
+F32/F16/BF16), embedding lookup (`GET_ROWS`), and vector-matrix/matrix-matrix
+dot products (`MUL_MAT`/`MUL_MAT_ID` via MMVQ/MMQ and Vulkan DMMV/MMV paths).
+As of June 15, 2026, CPU reference checks, CPU backend ops, ROCm backend ops,
+Vulkan backend ops, and CPU/ROCm/Vulkan tiny-model offload smokes pass. The
+previous wider ROCm backend-op caveat was traced to a generic HIP
+`F16 x F16 -> F32` `MUL_MAT` correctness failure that reproduced on the clean
+baseline build. The experiment now reports that HIP path as unsupported so graph
+placement can use a correct fallback.
+
+The first real BF16-source model test also passed: `unsloth/Qwen3-0.6B-GGUF`
+`Qwen3-0.6B-BF16.gguf` was converted to `Q3_0_ROCMFPX` and smoked on CPU,
+ROCm0, and Vulkan0.
+
+The staging is structured to ensure that the existing ROCmFP4 path remains stable.
+
+## Current Layouts
+
+| Format | Block | BPW | Current Role |
+|---|---:|---:|---|
+| `Q3_0_ROCMFPX` | 32 weights, 12 packed code bytes, 2 scale bytes | 3.50 | Experimental low-bit candidate |
+| `Q6_0_ROCMFPX` | 32 weights, 24 packed code bytes, 2 scale bytes | 6.50 | Experimental quality candidate |
+| `Q8_0_ROCMFPX` | 32 weights, 32 signed code bytes, 1 scale byte | 8.25 | Experimental high-quality reference |
+
+## Experimental Quantize Names
+
+```bash
+llama-quantize model-f16.gguf model-q3-rocmfpx.gguf Q3_0_ROCMFPX
+llama-quantize model-f16.gguf model-q6-rocmfpx.gguf Q6_0_ROCMFPX
+llama-quantize model-f16.gguf model-q8-rocmfpx.gguf Q8_0_ROCMFPX
+```
+
+These formats are integrated into llama.cpp and support experimental hardware
+acceleration via the ROCm/HIP and Vulkan backends.
+
+## Check
+
+```bash
+scripts/check-rocmfpx-reference.sh
+```
+
+This compiles `ggml/rocmfpx/rocmfpx.c` and runs the local reference test in
+`build-rocmfpx-reference/`.
+
+The currently used tiny quantized test fixtures live in:
+
+```text
+/tmp/rocmfpx-quant-tests/
+```
+
+Run focused backend and offload checks from the experiment worktree:
+
+```bash
+cd /home/caf/strix-fp4/llama.cpp-mtp-rocmfp4
+cmake --build build-strix-rocmfp4 --target llama-quantize llama-cli llama-bench test-backend-ops -j 8
+scripts/check-rocmfpx-reference.sh
+timeout 120 build-strix-rocmfp4/bin/test-backend-ops test -o MUL_MAT,GET_ROWS,CPY,SET_ROWS -b CPU
+timeout 180 build-strix-rocmfp4/bin/test-backend-ops test -o MUL_MAT,GET_ROWS,CPY,SET_ROWS -b ROCm0
+timeout 180 build-strix-rocmfp4/bin/test-backend-ops test -o MUL_MAT,GET_ROWS,CPY,SET_ROWS -b Vulkan0
+timeout 90 build-strix-rocmfp4/bin/llama-bench -m /tmp/rocmfpx-quant-tests/stories260K-Q3_0_ROCMFPX.gguf,/tmp/rocmfpx-quant-tests/stories260K-Q6_0_ROCMFPX.gguf,/tmp/rocmfpx-quant-tests/stories260K-Q8_0_ROCMFPX.gguf -dev ROCm0 -ngl 99 -p 16 -n 16 -r 1
+timeout 90 build-strix-rocmfp4/bin/llama-bench -m /tmp/rocmfpx-quant-tests/stories260K-Q3_0_ROCMFPX.gguf,/tmp/rocmfpx-quant-tests/stories260K-Q6_0_ROCMFPX.gguf,/tmp/rocmfpx-quant-tests/stories260K-Q8_0_ROCMFPX.gguf -dev Vulkan0 -ngl 99 -p 16 -n 16 -r 1
+```
+
+Run the current BF16-to-ROCmFP3 model smoke:
+
+```bash
+cd /home/caf/strix-fp4/llama.cpp-mtp-rocmfp4
+curl -L --fail --continue-at - \
+  -o /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-BF16.gguf \
+  https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-BF16.gguf
+build-strix-rocmfp4/bin/llama-quantize \
+  /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-BF16.gguf \
+  /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX.gguf \
+  Q3_0_ROCMFPX
+timeout 120 build-strix-rocmfp4/bin/llama-bench -m /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX.gguf -ngl 0 -p 16 -n 16 -r 1
+timeout 120 build-strix-rocmfp4/bin/llama-bench -m /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX.gguf -dev ROCm0 -ngl 99 -p 16 -n 16 -r 1
+timeout 120 build-strix-rocmfp4/bin/llama-bench -m /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX.gguf -dev Vulkan0 -ngl 99 -p 16 -n 16 -r 1
+```
+
+Observed Qwen3 BF16-to-ROCmFP3 smoke:
+
+```text
+BF16 source: /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-BF16.gguf
+ROCmFP3 output: /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX.gguf
+Quantized size: 262.82 MiB, 3.70 BPW
+CPU/no-offload: pp16 7.21 t/s, tg16 6.43 t/s
+ROCm0: pp16 676.61 t/s, tg16 237.17 t/s
+Vulkan0: pp16 1540.28 t/s, tg16 259.23 t/s
+```
+
+## Qwen3 ROCmFP3 Coherency Check
+
+Runtime support does not imply quality. A June 15, 2026 comparison against the
+matching `unsloth/Qwen3-0.6B-GGUF` `Q4_K_M` quant showed that the original pure
+`Q3_0_ROCMFPX` tensor mix loaded and decoded, but lost too much
+instruction-following quality for promotion.
+
+The current fix keeps the ROCmFP3 block format stable but changes quantization
+quality in two places:
+
+- `Q3_0_ROCMFPX` now chooses each FP3 half-block scale by reconstruction MSE
+  instead of raw `max_abs / 4`.
+- The default Q3 preset now uses selective coherence routing: attention Q/O and
+  early-layer K/V as `Q5_K`, upper-layer K/V as `Q4_K`, boosted FFN-down as
+  `Q5_K`, selective FFN-gate as `Q6_0_ROCMFPX`, bulk FFN-up on `Q3_0_ROCMFPX`,
+  and token/output embeddings on `Q4_0_ROCMFP4_FAST`.
+- The default Q6 preset now uses lean coherence routing: first-layer K/V and
+  early Q/O/down as `Q8_0_ROCMFPX`, embeddings/output on `Q6_0_ROCMFPX`, and
+  bulk gate/up on `Q6_0_ROCMFPX` with FP6 MSE scale selection.
+
+Test files:
+
+```text
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-MSE-v3.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-MSE-v4.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q6_0_ROCMFPX_COHERENT.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q8_0_ROCMFPX.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q4_K_M.gguf
+```
+
+Observed with ROCm0 offload and deterministic low-temperature prompts:
+
+```text
+Coding prompt:
+  Q3_0_ROCMFPX: repeated reasoning preamble; did not produce the function.
+  Q4_K_M: produced a valid duplicate-finder function.
+
+Three-bullet summary prompt:
+  Q3_0_ROCMFPX: repeated the instruction instead of answering.
+  Q4_K_M: produced three coherent bullets.
+
+JSON arithmetic prompt:
+  Q3_0_ROCMFPX: entered reasoning and did not emit JSON within the token cap.
+  Q4_K_M: emitted {"answer": 391, "method": "multiplication"}.
+
+Small fixed-text perplexity:
+  Q3_0_ROCMFPX: PPL 32.2383 +/- 12.08643
+  Q4_K_M:       PPL 24.9125 +/- 10.10508
+```
+
+Follow-up repair test with ROCm0 offload:
+
+```text
+Pure Q3 + MSE scales:
+  Still drifts into reasoning text on the coding, summary, and JSON probes.
+
+Coherent-MSE v2:
+  Protects attention K/V/O and FFN-down as Q5_K.
+  Produces the duplicate function and the three bullets, but emits
+  {"answer": 17 * 23, ...} on the arithmetic probe.
+
+Coherent-MSE v3:
+  Protects attention Q/K/V/O and FFN-down as Q5_K.
+  Produces the duplicate function, three coherent bullets, and computes 391.
+  For strict machine-readable output, use `llama-completion -no-cnv --strict-json`
+  instead of the chat wrapper.
+
+Coherent-LEAN v5 (current default):
+  Selective Q3 routing: Q/O and early K/V at `Q5_K`, boosted down at `Q5_K`,
+  selective gate at `Q6_0_ROCMFPX`, bulk up on `Q3_0_ROCMFPX`, embeddings on
+  `Q4_0_ROCMFP4_FAST`, with FP3 MSE scales.
+  Passes the Qwen3 coding, summary, and strict-JSON probes on ROCm0.
+  Qwen3-0.6B size: 330.57 MiB / 4.65 BPW (vs Q3_K_M 325.37 MiB / 4.58 BPW).
+
+Coherent-LEAN Q6 preset (current default):
+  Lean Q6 routing: early attn and down at `Q8_0_ROCMFPX`, embeddings/output on
+  `Q6_0_ROCMFPX`, bulk gate/up on `Q6_0_ROCMFPX`, with FP6 MSE scales.
+  Passes the same Qwen3 coherency probes on ROCm0.
+  Qwen3-0.6B size: 466.65 MiB / 6.57 BPW (vs Q6_K 466.50 MiB / 6.57 BPW).
+
+Q8_0_ROCMFPX pure preset:
+  Qwen3-0.6B size: 586.39 MiB / 8.25 BPW (vs Q8_0 604.15 MiB / 8.50 BPW).
+```
+
+The current default `Q3_0_ROCMFPX` preset is 330.57 MiB / 4.65 BPW for Qwen3-0.6B.
+That is ~5 MiB larger than `Q3_K_M`, but the bulk transformer tensors stay on
+true 3.5 BPW FP3 with MSE scales and the preset passes the same short
+instruction-following probes as `Q4_K_M`. On this tiny model the size/coherency
+cliff is sharp: dropping below ~325 MiB breaks JSON or coding probes.
+
+## Qwen3 Validation Scripts
+
+```bash
+scripts/check-rocmfpx-qwen-coherency.sh
+scripts/check-rocmfpx-qwen-bench.sh
+scripts/check-rocmfpx-qwen-strict-json.sh
+```
+
+## Speculative Decode Smokes
+
+ROCmFPx weight tensors are type-agnostic at the llama speculative layer, but
+MTP/EAGLE/draft paths still need backend coverage for the mixed tensor presets.
+Use these smoke scripts with local larger-model fixtures:
+
+```bash
+MODEL=/path/to/mtp-rocmfpx.gguf BACKENDS="ROCm0 Vulkan0" \
+  scripts/check-rocmfpx-mtp-smoke.sh
+
+MODEL=/path/to/target-rocmfpx.gguf DRAFT_MODEL=/path/to/eagle3-draft.gguf \
+  scripts/check-rocmfpx-eagle3-smoke.sh
+
+MODEL=/path/to/target-rocmfpx.gguf DRAFT_MODEL=/path/to/draft.gguf \
+  scripts/check-rocmfpx-speculative-smoke.sh
+```
+
+The scripts skip when default local fixtures are missing. Set
+`SKIP_MISSING_MODEL=0` in CI or when a required fixture should be mandatory.
+Keep KV cache types on the existing `q4_0`/F16/ROCmFP4 paths for now; ROCmFPx
+KV cache experiments need FlashAttention support before promotion.
+
+## Opt-in Decode Tuning
+
+The default build keeps the conservative ROCmFPx MMVQ launch shape. Strix tuning
+profiles are opt-in through the existing build wrappers:
+
+```bash
+ROCMFPX_DECODE_TUNE=rocmfpx-strix-nwarps2 \
+BUILD_DIR=build-strix-rocmfpx-nw2 \
+scripts/build-strix-rocmfp4-mtp.sh
+```
+
+Available ROCmFPx profiles:
+
+```text
+rocmfpx-strix-nwarps1, rocmfpx-strix-nwarps2, rocmfpx-strix-nwarps4
+rocmfpx-strix-rpb2
+rocmfpx-strix-mmid3, rocmfpx-strix-mmid4
+rocmfpx-strix-moe-rpb1, rocmfpx-strix-moe-rpb2, rocmfpx-strix-moe-rpb3, rocmfpx-strix-moe-rpb4
+```
+
+These profiles only alter MMVQ launch geometry. They do not change block
+layouts, quantized values, FP3/FP6 MSE scale selection, or Q3 LEAN routing.
+
+Observed decode speeds on the coherent Qwen3-0.6B presets (ROCm0 / Vulkan0):
+
+```text
+Q3 coherent v4: pp16 1296 / 2118 t/s, tg16 228 / 263 t/s
+Q6 coherent:    pp16  762 / 1942 t/s, tg16 197 / 225 t/s
+Q8 pure:        pp16  773 / 2277 t/s, tg16 212 / 257 t/s
+```
+
+## Next Steps
+
+1. Add calibration/perplexity sweeps against representative dense and MoE tensors.
+2. Run larger-model coherency and exact-format prompt-following checks for the
+   coherent Q3/Q6 presets.
+3. Perform end-to-end quality and perplexity tests under GPU offload on MoE models.
+4. Gate any upstream PR promotion behind model-level decode stability and performance profiles.

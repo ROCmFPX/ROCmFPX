@@ -1748,6 +1748,52 @@ struct block_rocmfp4_fast
 #define A_TYPE block_rocmfp4_fast
 #endif
 
+#define QUANT_K_ROCMFPX_FP8 32
+#define QUANT_R_ROCMFPX_FP8 1
+
+struct block_rocmfpx_fp3
+{
+    uint8_t qs[12];
+    uint8_t e[2];
+};
+
+struct block_rocmfpx_fp6
+{
+    uint8_t qs[24];
+    uint8_t e[2];
+};
+
+struct block_rocmfpx_fp8
+{
+    int8_t qs[QUANT_K_ROCMFPX_FP8];
+    uint8_t e;
+};
+
+#if defined(DATA_A_ROCMFPX_FP3)
+#define QUANT_K QUANT_K_ROCMFPX_FP8
+#define QUANT_R QUANT_R_ROCMFPX_FP8
+#define QUANT_AUXF 1
+#define A_TYPE block_rocmfpx_fp3
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP6)
+#define QUANT_K QUANT_K_ROCMFPX_FP8
+#define QUANT_R QUANT_R_ROCMFPX_FP8
+#define QUANT_AUXF 1
+#define A_TYPE block_rocmfpx_fp6
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP8)
+#define QUANT_K QUANT_K_ROCMFPX_FP8
+#define QUANT_R QUANT_R_ROCMFPX_FP8
+#define QUANT_AUXF 1
+#define A_TYPE block_rocmfpx_fp8
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP3) || defined(DATA_A_ROCMFPX_FP6) || defined(DATA_A_ROCMFPX_FP8)
+#define DATA_A_ROCMFPX_FAMILY
+#endif
+
 #define QUANT_K_NVFP4 64
 #define QUANT_R_NVFP4 1
 
@@ -1802,7 +1848,7 @@ shared int8_t kvalues_rocmfp4[16];
 shared float rocmfp4_ue4m3_fp32_lut[128];
 #endif
 
-#if defined(DATA_A_NVFP4)
+#if defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFPX_FAMILY)
 // UE4M3 scale bytes use only 7 bits; sign (bit 7) is always zero.
 shared float ue4m3_fp32_lut[128];
 
@@ -1812,10 +1858,17 @@ float ue4m3_to_fp32_build(uint u) {
     }
     const uint exp = (u >> 3) & 15u;
     const uint man = u & 7u;
+#if defined(DATA_A_ROCMFPX_FAMILY)
+    if (exp == 0u) {
+        return float(man) * (1.0 / 1024.0);
+    }
+    const uint bits = (exp + 119u) << 23 | (man << 20);
+#else
     if (exp == 0u) {
         return float(man) * (1.0 / 512.0);
     }
     const uint bits = (exp + 120u) << 23 | (man << 20);
+#endif
     return uintBitsToFloat(bits);
 }
 #endif
@@ -1838,7 +1891,7 @@ float rocmfp4_ue4m3_to_fp32_build(uint u) {
 }
 #endif
 
-#if defined(DATA_A_MXFP4) || defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST)
+#if defined(DATA_A_MXFP4) || defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST) || defined(DATA_A_ROCMFPX_FAMILY)
 #define NEEDS_INIT_IQ_SHMEM
 void init_iq_shmem(uvec3 wgsize)
 {
@@ -1856,7 +1909,7 @@ void init_iq_shmem(uvec3 wgsize)
         rocmfp4_ue4m3_fp32_lut[i] = rocmfp4_ue4m3_to_fp32_build(i);
     }
 #endif
-#if defined(DATA_A_NVFP4)
+#if defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFPX_FAMILY)
     for (uint i = gl_LocalInvocationIndex.x; i < 128u; i += wgsize.x) {
         ue4m3_fp32_lut[i] = ue4m3_to_fp32_build(i);
     }
@@ -1901,7 +1954,7 @@ float e8m0_to_fp32(uint8_t x) {
 float ue4m3_to_fp32(uint8_t x) {
     return rocmfp4_ue4m3_fp32_lut[min(uint(x), 127u)];
 }
-#elif defined(DATA_A_NVFP4)
+#elif defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFPX_FAMILY)
 float ue4m3_to_fp32(uint8_t x) {
     return ue4m3_fp32_lut[uint(x)];
 }
