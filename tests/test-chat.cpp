@@ -1664,6 +1664,199 @@ static void test_convert_responses_to_chatcmpl() {
         assert_equals(false, result.contains("max_output_tokens"));
         assert_equals(100, result.at("max_tokens").get<int>());
     }
+
+    // Test mixed Responses tools: convert only function tools
+    {
+        json input = json::parse(R"({
+            "input": "Hello",
+            "model": "test-model",
+            "tools": [
+                {
+                    "type": "web_search"
+                },
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string"
+                            }
+                        },
+                        "required": ["location"]
+                    }
+                },
+                {
+                    "type": "image_generation"
+                },
+                {
+                    "type": "mcp",
+                    "server_label": "test-server"
+                },
+                {
+                    "type": "namespace",
+                    "name": "browser"
+                }
+            ]
+        })");
+
+        json result = server_chat_convert_responses_to_chatcmpl(input);
+
+        assert_equals(true, result.contains("tools"));
+        assert_equals(true, result.at("tools").is_array());
+        assert_equals((size_t)1, result.at("tools").size());
+
+        const auto & tool = result.at("tools")[0];
+        assert_equals(std::string("function"), tool.at("type").get<std::string>());
+        assert_equals(std::string("get_weather"), tool.at("function").at("name").get<std::string>());
+        assert_equals(true, tool.at("function").at("strict").get<bool>());
+    }
+
+    // Test non-function Responses tools are ignored
+    {
+        json input = json::parse(R"({
+            "input": "Hello",
+            "model": "test-model",
+            "tools": [
+                {
+                    "type": "web_search"
+                },
+                {
+                    "type": "image_generation"
+                },
+                {
+                    "type": "mcp",
+                    "server_label": "test-server"
+                },
+                {
+                    "type": "namespace",
+                    "name": "browser"
+                }
+            ]
+        })");
+
+        json result = server_chat_convert_responses_to_chatcmpl(input);
+
+        assert_equals(false, result.contains("tools"));
+    }
+}
+
+// Shared LFM2 parser cases - all variants use one output format and parser
+static void test_lfm2_parser(const std::string & template_path, bool detailed_debug) {
+    auto tst = peg_tester(template_path, detailed_debug);
+
+    // Basic content only
+    tst.test("Hello, world!\nWhat's up?").expect(message_assist).run();
+
+    // Single tool call without reasoning
+    tst.test("<|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|>")
+        .tools({ special_function_tool })
+        .expect(message_assist_call)
+        .run();
+
+    // Tool call with string argument
+    tst.test("<|tool_call_start|>[get_time(city=\"XYZCITY\")]<|tool_call_end|>")
+        .tools({ get_time_tool })
+        .expect(message_with_tool_calls("get_time", "{\"city\":\"XYZCITY\"}"))
+        .run();
+
+    // Python literals become JSON
+    tst.test("<|tool_call_start|>[toggle(enabled=True)]<|tool_call_end|>")
+        .tools({ toggle_tool })
+        .expect(message_with_tool_calls("toggle", R"({"enabled": true})"))
+        .run();
+
+    tst.test("<|tool_call_start|>[set_nullable(value=None)]<|tool_call_end|>")
+        .tools({ nullable_tool })
+        .expect(message_with_tool_calls("set_nullable", R"({"value": null})"))
+        .run();
+
+    // Nested Python literal
+    tst.test("<|tool_call_start|>[set_config(config={\"enabled\": True, \"count\": 3})]<|tool_call_end|>")
+        .tools({ config_tool })
+        .expect(message_with_tool_calls("set_config", R"({"config": {"enabled": true, "count": 3}})"))
+        .run();
+
+    // JSON literals are accepted too
+    tst.test("<|tool_call_start|>[set_config(config={\"enabled\": true, \"note\": null})]<|tool_call_end|>")
+        .tools({ config_tool })
+        .expect(message_with_tool_calls("set_config", R"({"config": {"enabled": true, "note": null}})"))
+        .run();
+
+    // Dotted function name with structured args
+    tst.test("<|tool_call_start|>[Calendar.create_event(title=\"demo\", participants=[\"Alice\", \"Bob\"], "
+             "metadata={\"priority\": \"high\", \"reminder\": true})]<|tool_call_end|>")
+        .tools({ calendar_create_event_tool })
+        .expect(message_with_tool_calls(
+            "Calendar.create_event",
+            R"({"title": "demo", "participants": ["Alice", "Bob"], "metadata": {"priority": "high", "reminder": true}})"))
+        .run();
+
+    // Markdown links stay content
+    tst.test("Use this format: [link text](url). Example: [Wikipedia](https://www.wikipedia.org).")
+        .tools({ get_time_tool })
+        .expect(simple_assist_msg("Use this format: [link text](url). Example: [Wikipedia](https://www.wikipedia.org)."))
+        .run();
+
+    // Python tool with multiline code in string: the \n in the literal decodes to a real
+    // newline, emitted as a JSON \n escape (not a doubled backslash).
+    tst.test("<|tool_call_start|>[python(code=\"def hello():\\n    print('hey')\")]<|tool_call_end|>")
+        .tools({ python_tool })
+        .expect_tool_calls({
+            { "python", R"#({"code": "def hello():\n    print('hey')"})#", "" }
+        })
+        .run();
+
+    // String escape sequences decode to their actual characters (newline + tab here),
+    // so a "write a two line file" style call produces real line breaks, not literal "\n".
+    tst.test("<|tool_call_start|>[python(code=\"First line\\nSecond line\\tindented\")]<|tool_call_end|>")
+        .tools({ python_tool })
+        .expect_tool_calls({
+            { "python", R"#({"code": "First line\nSecond line\tindented"})#", "" }
+        })
+        .run();
+
+    // Escaped quotes inside a string argument survive the round-trip.
+    tst.test("<|tool_call_start|>[python(code=\"print(\\\"hi\\\")\")]<|tool_call_end|>")
+        .tools({ python_tool })
+        .expect_tool_calls({
+            { "python", R"#({"code": "print(\"hi\")"})#", "" }
+        })
+        .run();
+
+    // Content before tool call (no reasoning)
+    tst.test("Let me check the time.<|tool_call_start|>[get_time(city=\"Paris\")]<|tool_call_end|>")
+        .tools({ get_time_tool })
+        .expect(message_with_reasoning_content_and_multiple_tool_calls(
+            "", "Let me check the time.", { { "get_time", "{\"city\":\"Paris\"}" } }
+        ))
+        .run();
+
+    // Multiple tool calls (parallel)
+    tst.test("<|tool_call_start|>[special_function(arg1=1), special_function_with_opt(arg1=1, arg2=2)]<|tool_call_end|>")
+        .parallel_tool_calls(true)
+        .tools({ special_function_tool, special_function_tool_with_optional_param })
+        .expect_tool_calls({
+            { "special_function", R"({"arg1": 1})", {} },
+            { "special_function_with_opt", R"({"arg1": 1, "arg2": 2})", {} },
+        })
+        .run();
+
+    // Partial tool call (streaming)
+    tst.test("<|tool_call_start|>[special_function(arg1=")
+        .tools({ special_function_tool })
+        .is_partial(true)
+        .expect(simple_assist_msg("", "", "special_function", "{\"arg1\": "))
+        .run();
+
+    // Tool call with empty arguments
+    tst.test("<|tool_call_start|>[empty_args()]<|tool_call_end|>")
+        .tools({ empty_args_tool })
+        .expect(simple_assist_msg("", "", "empty_args", "{}"))
+        .run();
+
 }
 
 static void test_template_output_peg_parsers(bool detailed_debug) {
