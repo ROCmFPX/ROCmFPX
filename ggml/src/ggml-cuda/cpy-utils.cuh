@@ -381,6 +381,286 @@ static __device__ void quantize_f32_rocmfp4_fast_block(const float * __restrict_
     }
 }
 
+static __device__ __forceinline__ int8_t rocmfpx_fp8_quantize_code_cuda(float x, float inv_scale) {
+    if (!isfinite(x) || inv_scale <= 0.0f) {
+        return 0;
+    }
+
+    int q = (int) roundf(x * inv_scale);
+    q = q > 127 ? 127 : q;
+    q = q < -127 ? -127 : q;
+    return (int8_t) q;
+}
+
+static __device__ __forceinline__ float rocmfpx_max_abs_range_cuda(const float * __restrict__ x, const int offset, const int n) {
+    float max_abs = 0.0f;
+
+#pragma unroll
+    for (int j = 0; j < n; ++j) {
+        const float xj = x[offset + j];
+        if (isfinite(xj)) {
+            max_abs = fmaxf(max_abs, fabsf(xj));
+        }
+    }
+
+    return max_abs;
+}
+
+static __device__ __forceinline__ void rocmfpx_set_bits_cuda(uint8_t * dst, const int bit_pos, const int nbits, const uint32_t code) {
+#pragma unroll
+    for (int bit = 0; bit < nbits; ++bit) {
+        const int dst_bit = bit_pos + bit;
+        const uint8_t mask = (uint8_t) (1u << (dst_bit & 7));
+
+        if (code & (1u << bit)) {
+            dst[dst_bit >> 3] |= mask;
+        } else {
+            dst[dst_bit >> 3] &= (uint8_t) ~mask;
+        }
+    }
+}
+
+static __device__ __forceinline__ uint8_t rocmfpx_fp3_quantize_code_cuda(float x, float inv_scale) {
+    if (!isfinite(x) || inv_scale <= 0.0f) {
+        return 0;
+    }
+
+    const float ax = fabsf(x * inv_scale);
+    uint8_t mag;
+    if (ax <= 0.5f) {
+        mag = 0;
+    } else if (ax <= 1.5f) {
+        mag = 1;
+    } else if (ax <= 3.0f) {
+        mag = 2;
+    } else {
+        mag = 3;
+    }
+
+    return mag == 0 ? 0 : (uint8_t) ((x < 0.0f ? 4u : 0u) | mag);
+}
+
+static __device__ __forceinline__ int rocmfpx_fp3_decode_value_cuda(uint8_t code) {
+    const int mag = (code & 3u) == 3u ? 4 : (int) (code & 3u);
+    return (code & 4u) ? -mag : mag;
+}
+
+template<int start, int n>
+static __device__ __forceinline__ float rocmfpx_fp3_block_mse_for_scale_cuda(
+        const float * __restrict__ x, int e, float best_err) {
+    const float scale = rocmfpx_ue4m3_to_fp32_finite((uint8_t) e);
+    const float inv_scale = scale > 0.0f ? 1.0f/scale : 0.0f;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        const float xi = x[start + i];
+        if (!isfinite(xi)) {
+            continue;
+        }
+
+        const uint8_t code = rocmfpx_fp3_quantize_code_cuda(xi, inv_scale);
+        const float yi = (float) rocmfpx_fp3_decode_value_cuda(code) * scale;
+        const float d = xi - yi;
+
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+template<int start, int n>
+static __device__ __forceinline__ uint8_t rocmfpx_choose_scale_fp3_mse_cuda(const float * __restrict__ x) {
+    const float max_abs = rocmfpx_max_abs_range_cuda(x, start, n);
+    if (!(max_abs > 0.0f) || !isfinite(max_abs)) {
+        return 0;
+    }
+
+    const int start_e = rocmfpx_nearest_scale_ue4m3_cuda(max_abs / 4.0f);
+    int best_e = start_e;
+    float best_err = FLT_MAX;
+    bool lower_done = false;
+
+    for (int delta = 0; delta <= 125; ++delta) {
+        const int e0 = start_e - delta;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale = rocmfpx_ue4m3_to_fp32_finite((uint8_t) e0);
+            const float clip_delta = max_abs - 4.0f*scale;
+            if (clip_delta > 0.0f && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = rocmfpx_fp3_block_mse_for_scale_cuda<start, n>(x, e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = e0;
+                }
+            }
+        }
+
+        const int e1 = start_e + delta;
+        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+            const float err = rocmfpx_fp3_block_mse_for_scale_cuda<start, n>(x, e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
+                best_err = err;
+                best_e = e1;
+            }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
+        }
+    }
+
+    return (uint8_t) best_e;
+}
+
+static __device__ __forceinline__ uint8_t rocmfpx_fp6_quantize_code_cuda(float x, float inv_scale) {
+    if (!isfinite(x) || inv_scale <= 0.0f) {
+        return 0;
+    }
+
+    int mag = (int) roundf(fabsf(x * inv_scale));
+    mag = mag > 31 ? 31 : mag;
+    return mag == 0 ? 0 : (uint8_t) ((x < 0.0f ? 32u : 0u) | (uint8_t) mag);
+}
+
+static __device__ __forceinline__ int rocmfpx_fp6_decode_value_cuda(uint8_t code) {
+    const int mag = (int) (code & 31u);
+    return (code & 32u) ? -mag : mag;
+}
+
+template<int start, int n>
+static __device__ __forceinline__ float rocmfpx_fp6_block_mse_for_scale_cuda(
+        const float * __restrict__ x, int e, float best_err) {
+    const float scale = rocmfpx_ue4m3_to_fp32_finite((uint8_t) e);
+    const float inv_scale = scale > 0.0f ? 1.0f/scale : 0.0f;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        const float xi = x[start + i];
+        if (!isfinite(xi)) {
+            continue;
+        }
+
+        const uint8_t code = rocmfpx_fp6_quantize_code_cuda(xi, inv_scale);
+        const float yi = (float) rocmfpx_fp6_decode_value_cuda(code) * scale;
+        const float d = xi - yi;
+
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+template<int start, int n>
+static __device__ __forceinline__ uint8_t rocmfpx_choose_scale_fp6_mse_cuda(const float * __restrict__ x) {
+    const float max_abs = rocmfpx_max_abs_range_cuda(x, start, n);
+    if (!(max_abs > 0.0f) || !isfinite(max_abs)) {
+        return 0;
+    }
+
+    const int start_e = rocmfpx_nearest_scale_ue4m3_cuda(max_abs / 31.0f);
+    int best_e = start_e;
+    float best_err = FLT_MAX;
+    bool lower_done = false;
+
+    for (int delta = 0; delta <= 125; ++delta) {
+        const int e0 = start_e - delta;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale = rocmfpx_ue4m3_to_fp32_finite((uint8_t) e0);
+            const float clip_delta = max_abs - 31.0f*scale;
+            if (clip_delta > 0.0f && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = rocmfpx_fp6_block_mse_for_scale_cuda<start, n>(x, e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = e0;
+                }
+            }
+        }
+
+        const int e1 = start_e + delta;
+        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+            const float err = rocmfpx_fp6_block_mse_for_scale_cuda<start, n>(x, e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
+                best_err = err;
+                best_e = e1;
+            }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
+        }
+    }
+
+    return (uint8_t) best_e;
+}
+
+static __device__ void quantize_f32_rocmfpx_fp3_block(const float * __restrict__ x, block_rocmfp3 * __restrict__ y) {
+#pragma unroll
+    for (int j = 0; j < QS_ROCMFP3; ++j) {
+        y->qs[j] = 0;
+    }
+
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+        const int offset = half * (QK_ROCMFP3/2);
+        y->e[half] = half == 0 ?
+            rocmfpx_choose_scale_fp3_mse_cuda<0, QK_ROCMFP3/2>(x) :
+            rocmfpx_choose_scale_fp3_mse_cuda<QK_ROCMFP3/2, QK_ROCMFP3/2>(x);
+
+        const float d = rocmfpx_ue4m3_to_fp32_finite(y->e[half]);
+        const float id = d > 0.0f ? 1.0f/d : 0.0f;
+
+#pragma unroll
+        for (int j = 0; j < QK_ROCMFP3/2; ++j) {
+            const int i = offset + j;
+            rocmfpx_set_bits_cuda(y->qs, i*3, 3, rocmfpx_fp3_quantize_code_cuda(x[i], id));
+        }
+    }
+}
+
+static __device__ void quantize_f32_rocmfpx_fp6_block(const float * __restrict__ x, block_rocmfp6 * __restrict__ y) {
+#pragma unroll
+    for (int j = 0; j < QS_ROCMFP6; ++j) {
+        y->qs[j] = 0;
+    }
+
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+        const int offset = half * (QK_ROCMFP6/2);
+        y->e[half] = half == 0 ?
+            rocmfpx_choose_scale_fp6_mse_cuda<0, QK_ROCMFP6/2>(x) :
+            rocmfpx_choose_scale_fp6_mse_cuda<QK_ROCMFP6/2, QK_ROCMFP6/2>(x);
+
+        const float d = rocmfpx_ue4m3_to_fp32_finite(y->e[half]);
+        const float id = d > 0.0f ? 1.0f/d : 0.0f;
+
+#pragma unroll
+        for (int j = 0; j < QK_ROCMFP6/2; ++j) {
+            const int i = offset + j;
+            rocmfpx_set_bits_cuda(y->qs, i*6, 6, rocmfpx_fp6_quantize_code_cuda(x[i], id));
+        }
+    }
+}
+
+static __device__ void quantize_f32_rocmfpx_fp8_block(const float * __restrict__ x, block_rocmfp8 * __restrict__ y) {
+    y->e = rocmfpx_nearest_scale_ue4m3_cuda(rocmfpx_max_abs_range_cuda(x, 0, QK_ROCMFP8) / 127.0f);
+    const float d = rocmfpx_ue4m3_to_fp32_finite(y->e);
+    const float id = d > 0.0f ? 1.0f/d : 0.0f;
+
+#pragma unroll
+    for (int j = 0; j < QK_ROCMFP8; ++j) {
+        y->qs[j] = rocmfpx_fp8_quantize_code_cuda(x[j], id);
+    }
+}
+
 // Wrapper functions for cpy.cu compatibility
 static __device__ void cpy_blck_f32_q4_0(const char * cxi, char * cdsti) {
     quantize_f32_q4_0_block((const float *)cxi, (block_q4_0 *)cdsti);
@@ -454,6 +734,81 @@ static __device__ void cpy_blck_bf16_rocmfp4(const char * cxi, char * cdsti) {
 
 static __device__ void cpy_blck_bf16_rocmfp4_fast(const char * cxi, char * cdsti) {
     cpy_blck_scalar_rocmfp4_fast<nv_bfloat16>(cxi, cdsti);
+}
+
+template<typename src_t>
+static __device__ void cpy_blck_scalar_rocmfpx_fp3(const char * cxi, char * cdsti) {
+    const src_t * x = (const src_t *) cxi;
+    float tmp[QK_ROCMFP3];
+
+#pragma unroll
+    for (int j = 0; j < QK_ROCMFP3; ++j) {
+        tmp[j] = ggml_cuda_cast<float>(x[j]);
+    }
+
+    quantize_f32_rocmfpx_fp3_block(tmp, (block_rocmfp3 *) cdsti);
+}
+
+template<typename src_t>
+static __device__ void cpy_blck_scalar_rocmfpx_fp6(const char * cxi, char * cdsti) {
+    const src_t * x = (const src_t *) cxi;
+    float tmp[QK_ROCMFP6];
+
+#pragma unroll
+    for (int j = 0; j < QK_ROCMFP6; ++j) {
+        tmp[j] = ggml_cuda_cast<float>(x[j]);
+    }
+
+    quantize_f32_rocmfpx_fp6_block(tmp, (block_rocmfp6 *) cdsti);
+}
+
+static __device__ void cpy_blck_f32_rocmfpx_fp3(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp3<float>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_f16_rocmfpx_fp3(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp3<half>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_bf16_rocmfpx_fp3(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp3<nv_bfloat16>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_f32_rocmfpx_fp6(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp6<float>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_f16_rocmfpx_fp6(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp6<half>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_bf16_rocmfpx_fp6(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp6<nv_bfloat16>(cxi, cdsti);
+}
+
+template<typename src_t>
+static __device__ void cpy_blck_scalar_rocmfpx_fp8(const char * cxi, char * cdsti) {
+    const src_t * x = (const src_t *) cxi;
+    float tmp[QK_ROCMFP8];
+
+#pragma unroll
+    for (int j = 0; j < QK_ROCMFP8; ++j) {
+        tmp[j] = ggml_cuda_cast<float>(x[j]);
+    }
+
+    quantize_f32_rocmfpx_fp8_block(tmp, (block_rocmfp8 *) cdsti);
+}
+
+static __device__ void cpy_blck_f32_rocmfpx_fp8(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp8<float>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_f16_rocmfpx_fp8(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp8<half>(cxi, cdsti);
+}
+
+static __device__ void cpy_blck_bf16_rocmfpx_fp8(const char * cxi, char * cdsti) {
+    cpy_blck_scalar_rocmfpx_fp8<nv_bfloat16>(cxi, cdsti);
 }
 
 template<typename src_t, typename dst_t>

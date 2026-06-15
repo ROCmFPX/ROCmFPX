@@ -1,0 +1,517 @@
+#include "rocmfpx.h"
+
+#include <assert.h>
+#include <math.h>
+#include <string.h>
+
+float rocmfpx_ue4m3_to_fp32(uint8_t e) {
+    if (!rocmfpx_scale_is_valid(e)) {
+        return 0.0f;
+    }
+
+    const int exp  = e >> 3;
+    const int mant = e & 7;
+
+    if (exp == 0) {
+        return (float) mant * 0x1p-10f;
+    }
+
+    return ldexpf((float) (8 + mant), exp - 11);
+}
+
+bool rocmfpx_scale_is_valid(uint8_t e) {
+    return e <= 0x7e;
+}
+
+size_t rocmfpx_row_size_fp3(int64_t k) {
+    assert(k % QK_ROCMFP3 == 0);
+    return (size_t) (k / QK_ROCMFP3) * sizeof(block_rocmfp3);
+}
+
+size_t rocmfpx_row_size_fp6(int64_t k) {
+    assert(k % QK_ROCMFP6 == 0);
+    return (size_t) (k / QK_ROCMFP6) * sizeof(block_rocmfp6);
+}
+
+size_t rocmfpx_row_size_fp8(int64_t k) {
+    assert(k % QK_ROCMFP8 == 0);
+    return (size_t) (k / QK_ROCMFP8) * sizeof(block_rocmfp8);
+}
+
+static uint8_t rocmfpx_nearest_scale_ue4m3(float target) {
+    if (!(target > 0.0f) || !isfinite(target)) {
+        return 0;
+    }
+
+    uint8_t best_e = 1;
+    float best_err = fabsf(rocmfpx_ue4m3_to_fp32(best_e) - target);
+
+    for (int e = 2; e <= 0x7e; ++e) {
+        const float err = fabsf(rocmfpx_ue4m3_to_fp32((uint8_t) e) - target);
+        if (err < best_err) {
+            best_err = err;
+            best_e = (uint8_t) e;
+        }
+    }
+
+    return best_e;
+}
+
+static float rocmfpx_max_abs(const float * x, int n) {
+    float max_abs = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        if (!isfinite(x[i])) {
+            continue;
+        }
+
+        const float ax = fabsf(x[i]);
+        if (ax > max_abs) {
+            max_abs = ax;
+        }
+    }
+
+    return max_abs;
+}
+
+static void rocmfpx_set_bits(uint8_t * dst, int bit_pos, int nbits, uint32_t code) {
+    for (int bit = 0; bit < nbits; ++bit) {
+        const int absolute_bit = bit_pos + bit;
+        const int byte_index   = absolute_bit >> 3;
+        const int bit_index    = absolute_bit & 7;
+
+        if ((code >> bit) & 1u) {
+            dst[byte_index] |= (uint8_t) (1u << bit_index);
+        }
+    }
+}
+
+static uint32_t rocmfpx_get_bits(const uint8_t * src, int bit_pos, int nbits) {
+    uint32_t code = 0;
+
+    for (int bit = 0; bit < nbits; ++bit) {
+        const int absolute_bit = bit_pos + bit;
+        const int byte_index   = absolute_bit >> 3;
+        const int bit_index    = absolute_bit & 7;
+
+        code |= (uint32_t) ((src[byte_index] >> bit_index) & 1u) << bit;
+    }
+
+    return code;
+}
+
+static int rocmfpx_decode_fp3_code(uint8_t code) {
+    static const int mag[4] = { 0, 1, 2, 4 };
+    const int value = mag[code & 3u];
+    return (code & 4u) ? -value : value;
+}
+
+static uint8_t rocmfpx_quantize_fp3_code(float x, float inv_scale) {
+    if (!isfinite(x) || inv_scale <= 0.0f) {
+        return 0;
+    }
+
+    const float ax = fabsf(x * inv_scale);
+    uint8_t mag;
+
+    if (ax <= 0.5f) {
+        mag = 0;
+    } else if (ax <= 1.5f) {
+        mag = 1;
+    } else if (ax <= 3.0f) {
+        mag = 2;
+    } else {
+        mag = 3;
+    }
+
+    return mag == 0 ? 0 : (uint8_t) ((x < 0.0f ? 4u : 0u) | mag);
+}
+
+static float rocmfpx_fp3_block_mse_for_scale(const float * x, int n, uint8_t e, float best_err) {
+    const float scale = rocmfpx_ue4m3_to_fp32(e);
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        if (!isfinite(x[i])) {
+            continue;
+        }
+
+        const uint8_t code = rocmfpx_quantize_fp3_code(x[i], inv_scale);
+        const float y = (float) rocmfpx_decode_fp3_code(code) * scale;
+        const float d = x[i] - y;
+
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+static uint8_t rocmfpx_choose_scale_fp3_mse(const float * x, int n) {
+    const float max_abs = rocmfpx_max_abs(x, n);
+    if (!(max_abs > 0.0f) || !isfinite(max_abs)) {
+        return 0;
+    }
+
+    const uint8_t start_e = rocmfpx_nearest_scale_ue4m3(max_abs / 4.0f);
+    uint8_t best_e = start_e;
+    float best_err = INFINITY;
+    bool lower_done = false;
+
+    for (int delta = 0; delta <= 125; ++delta) {
+        const int e0 = (int) start_e - delta;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale = rocmfpx_ue4m3_to_fp32((uint8_t) e0);
+            const float clip_delta = max_abs - 4.0f*scale;
+            if (clip_delta > 0.0f && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = rocmfpx_fp3_block_mse_for_scale(x, n, (uint8_t) e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = (uint8_t) e0;
+                }
+            }
+        }
+
+        const int e1 = (int) start_e + delta;
+        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+            const float err = rocmfpx_fp3_block_mse_for_scale(x, n, (uint8_t) e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
+                best_err = err;
+                best_e = (uint8_t) e1;
+            }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
+        }
+    }
+
+    return best_e;
+}
+
+static int rocmfpx_decode_fp6_code(uint8_t code) {
+    const int value = code & 31u;
+    return (code & 32u) ? -value : value;
+}
+
+static uint8_t rocmfpx_quantize_fp6_code(float x, float inv_scale) {
+    if (!isfinite(x) || inv_scale <= 0.0f) {
+        return 0;
+    }
+
+    int mag = (int) lroundf(fabsf(x * inv_scale));
+    if (mag > 31) {
+        mag = 31;
+    }
+
+    return mag == 0 ? 0 : (uint8_t) ((x < 0.0f ? 32u : 0u) | (uint8_t) mag);
+}
+
+static float rocmfpx_fp6_block_mse_for_scale(const float * x, int n, uint8_t e, float best_err) {
+    const float scale = rocmfpx_ue4m3_to_fp32(e);
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        if (!isfinite(x[i])) {
+            continue;
+        }
+        const uint8_t code = rocmfpx_quantize_fp6_code(x[i], inv_scale);
+        const float y = (float) rocmfpx_decode_fp6_code(code) * scale;
+        const float d = x[i] - y;
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+static uint8_t rocmfpx_choose_scale_fp6_mse(const float * x, int n) {
+    const float max_abs = rocmfpx_max_abs(x, n);
+    if (!(max_abs > 0.0f) || !isfinite(max_abs)) {
+        return 0;
+    }
+
+    const uint8_t start_e = rocmfpx_nearest_scale_ue4m3(max_abs / 31.0f);
+    uint8_t best_e = start_e;
+    float best_err = INFINITY;
+    bool lower_done = false;
+
+    for (int delta = 0; delta <= 125; ++delta) {
+        const int e0 = (int) start_e - delta;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale = rocmfpx_ue4m3_to_fp32((uint8_t) e0);
+            const float clip_delta = max_abs - 31.0f*scale;
+            if (clip_delta > 0.0f && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = rocmfpx_fp6_block_mse_for_scale(x, n, (uint8_t) e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = (uint8_t) e0;
+                }
+            }
+        }
+
+        const int e1 = (int) start_e + delta;
+        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+            const float err = rocmfpx_fp6_block_mse_for_scale(x, n, (uint8_t) e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
+                best_err = err;
+                best_e = (uint8_t) e1;
+            }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
+        }
+    }
+
+    return best_e;
+}
+
+static int8_t rocmfpx_quantize_fp8_code(float x, float inv_scale) {
+    if (!isfinite(x) || inv_scale <= 0.0f) {
+        return 0;
+    }
+
+    int q = (int) lroundf(x * inv_scale);
+    if (q > 127) {
+        q = 127;
+    } else if (q < -127) {
+        q = -127;
+    }
+
+    return (int8_t) q;
+}
+
+void rocmfpx_quantize_row_fp3_ref(const float * GGML_RESTRICT x, block_rocmfp3 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_ROCMFP3 == 0);
+
+    const int64_t nb = k / QK_ROCMFP3;
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const float * xb = x + ib*QK_ROCMFP3;
+        block_rocmfp3 * yb = y + ib;
+
+        memset(yb->qs, 0, sizeof(yb->qs));
+
+        for (int half = 0; half < 2; ++half) {
+            const float * xh = xb + half*(QK_ROCMFP3/2);
+            yb->e[half] = rocmfpx_choose_scale_fp3_mse(xh, QK_ROCMFP3/2);
+
+            const float scale = rocmfpx_ue4m3_to_fp32(yb->e[half]);
+            const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+
+            for (int j = 0; j < QK_ROCMFP3/2; ++j) {
+                const int i = half*(QK_ROCMFP3/2) + j;
+                const uint8_t code = rocmfpx_quantize_fp3_code(xb[i], inv_scale);
+                rocmfpx_set_bits(yb->qs, i*3, 3, code);
+            }
+        }
+    }
+}
+
+void rocmfpx_dequantize_row_fp3(const block_rocmfp3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_ROCMFP3 == 0);
+
+    const int64_t nb = k / QK_ROCMFP3;
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const block_rocmfp3 * xb = x + ib;
+        float * yb = y + ib*QK_ROCMFP3;
+
+        for (int i = 0; i < QK_ROCMFP3; ++i) {
+            const float scale = rocmfpx_ue4m3_to_fp32(xb->e[i >= QK_ROCMFP3/2]);
+            const uint8_t code = (uint8_t) rocmfpx_get_bits(xb->qs, i*3, 3);
+            yb[i] = (float) rocmfpx_decode_fp3_code(code) * scale;
+        }
+    }
+}
+
+void rocmfpx_quantize_row_fp3(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    rocmfpx_quantize_row_fp3_ref(x, (block_rocmfp3 *) y, k);
+}
+
+size_t rocmfpx_quantize_fp3(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    (void) imatrix;
+
+    const size_t row_size = rocmfpx_row_size_fp3(n_per_row);
+    char * qrow = (char *) dst;
+
+    for (int64_t row = 0; row < nrows; ++row) {
+        rocmfpx_quantize_row_fp3_ref(src + row*n_per_row, (block_rocmfp3 *) qrow, n_per_row);
+        qrow += row_size;
+    }
+
+    return (size_t) nrows * row_size;
+}
+
+void rocmfpx_quantize_row_fp6_ref(const float * GGML_RESTRICT x, block_rocmfp6 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_ROCMFP6 == 0);
+
+    const int64_t nb = k / QK_ROCMFP6;
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const float * xb = x + ib*QK_ROCMFP6;
+        block_rocmfp6 * yb = y + ib;
+
+        memset(yb->qs, 0, sizeof(yb->qs));
+
+        for (int half = 0; half < 2; ++half) {
+            const float * xh = xb + half*(QK_ROCMFP6/2);
+            yb->e[half] = rocmfpx_choose_scale_fp6_mse(xh, QK_ROCMFP6/2);
+
+            const float scale = rocmfpx_ue4m3_to_fp32(yb->e[half]);
+            const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+
+            for (int j = 0; j < QK_ROCMFP6/2; ++j) {
+                const int i = half*(QK_ROCMFP6/2) + j;
+                const uint8_t code = rocmfpx_quantize_fp6_code(xb[i], inv_scale);
+                rocmfpx_set_bits(yb->qs, i*6, 6, code);
+            }
+        }
+    }
+}
+
+void rocmfpx_dequantize_row_fp6(const block_rocmfp6 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_ROCMFP6 == 0);
+
+    const int64_t nb = k / QK_ROCMFP6;
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const block_rocmfp6 * xb = x + ib;
+        float * yb = y + ib*QK_ROCMFP6;
+
+        for (int i = 0; i < QK_ROCMFP6; ++i) {
+            const float scale = rocmfpx_ue4m3_to_fp32(xb->e[i >= QK_ROCMFP6/2]);
+            const uint8_t code = (uint8_t) rocmfpx_get_bits(xb->qs, i*6, 6);
+            yb[i] = (float) rocmfpx_decode_fp6_code(code) * scale;
+        }
+    }
+}
+
+void rocmfpx_quantize_row_fp6(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    rocmfpx_quantize_row_fp6_ref(x, (block_rocmfp6 *) y, k);
+}
+
+size_t rocmfpx_quantize_fp6(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    (void) imatrix;
+
+    const size_t row_size = rocmfpx_row_size_fp6(n_per_row);
+    char * qrow = (char *) dst;
+
+    for (int64_t row = 0; row < nrows; ++row) {
+        rocmfpx_quantize_row_fp6_ref(src + row*n_per_row, (block_rocmfp6 *) qrow, n_per_row);
+        qrow += row_size;
+    }
+
+    return (size_t) nrows * row_size;
+}
+
+void rocmfpx_quantize_row_fp8_ref(const float * GGML_RESTRICT x, block_rocmfp8 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_ROCMFP8 == 0);
+
+    const int64_t nb = k / QK_ROCMFP8;
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const float * xb = x + ib*QK_ROCMFP8;
+        block_rocmfp8 * yb = y + ib;
+
+        const float max_abs = rocmfpx_max_abs(xb, QK_ROCMFP8);
+        yb->e = rocmfpx_nearest_scale_ue4m3(max_abs / 127.0f);
+
+        const float scale = rocmfpx_ue4m3_to_fp32(yb->e);
+        const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+
+        for (int i = 0; i < QK_ROCMFP8; ++i) {
+            yb->qs[i] = rocmfpx_quantize_fp8_code(xb[i], inv_scale);
+        }
+    }
+}
+
+void rocmfpx_dequantize_row_fp8(const block_rocmfp8 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_ROCMFP8 == 0);
+
+    const int64_t nb = k / QK_ROCMFP8;
+    for (int64_t ib = 0; ib < nb; ++ib) {
+        const block_rocmfp8 * xb = x + ib;
+        float * yb = y + ib*QK_ROCMFP8;
+
+        const float scale = rocmfpx_ue4m3_to_fp32(xb->e);
+        for (int i = 0; i < QK_ROCMFP8; ++i) {
+            yb[i] = (float) xb->qs[i] * scale;
+        }
+    }
+}
+
+void rocmfpx_quantize_row_fp8(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    rocmfpx_quantize_row_fp8_ref(x, (block_rocmfp8 *) y, k);
+}
+
+size_t rocmfpx_quantize_fp8(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    (void) imatrix;
+
+    const size_t row_size = rocmfpx_row_size_fp8(n_per_row);
+    char * qrow = (char *) dst;
+
+    for (int64_t row = 0; row < nrows; ++row) {
+        rocmfpx_quantize_row_fp8_ref(src + row*n_per_row, (block_rocmfp8 *) qrow, n_per_row);
+        qrow += row_size;
+    }
+
+    return (size_t) nrows * row_size;
+}
+
+bool rocmfpx_validate_row_data_fp3(const void * data, size_t nbytes) {
+    if (nbytes % sizeof(block_rocmfp3) != 0) {
+        return false;
+    }
+
+    const block_rocmfp3 * blocks = (const block_rocmfp3 *) data;
+    const size_t nb = nbytes / sizeof(block_rocmfp3);
+
+    for (size_t i = 0; i < nb; ++i) {
+        if (!rocmfpx_scale_is_valid(blocks[i].e[0]) || !rocmfpx_scale_is_valid(blocks[i].e[1])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool rocmfpx_validate_row_data_fp6(const void * data, size_t nbytes) {
+    if (nbytes % sizeof(block_rocmfp6) != 0) {
+        return false;
+    }
+
+    const block_rocmfp6 * blocks = (const block_rocmfp6 *) data;
+    const size_t nb = nbytes / sizeof(block_rocmfp6);
+
+    for (size_t i = 0; i < nb; ++i) {
+        if (!rocmfpx_scale_is_valid(blocks[i].e[0]) || !rocmfpx_scale_is_valid(blocks[i].e[1])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool rocmfpx_validate_row_data_fp8(const void * data, size_t nbytes) {
+    if (nbytes % sizeof(block_rocmfp8) != 0) {
+        return false;
+    }
+
+    const block_rocmfp8 * blocks = (const block_rocmfp8 *) data;
+    const size_t nb = nbytes / sizeof(block_rocmfp8);
+
+    for (size_t i = 0; i < nb; ++i) {
+        if (!rocmfpx_scale_is_valid(blocks[i].e)) {
+            return false;
+        }
+    }
+
+    return true;
+}
