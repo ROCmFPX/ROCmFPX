@@ -133,10 +133,12 @@ Test files:
 
 ```text
 /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-LEAN.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q6_0_ROCMFPX_COHERENT-LEAN.gguf
+/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q8_0_ROCMFPX.gguf
 /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-MSE-v3.gguf
 /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-MSE-v4.gguf
 /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q6_0_ROCMFPX_COHERENT.gguf
-/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q8_0_ROCMFPX.gguf
 /home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q4_K_M.gguf
 ```
 
@@ -318,12 +320,18 @@ rocmfpx-strix-moe-rpb1, rocmfpx-strix-moe-rpb2, rocmfpx-strix-moe-rpb3, rocmfpx-
 These profiles only alter MMVQ launch geometry. They do not change block
 layouts, quantized values, FP3/FP6 MSE scale selection, or Q3 LEAN routing.
 
-Observed decode speeds on the coherent Qwen3-0.6B presets (ROCm0 / Vulkan0):
+Historical decode speeds on earlier coherent Qwen3-0.6B presets (ROCm0 / Vulkan0):
 
 ```text
 Q3 coherent v4: pp16 1296 / 2118 t/s, tg16 228 / 263 t/s
 Q6 coherent:    pp16  762 / 1942 t/s, tg16 197 / 225 t/s
 Q8 pure:        pp16  773 / 2277 t/s, tg16 212 / 257 t/s
+```
+
+Current Q3 LEAN ROCm0 smoke on June 16, 2026:
+
+```text
+Q3_0_ROCMFPX_COHERENT-LEAN: pp16 1222.42 t/s, tg16 231.00 t/s
 ```
 
 ## Next Steps

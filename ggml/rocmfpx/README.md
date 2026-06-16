@@ -74,7 +74,7 @@ timeout 180 build-strix-rocmfp4/bin/test-backend-ops test -o MUL_MAT,GET_ROWS,CP
 Qwen3 BF16 coherency and decode-speed gates:
 
 ```bash
-MODEL=/path/to/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-MSE-v4.gguf BACKEND=ROCm0 scripts/check-rocmfpx-qwen-coherency.sh
-MODEL=/path/to/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-MSE-v4.gguf BACKEND=ROCm0 scripts/check-rocmfpx-qwen-bench.sh
-MODEL=/path/to/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-MSE-v4.gguf BACKEND=ROCm0 scripts/check-rocmfpx-qwen-strict-json.sh
+MODEL=/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-LEAN.gguf BACKEND=ROCm0 scripts/check-rocmfpx-qwen-coherency.sh
+MODEL=/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-LEAN.gguf BACKEND=ROCm0 scripts/check-rocmfpx-qwen-bench.sh
+MODEL=/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-LEAN.gguf BACKEND=ROCm0 scripts/check-rocmfpx-qwen-strict-json.sh
 ```
