@@ -42,7 +42,7 @@ run_dry() {
     "$BIN" --dry-run "$MODEL_SRC" "$OUT_DIR/${preset}.gguf" "$preset" >"$log" 2>&1
 }
 
-for preset in Q3_0_ROCMFPX Q3_0_ROCMFPX_AGENT Q6_0_ROCMFPX Q6_0_ROCMFPX_AGENT; do
+for preset in Q3_0_ROCMFPX Q3_0_ROCMFPX_AGENT Q6_0_ROCMFPX Q6_0_ROCMFPX_AGENT Q8_0_ROCMFPX Q8_0_ROCMFPX_AGENT; do
     run_dry "$preset"
 done
 

@@ -49,15 +49,20 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DLLAMA_BUILD_TESTS=ON \
     -DGGML_BUILD_TESTS=OFF
 
-cmake --build "$BUILD_DIR" -j "$JOBS" --target \
-    llama-cli \
-    llama-server \
-    llama-completion \
-    llama-quantize \
-    llama-bench \
-    test-backend-ops \
-    test-quantize-fns \
-    test-quantize-perf
+if [[ $# -gt 0 ]]; then
+    cmake --build "$BUILD_DIR" -j "$JOBS" --target "$@"
+else
+    cmake --build "$BUILD_DIR" -j "$JOBS" --target \
+        llama-cli \
+        llama-server \
+        llama-completion \
+        llama-quantize \
+        llama-bench \
+        llama-perplexity \
+        test-backend-ops \
+        test-quantize-fns \
+        test-quantize-perf
+fi
 
 echo "Built:"
 echo "  $BUILD_DIR/bin/llama-cli"

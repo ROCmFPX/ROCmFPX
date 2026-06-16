@@ -48,6 +48,7 @@ llama-quantize model-f16.gguf model-q6-rocmfpx.gguf Q6_0_ROCMFPX
 llama-quantize model-f16.gguf model-q8-rocmfpx.gguf Q8_0_ROCMFPX
 llama-quantize model-f16.gguf model-q3-agent-rocmfpx.gguf Q3_0_ROCMFPX_AGENT
 llama-quantize model-f16.gguf model-q6-agent-rocmfpx.gguf Q6_0_ROCMFPX_AGENT
+llama-quantize model-f16.gguf model-q8-agent-rocmfpx.gguf Q8_0_ROCMFPX_AGENT
 ```
 
 These formats are integrated into llama.cpp and support experimental hardware
@@ -193,30 +194,68 @@ Q8_0_ROCMFPX pure preset:
   Qwen3-0.6B size: 586.39 MiB / 8.25 BPW (vs Q8_0 604.15 MiB / 8.50 BPW).
 ```
 
-The current default `Q3_0_ROCMFPX` preset is 330.57 MiB / 4.65 BPW for Qwen3-0.6B.
-That is ~5 MiB larger than `Q3_K_M`, but the bulk transformer tensors stay on
-true 3.5 BPW FP3 with MSE scales and the preset passes the same short
-instruction-following probes as `Q4_K_M`. On this tiny model the size/coherency
-cliff is sharp: dropping below ~325 MiB breaks JSON or coding probes.
+Q3 is ~5 MiB over `Q3_K_M` on 0.6B. Agent presets trade size for routing:
+
+| Preset | Size / BPW | vs stock |
+|---|---:|---:|
+| `Q3_K_M` | 325.37 MiB / 4.58 BPW | baseline |
+| `Q3_0_ROCMFPX` | 330.57 MiB / 4.65 BPW | +5.2 MiB |
+| `Q3_0_ROCMFPX_AGENT` | 437.62 MiB / 6.16 BPW | +112 MiB vs Q3_K_M |
+| `Q6_K` | 466.50 MiB / 6.57 BPW | baseline |
+| `Q6_0_ROCMFPX` | 466.65 MiB / 6.57 BPW | +0.15 MiB |
+| `Q6_0_ROCMFPX_AGENT` | 541.76 MiB / 7.62 BPW | +75 MiB vs Q6_K |
+| `Q8_0` | 604.15 MiB / 8.50 BPW | baseline |
+| `Q8_0_ROCMFPX` | 586.39 MiB / 8.25 BPW | −17.8 MiB |
+| `Q8_0_ROCMFPX_AGENT` | 598.90 MiB / 8.43 BPW | −5.3 MiB |
+
+Dry-run source: `Qwen3-0.6B-Q4_K_M.gguf` via `scripts/sweep-rocmfpx-agent-size-table.sh`.
 
 ## Agent Presets And Harnesses
 
-`Q3_0_ROCMFPX_AGENT` and `Q6_0_ROCMFPX_AGENT` are opt-in experimental presets for
-Hermes/OpenClaw-style tool use. They do not introduce new tensor block layouts;
-they keep the ROCmFPx family formats and spend extra bits on sensitive routing:
-token/output tensors, attention Q/K/V/O, selected FFN-down, and gate/up slices.
-The default `Q3_0_ROCMFPX` LEAN routing is unchanged.
+`Q3_0_ROCMFPX_AGENT`, `Q6_0_ROCMFPX_AGENT`, and `Q8_0_ROCMFPX_AGENT` are opt-in
+experimental presets for Hermes/OpenClaw-style tool use. They do not introduce new
+tensor block layouts; they keep the ROCmFPx family formats and spend extra bits on
+sensitive routing: token/output tensors, attention Q/K/V/O, selected FFN-down,
+and gate/up slices. The default `Q3_0_ROCMFPX` / `Q6_0_ROCMFPX` / `Q8_0_ROCMFPX`
+LEAN routing is unchanged.
 
-Agent validation scripts:
+Core validation:
 
 ```bash
+scripts/check-rocmfpx-qwen-all.sh          # reference + coherency + agent JSON
+scripts/check-rocmfpx-all.sh               # qwen-all + optional smokes
 scripts/check-rocmfpx-agent-json.sh
 scripts/check-rocmfpx-tool-calling.sh
+scripts/check-rocmfpx-agent-json-grammar.sh  # llama-server json_schema path
+```
+
+Agent fixture build (proxy from Qwen until Hermes/OpenClaw sources are set):
+
+```bash
+scripts/build-rocmfpx-agent-fixtures.sh
+HERMES_SRC=/path/to/hermes-bf16.gguf scripts/build-rocmfpx-agent-fixtures.sh
+```
+
+Agent and large-model smokes:
+
+```bash
 MODEL=/path/to/hermes-Q3_0_ROCMFPX_AGENT.gguf scripts/check-rocmfpx-hermes-smoke.sh
 MODEL=/path/to/openclaw-Q3_0_ROCMFPX_AGENT.gguf scripts/check-rocmfpx-openclaw-smoke.sh
 MODEL=/path/to/qwen-or-agent.gguf scripts/check-rocmfpx-long-context-smoke.sh
+MODEL_SRC=/path/to/qwen3-4b-bf16.gguf scripts/check-rocmfpx-qwen-large.sh
 MODEL_SRC=/path/to/minimax-or-mixtral-bf16.gguf scripts/check-rocmfpx-moe-routing.sh
-MODEL_SRC=/path/to/model-bf16.gguf scripts/sweep-rocmfpx-agent-routing.sh
+MODEL_SRC=/path/to/minimax.gguf scripts/check-rocmfpx-minimax-smoke.sh
+```
+
+Sweeps:
+
+```bash
+MODEL_SRC=/path/to/model.gguf scripts/sweep-rocmfpx-agent-routing.sh
+RUN_AGENT_JSON=1 MODEL_SRC=/path/to/model.gguf scripts/sweep-rocmfpx-agent-routing.sh
+MODEL_SRC=/path/to/model.gguf scripts/sweep-rocmfpx-agent-size-table.sh
+MODEL_SRC=/path/to/model.gguf scripts/sweep-rocmfpx-perplexity.sh
+MODEL_LEAN=/path/to/lean.gguf MODEL_AGENT=/path/to/agent.gguf scripts/sweep-rocmfpx-decode-tune.sh
+scripts/check-rocmfpx-spec-decode-all.sh
 ```
 
 The scripts emit machine-readable JSON. Missing optional model fixtures skip by
@@ -231,6 +270,7 @@ size/BPW, and can run the JSON agent harness after quantization with
 scripts/check-rocmfpx-qwen-coherency.sh
 scripts/check-rocmfpx-qwen-bench.sh
 scripts/check-rocmfpx-qwen-strict-json.sh
+scripts/check-rocmfpx-qwen-all.sh
 ```
 
 ## Speculative Decode Smokes

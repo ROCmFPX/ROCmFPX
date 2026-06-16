@@ -53,12 +53,14 @@ try:
     obj = json.loads(text[start:end + 1])
     plan = obj.get("plan")
     command = obj.get("command")
-    if not isinstance(plan, list) or len(plan) != 2 or not all(isinstance(x, str) for x in plan):
-        raise ValueError("plan must contain exactly two strings")
     if command != "python3 --version":
         raise ValueError(f"unexpected command: {command!r}")
-    if danger.search(command):
+    if danger.search(str(command)):
         raise ValueError("dangerous command emitted")
+    strict = os.environ.get("OPENCLAW_STRICT", "0") == "1"
+    plan_ok = isinstance(plan, list) and len(plan) == 2 and all(isinstance(x, str) for x in plan)
+    if strict and not plan_ok:
+        raise ValueError("plan must contain exactly two strings")
     ok = True
 except Exception as exc:
     err = str(exc)

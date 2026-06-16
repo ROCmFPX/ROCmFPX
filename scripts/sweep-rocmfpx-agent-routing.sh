@@ -9,9 +9,16 @@ MODEL_SRC="${MODEL_SRC:-/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B
 OUT_DIR="${OUT_DIR:-/tmp/rocmfpx-agent-routing-sweep}"
 BACKEND="${BACKEND:-ROCm0}"
 RUN_AGENT_JSON="${RUN_AGENT_JSON:-0}"
-PRESETS="${PRESETS:-Q3_0_ROCMFPX Q3_0_ROCMFPX_AGENT Q6_0_ROCMFPX Q6_0_ROCMFPX_AGENT Q8_0_ROCMFPX}"
+PRESETS="${PRESETS:-Q3_0_ROCMFPX Q3_0_ROCMFPX_AGENT Q6_0_ROCMFPX Q6_0_ROCMFPX_AGENT Q8_0_ROCMFPX Q8_0_ROCMFPX_AGENT}"
 
 cd "$ROOT"
+
+if [[ ! -f "$MODEL_SRC" ]]; then
+    fallback="/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q4_K_M.gguf"
+    if [[ -f "$fallback" ]]; then
+        MODEL_SRC="$fallback"
+    fi
+fi
 
 if [[ ! -x "$QUANTIZE_BIN" ]]; then
     echo "missing llama-quantize binary: $QUANTIZE_BIN" >&2

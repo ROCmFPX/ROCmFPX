@@ -12,5 +12,7 @@ scripts/check-rocmfpx-reference.sh
 MODEL="$MODEL" BACKEND="$BACKEND" scripts/check-rocmfpx-qwen-coherency.sh
 MODEL="$MODEL" BACKEND="$BACKEND" scripts/check-rocmfpx-qwen-bench.sh
 MODEL="$MODEL" BACKEND="$BACKEND" scripts/check-rocmfpx-qwen-strict-json.sh
+MODEL="$MODEL" BACKEND="$BACKEND" scripts/check-rocmfpx-agent-json.sh
+MODEL="$MODEL" BACKEND="$BACKEND" scripts/check-rocmfpx-tool-calling.sh
 
 echo "ROCmFPX Qwen validation passed for ${MODEL} on ${BACKEND}"
