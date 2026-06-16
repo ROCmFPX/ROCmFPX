@@ -10,6 +10,7 @@
 #include "common.h"
 #include "diffusion.h"
 #include "llama.h"
+#include "../../src/llama-ext.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -256,6 +257,11 @@ struct server_slot {
     bool need_embd() const {
         GGML_ASSERT(task);
         return task->need_embd() || (spec && common_speculative_need_embd(spec));
+    }
+
+    bool need_embd_pre_norm() const {
+        GGML_ASSERT(task);
+        return spec && common_speculative_need_embd_pre_norm(spec);
     }
 
     // if the context does not have a memory module then all embeddings have to be computed within a single ubatch
@@ -2830,14 +2836,13 @@ private:
                             break;
                         }
 
-                        // embedding requires all tokens in the batch to be output;
-                        // MTP also wants logits at every prompt position so the
-                        // streaming hook can mirror t_h_pre_norm into ctx_dft.
+                        // Embedding and MTP pre-norm extraction require output
+                        // rows, but raw logits are copied only when needed.
                         common_batch_add(batch,
                             cur_tok,
                             slot.prompt.tokens.pos_next(),
                             { slot.id },
-                            slot.need_embd());
+                            slot.need_embd() || slot.need_embd_pre_norm());
                         slot.prompt.tokens.push_back(cur_tok);
 
                         slot.n_prompt_tokens_processed++;
@@ -2952,6 +2957,7 @@ private:
             }
 
             llama_set_embeddings(ctx_tgt, slot_batched->need_embd());
+            llama_set_embeddings_pre_norm(ctx_tgt, slot_batched->need_embd_pre_norm(), true);
         }
 
         if (batch.n_tokens == 0) {
