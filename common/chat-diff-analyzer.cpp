@@ -108,7 +108,67 @@ static std::vector<std::function<void(const common_chat_template & tmpl, autopar
               analysis.tools.function.close        = "```";
               LOG_DBG(ANSI_ORANGE "[Patch: DeepSeek-R1-Distill-Qwen]\n" ANSI_RESET);
           }
-      }
+      },
+      // Nemotron Nano v2
+      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+          if (tmpl.src.find("<SPECIAL_10>") != std::string::npos && tmpl.src.find("<SPECIAL_11>") != std::string::npos &&
+              tmpl.src.find("<SPECIAL_12>") != std::string::npos && tmpl.src.find("<TOOL_RESPONSE>") != std::string::npos) {
+
+              analysis.tools.format.mode           = tool_format::JSON_NATIVE;
+              analysis.tools.format.section_start  = "";
+              analysis.tools.format.section_end    = "";
+              analysis.tools.format.per_call_start = "<TOOLCALL>";
+              analysis.tools.format.per_call_end   = "</TOOLCALL>";
+              analysis.content.mode                = content_mode::PLAIN;
+              analysis.content.start               = "";
+              analysis.content.end                 = "";
+              analysis.reasoning.mode              = reasoning_mode::TAG_BASED;
+              analysis.reasoning.start             = "<think>\n\n";
+              analysis.reasoning.end               = "</think>";
+              analysis.assistant_start             = "<SPECIAL_11>Assistant";
+              analysis.user_start                  = "<SPECIAL_11>User";
+              analysis.preserved_tokens.clear();
+              analysis.preserved_tokens.push_back("<SPECIAL_12>");
+              analysis.preserved_tokens.push_back("<SPECIAL_11>");
+              analysis.preserved_tokens.push_back("</think>");
+              analysis.preserved_tokens.push_back("<TOOLCALL>");
+              analysis.preserved_tokens.push_back("</TOOLCALL>");
+              LOG_DBG(ANSI_ORANGE "[Patch: Nemotron Nano v2]\n" ANSI_RESET);
+          }
+      },
+      // Fireworks
+      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+          if (tmpl.src.find("{%- set system_prompt = '<|start_header_id|>' + 'system' + '<|end_header_id|>\\n\\n'"
+            " + message['content'] | trim + '\\n' + system_prompt_suffix + '<|eot_id|>' -%}") != std::string::npos) {
+              analysis.assistant_start             = "<|start_header_id|>assistant<|end_header_id|>";
+              analysis.user_start                  = "<|start_header_id|>user<|end_header_id|>";
+              LOG_DBG(ANSI_ORANGE "[Patch: Fireworks v2]\n" ANSI_RESET);
+          }
+      },
+      // Solar Open
+      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+          if (tmpl.src.find("<|begin|>assistant<|think|><|end|>") != std::string::npos) {
+              analysis.assistant_start             = "<|begin|>assistant";
+              LOG_DBG(ANSI_ORANGE "[Patch: Solar Open]\n" ANSI_RESET);
+          }
+      },
+      // Apriel 1.6
+      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+          if (tmpl.src.find("if not loop.last and '[BEGIN FINAL RESPONSE]' in asst_text") != std::string::npos) {
+              analysis.user_start                  = "<|begin_user|>";
+              analysis.assistant_start             = "<|begin_assistant|>";
+              LOG_DBG(ANSI_ORANGE "[Patch: Apriel 1.6]\n" ANSI_RESET);
+          }
+      },
+      // template uses the JSON {name, parameters} tool instruction, emits the OpenAI function wrapper
+      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+          if (tmpl.src.find("Respond in the format {\"name\": function name") != std::string::npos &&
+              tmpl.src.find("Do not use variables.") != std::string::npos) {
+              analysis.tools.format.openai_wrapper_trigger = true;
+              LOG_DBG(ANSI_ORANGE "[Patch: JSON name/parameters tool instruction]\n" ANSI_RESET);
+          }
+      },
+
     });
 
 // Common JSON structures
