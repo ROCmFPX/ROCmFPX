@@ -40,7 +40,6 @@ fi
 
 for backend in $BACKENDS; do
     tmp_out="$(mktemp)"
-    trap 'rm -f "$tmp_out"' EXIT
 
     echo "=== ROCmFPX MTP smoke: $backend ==="
     env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
@@ -80,11 +79,13 @@ for backend in $BACKENDS; do
     cat "$tmp_out"
     if ! rg -q "Generation:|decoded|tokens per second|tok/s" "$tmp_out"; then
         echo "FAIL: could not find decode/perf evidence in MTP smoke output for $backend" >&2
+        rm -f "$tmp_out"
         exit 1
     fi
 
     rm -f "$tmp_out"
-    trap - EXIT
 done
+
+trap - EXIT
 
 echo "ROCmFPX MTP smoke passed for ${MODEL}"

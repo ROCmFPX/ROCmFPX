@@ -3,24 +3,26 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+source "$SCRIPT_DIR/rocmfpx-lib.sh"
+rocmfpx_setup_env
+
 BIN="${BIN:-$ROOT/build-strix-rocmfp4/bin/llama-completion}"
 MODEL="${MODEL:-/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-LEAN.gguf}"
-BACKEND="${BACKEND:-ROCm0}"
 N_PREDICT="${N_PREDICT:-256}"
 TEMP="${TEMP:-0}"
 
 cd "$ROOT"
 
+rocmfpx_require_binary "$BIN"
+
 run_probe() {
     local name="$1"
     local prompt="$2"
-    local extra_args=("${@:3}")
+    shift 2
+    local extra_args=("$@")
     local tmp_out
     tmp_out="$(mktemp)"
-    trap 'rm -f "$tmp_out"' RETURN
-
-    echo "=== probe: $name ==="
-    timeout --kill-after=30s 5m "$BIN" \
+    if ! timeout --kill-after=30s 5m "$BIN" \
         -m "$MODEL" \
         -dev "$BACKEND" \
         -ngl 99 \
@@ -36,7 +38,12 @@ run_probe() {
         --temp "$TEMP" \
         -n "$N_PREDICT" \
         -p "$prompt" \
-        "${extra_args[@]}" >"$tmp_out" 2>&1
+        "${extra_args[@]}" >"$tmp_out" 2>&1; then
+        echo "probe $name: llama-completion failed" >&2
+        cat "$tmp_out" >&2
+        rm -f "$tmp_out"
+        exit 1
+    fi
 
     python3 - "$name" "$tmp_out" <<'PY'
 import json
@@ -76,6 +83,7 @@ elif name == "json":
 
 print(f"{name}: OK")
 PY
+    rm -f "$tmp_out"
 }
 
 run_probe coding \

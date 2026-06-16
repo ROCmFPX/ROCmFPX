@@ -35,7 +35,6 @@ run_case() {
 
     local tmp_out
     tmp_out="$(mktemp)"
-    trap 'rm -f "$tmp_out"' RETURN
 
     echo "=== ROCmFPX speculative smoke: $label ==="
     env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
@@ -61,8 +60,13 @@ run_case() {
     cat "$tmp_out"
     if ! rg -q "Generation:|decoded|tokens per second|tok/s" "$tmp_out"; then
         echo "FAIL: could not find decode/perf evidence in speculative smoke output for $label" >&2
+        rm -f "$tmp_out"
         exit 1
     fi
+    if ! rg -qi "accept|spec|sampled" "$tmp_out"; then
+        echo "WARN: speculative smoke did not report spec-metric counters for $label" >&2
+    fi
+    rm -f "$tmp_out"
 }
 
 run_case ngram-cache \

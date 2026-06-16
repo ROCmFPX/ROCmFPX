@@ -5,7 +5,7 @@ ROCmFP8 quantization family. It is intentionally separate from `ggml/rocmfp4/`
 so the promoted ROCmFP4 GGUF formats and kernels are not affected while the new
 layouts are evaluated.
 
-Current status (June 15, 2026):
+Current status (June 16, 2026):
 - CPU reference quantize/dequantize exists for all three formats.
 - `Q3_0_ROCMFPX`, `Q6_0_ROCMFPX`, and `Q8_0_ROCMFPX` are registered as
   experimental GGUF tensor types.
@@ -19,8 +19,26 @@ Current status (June 15, 2026):
   - `Q6_0_ROCMFPX`: early attention and boosted FFN-down at `Q8_0_ROCMFPX`,
     embeddings/output at `Q6_0_ROCMFPX`, bulk gate/up on `Q6_0_ROCMFPX`.
   - `Q8_0_ROCMFPX`: pure FP8-family preset.
+- Opt-in `*_AGENT` presets boost attention/FFN routing for tool-call /
+  Hermes / OpenClaw style workloads:
+  - `Q3_0_ROCMFPX_AGENT`, `Q6_0_ROCMFPX_AGENT`, `Q8_0_ROCMFPX_AGENT`.
+  - Routing is layered on top of LEAN; default presets are unchanged.
 - FP3 and FP6 quantization use reconstruction-MSE scale selection per
   16-weight half-block.
+
+## Validation Script Index
+
+```text
+scripts/check-rocmfpx-reference.sh        # CPU reference math
+scripts/check-rocmfpx-qwen-all.sh         # core Qwen gates
+scripts/check-rocmfpx-all.sh              # qwen-all + optional smokes
+scripts/check-rocmfpx-summary.sh          # full JSON summary runner
+scripts/sweep-rocmfpx-backend-ops.sh      # test-backend-ops per backend
+scripts/sweep-rocmfpx-agent-size-table.sh # LEAN vs AGENT MiB/BPW
+scripts/sweep-rocmfpx-perplexity.sh       # calibration PPL sweep
+scripts/sweep-rocmfpx-decode-tune.sh      # decode-tune matrix
+scripts/build-rocmfpx-agent-fixtures.sh   # proxy Hermes/OpenClaw AGENT GGUFs
+```
 
 ## Layouts
 
