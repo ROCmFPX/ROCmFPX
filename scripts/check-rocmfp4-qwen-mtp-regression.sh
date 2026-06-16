@@ -10,6 +10,7 @@ BACKEND="${BACKEND:-ROCm0}"
 MIN_DECODE_TPS="${MIN_DECODE_TPS:-30.0}"
 MIN_SUSTAINED_DECODE_TPS="${MIN_SUSTAINED_DECODE_TPS:-25.5}"
 RUN_SUSTAINED="${RUN_SUSTAINED:-1}"
+TIMEOUT_SEC="${TIMEOUT_SEC:-8m}"
 SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-4}"
 SPEC_DRAFT_N_MIN="${SPEC_DRAFT_N_MIN:-0}"
 SPEC_DRAFT_P_MIN="${SPEC_DRAFT_P_MIN:-0.0}"
@@ -53,7 +54,7 @@ run_case() {
     fi
 
     env HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}" \
-    timeout --kill-after=30s 8m "$BIN" \
+    timeout --kill-after=60s "$TIMEOUT_SEC" "$BIN" \
         -m "$MODEL" \
         -dev "$BACKEND" \
         --spec-draft-device "$BACKEND" \

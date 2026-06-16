@@ -46,6 +46,8 @@ The staging is structured to ensure that the existing ROCmFP4 path remains stabl
 llama-quantize model-f16.gguf model-q3-rocmfpx.gguf Q3_0_ROCMFPX
 llama-quantize model-f16.gguf model-q6-rocmfpx.gguf Q6_0_ROCMFPX
 llama-quantize model-f16.gguf model-q8-rocmfpx.gguf Q8_0_ROCMFPX
+llama-quantize model-f16.gguf model-q3-agent-rocmfpx.gguf Q3_0_ROCMFPX_AGENT
+llama-quantize model-f16.gguf model-q6-agent-rocmfpx.gguf Q6_0_ROCMFPX_AGENT
 ```
 
 These formats are integrated into llama.cpp and support experimental hardware
@@ -196,6 +198,32 @@ That is ~5 MiB larger than `Q3_K_M`, but the bulk transformer tensors stay on
 true 3.5 BPW FP3 with MSE scales and the preset passes the same short
 instruction-following probes as `Q4_K_M`. On this tiny model the size/coherency
 cliff is sharp: dropping below ~325 MiB breaks JSON or coding probes.
+
+## Agent Presets And Harnesses
+
+`Q3_0_ROCMFPX_AGENT` and `Q6_0_ROCMFPX_AGENT` are opt-in experimental presets for
+Hermes/OpenClaw-style tool use. They do not introduce new tensor block layouts;
+they keep the ROCmFPx family formats and spend extra bits on sensitive routing:
+token/output tensors, attention Q/K/V/O, selected FFN-down, and gate/up slices.
+The default `Q3_0_ROCMFPX` LEAN routing is unchanged.
+
+Agent validation scripts:
+
+```bash
+scripts/check-rocmfpx-agent-json.sh
+scripts/check-rocmfpx-tool-calling.sh
+MODEL=/path/to/hermes-Q3_0_ROCMFPX_AGENT.gguf scripts/check-rocmfpx-hermes-smoke.sh
+MODEL=/path/to/openclaw-Q3_0_ROCMFPX_AGENT.gguf scripts/check-rocmfpx-openclaw-smoke.sh
+MODEL=/path/to/qwen-or-agent.gguf scripts/check-rocmfpx-long-context-smoke.sh
+MODEL_SRC=/path/to/minimax-or-mixtral-bf16.gguf scripts/check-rocmfpx-moe-routing.sh
+MODEL_SRC=/path/to/model-bf16.gguf scripts/sweep-rocmfpx-agent-routing.sh
+```
+
+The scripts emit machine-readable JSON. Missing optional model fixtures skip by
+default; set `SKIP_MISSING_MODEL=0` when CI should require a local fixture.
+`sweep-rocmfpx-agent-routing.sh` dry-runs standard and agent presets, records
+size/BPW, and can run the JSON agent harness after quantization with
+`RUN_AGENT_JSON=1`.
 
 ## Qwen3 Validation Scripts
 

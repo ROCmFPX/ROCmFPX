@@ -165,6 +165,8 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX          = 110, // ROCmFPx experimental 6-bit reference layout
         LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX          = 111, // ROCmFPx experimental 8-bit reference layout
         LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX          = 112, // ROCmFPx experimental 3-bit reference layout
+        LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX_AGENT    = 113, // ROCmFPx 3-bit agent/tool-call coherent routing
+        LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX_AGENT    = 114, // ROCmFPx 6-bit agent/tool-call coherent routing
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
