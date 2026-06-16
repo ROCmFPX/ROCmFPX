@@ -98,6 +98,7 @@ class ModelBase:
     metadata: gguf.Metadata
     dir_model_card: Path
     remote_hf_model_id: str | None
+    target_model_dir: Path | None
 
     # subclasses should define this!
     model_arch: gguf.MODEL_ARCH
@@ -118,7 +119,9 @@ class ModelBase:
                  small_first_shard: bool = False, hparams: dict[str, Any] | None = None, remote_hf_model_id: str | None = None,
                  disable_mistral_community_chat_template: bool = False,
                  sentence_transformers_dense_modules: bool = False,
-                 fuse_gate_up_exps: bool = False):
+                 target_model_dir: Path | None = None,
+                 fuse_gate_up_exps: bool = False,
+                 fp8_as_q8: bool = False):
         if type(self) is ModelBase or \
                 type(self) is TextModel or \
                 type(self) is MmprojModel:
@@ -137,6 +140,7 @@ class ModelBase:
         self.dry_run = dry_run
         self.remote_hf_model_id = remote_hf_model_id
         self.sentence_transformers_dense_modules = sentence_transformers_dense_modules
+        self.target_model_dir = target_model_dir
         self.fuse_gate_up_exps = fuse_gate_up_exps
         self._gate_exp_buffer: dict[int, Tensor] = {}
         self._up_exp_buffer: dict[int, Tensor] = {}
@@ -147,6 +151,8 @@ class ModelBase:
         self.dir_model_card = dir_model  # overridden in convert_lora_to_gguf.py
         self._is_nvfp4 = False
         self._is_mxfp4 = False
+        self._fp8_as_q8 = fp8_as_q8
+        self._fp8_dequantized: set[str] = set()
 
         # Apply heuristics to figure out typical tensor encoding based on first tensor's dtype
         # NOTE: can't use field "torch_dtype" in config.json, because some finetunes lie.
@@ -428,6 +434,8 @@ class ModelBase:
                         s = self.model_tensors[name]
                         self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
                         tensors_to_remove.append(name)
+                        if self._fp8_as_q8:
+                            self._fp8_dequantized.add(weight_name)
                     if name.endswith(".activation_scale"):  # unused
                         tensors_to_remove.append(name)
                     if name.endswith("_activation_scale"):  # Mistral-Small-4-119B-2602, unused
@@ -439,6 +447,8 @@ class ModelBase:
                         s = self.model_tensors[name]
                         self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
                         tensors_to_remove.append(name)
+                        if self._fp8_as_q8:
+                            self._fp8_dequantized.add(weight_name)
                     if name.endswith(".qscale_act"):
                         tensors_to_remove.append(name)
             elif quant_method == "gptq":
@@ -475,6 +485,11 @@ class ModelBase:
                     strategy = weight_config.get("strategy")
                     assert strategy == "channel" or strategy == "block"
                     assert weight_config.get("group_size") is None  # didn't find a model using this yet
+                    is_fp8 = (
+                        quant_format == "float-quantized"
+                        and weight_config.get("type") == "float"
+                        and weight_config.get("num_bits") == 8
+                    )
                     for name in self.model_tensors.keys():
                         if name.endswith(".weight_scale"):
                             weight_name = name.removesuffix("_scale")
@@ -482,6 +497,8 @@ class ModelBase:
                             s = self.model_tensors[name]
                             self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
                             tensors_to_remove.append(name)
+                            if self._fp8_as_q8 and is_fp8:
+                                self._fp8_dequantized.add(weight_name)
                 elif quant_format == "pack-quantized":
                     assert weight_config.get("strategy") == "group"
                     assert weight_config.get("type", "int") == "int"
@@ -515,8 +532,13 @@ class ModelBase:
                         weight_name = name.removesuffix("_scale")
                         w = self.model_tensors[weight_name]
                         s = self.model_tensors[name]
+                        is_fp8_weight = False
+                        if self._fp8_as_q8:
+                            is_fp8_weight = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
                         self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
                         tensors_to_remove.append(name)
+                        if is_fp8_weight:
+                            self._fp8_dequantized.add(weight_name)
                     if name.endswith((".input_scale", ".k_scale", ".v_scale")):
                         tensors_to_remove.append(name)
             elif quant_method is not None:
@@ -604,8 +626,9 @@ class ModelBase:
         return [(new_name, data_torch)]
 
     def tensor_force_quant(self, name: str, new_name: str, bid: int | None, n_dims: int) -> gguf.GGMLQuantizationType | bool:
-        del name, new_name, bid, n_dims  # unused
-
+        del new_name, bid  # unused
+        if self._fp8_as_q8 and name in self._fp8_dequantized and n_dims >= 2:
+            return gguf.GGMLQuantizationType.Q8_0
         return False
 
     # some models need extra generated tensors (like rope_freqs)
@@ -14241,6 +14264,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fuse-gate-up-exps", action="store_true",
         help="Fuse gate_exps and up_exps tensors into a single gate_up_exps tensor for MoE models.",
+    )
+
+    parser.add_argument(
+        "--fp8-as-q8", action="store_true",
+        help="Force dequantized original FP8 weight tensors to Q8_0 instead of the selected 16-bit output type.",
     )
 
     parser.add_argument(
