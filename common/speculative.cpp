@@ -888,13 +888,12 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         LOG_INF("%s: adding speculative implementation 'draft-mtp'\n", __func__);
         LOG_INF("%s: - n_max=%d, n_min=%d, p_min=%.2f, n_embd=%d, backend_sampling=%d\n", __func__, this->params.n_max, this->params.n_min, this->params.p_min, n_embd, (int) this->params.backend_sampling);
-        LOG_INF("%s: - gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s, devices=[%s]\n", __func__,
+        LOG_INF("%s: - gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s\n", __func__,
                 this->params.n_gpu_layers,
                 ggml_type_name(this->params.cache_type_k),
                 ggml_type_name(this->params.cache_type_v),
                 ctx_tgt ? "yes" : "no",
-                ctx_dft ? "yes" : "no",
-                common_speculative_get_devices_str(this->params.devices).c_str());
+                ctx_dft ? "yes" : "no");
 
         const int32_t n_b = (int32_t) llama_n_batch(ctx_dft);
         batch = llama_batch_init(/*n_tokens=*/ n_b, /*embd=*/ n_embd, /*n_seq_max=*/ 1);

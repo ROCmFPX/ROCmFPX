@@ -3282,7 +3282,7 @@ private:
                 slot.n_draft_verif_steps += 1;
 
                 if (slot.n_accepted_per_pos.empty()) {
-                    slot.n_accepted_per_pos.resize(common_speculative_n_max(&params_base.speculative), 0);
+                    slot.n_accepted_per_pos.resize(std::max(1, params_base.speculative.draft.n_max), 0);
                 }
                 for (size_t i = 0; i < ids.size() - 1 && i < slot.n_accepted_per_pos.size(); ++i) {
                     slot.n_accepted_per_pos[i]++;

@@ -5,7 +5,6 @@
 #include "llama-kv-cells.h"
 #include "llama-memory.h"
 
-#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -261,12 +260,7 @@ private:
     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
     std::vector<uint32_t> v_heads;
 
-    // TODO: temporary until we refactor to be able to share the same cells between 2 kv caches [TAG_KV_CACHE_SHARE_CELLS]
-    llama_kv_cache * other;
-
-    std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
-
-    llama_kv_cells_vec & v_cells;
+    std::vector<llama_kv_cells> v_cells;
 
     // maps from a sequence id to a stream id
     std::vector<uint32_t> seq_to_stream;

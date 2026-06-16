@@ -125,8 +125,6 @@ static std::vector<std::function<void(const common_chat_template & tmpl, autopar
               analysis.reasoning.mode              = reasoning_mode::TAG_BASED;
               analysis.reasoning.start             = "<think>\n\n";
               analysis.reasoning.end               = "</think>";
-              analysis.assistant_start             = "<SPECIAL_11>Assistant";
-              analysis.user_start                  = "<SPECIAL_11>User";
               analysis.preserved_tokens.clear();
               analysis.preserved_tokens.push_back("<SPECIAL_12>");
               analysis.preserved_tokens.push_back("<SPECIAL_11>");
@@ -140,23 +138,18 @@ static std::vector<std::function<void(const common_chat_template & tmpl, autopar
       [](const common_chat_template & tmpl, autoparser & analysis) -> void {
           if (tmpl.src.find("{%- set system_prompt = '<|start_header_id|>' + 'system' + '<|end_header_id|>\\n\\n'"
             " + message['content'] | trim + '\\n' + system_prompt_suffix + '<|eot_id|>' -%}") != std::string::npos) {
-              analysis.assistant_start             = "<|start_header_id|>assistant<|end_header_id|>";
-              analysis.user_start                  = "<|start_header_id|>user<|end_header_id|>";
               LOG_DBG(ANSI_ORANGE "[Patch: Fireworks v2]\n" ANSI_RESET);
           }
       },
       // Solar Open
       [](const common_chat_template & tmpl, autoparser & analysis) -> void {
           if (tmpl.src.find("<|begin|>assistant<|think|><|end|>") != std::string::npos) {
-              analysis.assistant_start             = "<|begin|>assistant";
               LOG_DBG(ANSI_ORANGE "[Patch: Solar Open]\n" ANSI_RESET);
           }
       },
       // Apriel 1.6
       [](const common_chat_template & tmpl, autoparser & analysis) -> void {
           if (tmpl.src.find("if not loop.last and '[BEGIN FINAL RESPONSE]' in asst_text") != std::string::npos) {
-              analysis.user_start                  = "<|begin_user|>";
-              analysis.assistant_start             = "<|begin_assistant|>";
               LOG_DBG(ANSI_ORANGE "[Patch: Apriel 1.6]\n" ANSI_RESET);
           }
       },
