@@ -1301,9 +1301,6 @@ f16vec4 dequantFuncNVFP4_v(const in decodeBufNVFP4 bl, const in uint blockCoords
 }
 #endif
 
-#if defined(DATA_A_Q1_0)
-#define dequantFuncA dequantFuncQ1_0
-#define dequantFuncA_v dequantFuncQ1_0_v
 #if defined(DATA_A_ROCMFP4)
 layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFP4 {
    block_rocmfp4 block;
@@ -1443,88 +1440,9 @@ f16vec4 dequantFuncROCMFPXFP8_v(const in decodeBufROCMFPXFP8 bl, const in uint b
 }
 #endif
 
-#if defined(DATA_A_NVFP4)
-layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufNVFP4 {
-   block_nvfp4 block;
-};
-
-float16_t dequantFuncNVFP4(const in decodeBufNVFP4 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
-{
-    const uint idx = coordInBlock[1];
-    const uint sub = (idx & 0x30) >> 4;
-    const uint iqs = ((idx & 0x30) >> 1) + (idx & 0x7);
-    const uint shift = (idx & 0x8) >> 1;
-    const float d = ue4m3_to_fp32(bl.block.d[sub]);
-    uint qs = uint(bl.block.qs[iqs]);
-    qs = (qs >> shift) & 0xF;
-    return float16_t(kvalues_mxfp4[qs] * d * 0.5);
-}
-#endif
-
 #if defined(DATA_A_Q1_0)
 #define dequantFuncA dequantFuncQ1_0
-#elif defined(DATA_A_Q4_0)
-#define dequantFuncA dequantFuncQ4_0
-#elif defined(DATA_A_Q4_1)
-#define dequantFuncA dequantFuncQ4_1
-#elif defined(DATA_A_Q5_0)
-#define dequantFuncA dequantFuncQ5_0
-#elif defined(DATA_A_Q5_1)
-#define dequantFuncA dequantFuncQ5_1
-#elif defined(DATA_A_Q8_0)
-#define dequantFuncA dequantFuncQ8_0
-#elif defined(DATA_A_Q2_K)
-#define dequantFuncA dequantFuncQ2_K
-#elif defined(DATA_A_Q3_K)
-#define dequantFuncA dequantFuncQ3_K
-#elif defined(DATA_A_Q4_K)
-#define dequantFuncA dequantFuncQ4_K
-#define fetch_scales fetch_scalesQ4_K
-#define store_scales store_scalesQ4_K
-#elif defined(DATA_A_Q5_K)
-#define dequantFuncA dequantFuncQ5_K
-#define fetch_scales fetch_scalesQ5_K
-#define store_scales store_scalesQ4_K
-#elif defined(DATA_A_Q6_K)
-#define dequantFuncA dequantFuncQ6_K
-#elif defined(DATA_A_IQ1_S)
-#define dequantFuncA dequantFuncIQ1_S
-#elif defined(DATA_A_IQ1_M)
-#define dequantFuncA dequantFuncIQ1_M
-#elif defined(DATA_A_IQ2_XXS)
-#define dequantFuncA dequantFuncIQ2_XXS
-#elif defined(DATA_A_IQ2_XS)
-#define dequantFuncA dequantFuncIQ2_XS
-#elif defined(DATA_A_IQ2_S)
-#define dequantFuncA dequantFuncIQ2_S
-#elif defined(DATA_A_IQ3_XXS)
-#define dequantFuncA dequantFuncIQ3_XXS
-#elif defined(DATA_A_IQ3_S)
-#define dequantFuncA dequantFuncIQ3_S
-#elif defined(DATA_A_IQ4_XS)
-#define dequantFuncA dequantFuncIQ4_XS
-#elif defined(DATA_A_IQ4_NL)
-#define dequantFuncA dequantFuncIQ4_NL
-#elif defined(DATA_A_MXFP4)
-#define dequantFuncA dequantFuncMXFP4
-#elif defined(DATA_A_ROCMFP4)
-#define dequantFuncA dequantFuncROCMFP4
-#elif defined(DATA_A_ROCMFP4_FAST)
-#define dequantFuncA dequantFuncROCMFP4Fast
-#elif defined(DATA_A_ROCMFPX_FP3)
-#define dequantFuncA dequantFuncROCMFPXFP3
-#define dequantFuncA_v dequantFuncROCMFPXFP3_v
-#elif defined(DATA_A_ROCMFPX_FP6)
-#define dequantFuncA dequantFuncROCMFPXFP6
-#define dequantFuncA_v dequantFuncROCMFPXFP6_v
-#elif defined(DATA_A_ROCMFPX_FP8)
-#define dequantFuncA dequantFuncROCMFPXFP8
-#define dequantFuncA_v dequantFuncROCMFPXFP8_v
-#elif defined(DATA_A_NVFP4)
-#define dequantFuncA dequantFuncNVFP4
-#elif defined(DATA_A_F32)
-#define dequantFuncA dequantFuncF32
-#endif
+#define dequantFuncA_v dequantFuncQ1_0_v
 #elif defined(DATA_A_Q4_0)
 #define dequantFuncA dequantFuncQ4_0
 #define dequantFuncA_v dequantFuncQ4_0_v
@@ -1589,6 +1507,19 @@ float16_t dequantFuncNVFP4(const in decodeBufNVFP4 bl, const in uint blockCoords
 #elif defined(DATA_A_MXFP4)
 #define dequantFuncA dequantFuncMXFP4
 #define dequantFuncA_v dequantFuncMXFP4_v
+#elif defined(DATA_A_ROCMFP4)
+#define dequantFuncA dequantFuncROCMFP4
+#elif defined(DATA_A_ROCMFP4_FAST)
+#define dequantFuncA dequantFuncROCMFP4Fast
+#elif defined(DATA_A_ROCMFPX_FP3)
+#define dequantFuncA dequantFuncROCMFPXFP3
+#define dequantFuncA_v dequantFuncROCMFPXFP3_v
+#elif defined(DATA_A_ROCMFPX_FP6)
+#define dequantFuncA dequantFuncROCMFPXFP6
+#define dequantFuncA_v dequantFuncROCMFPXFP6_v
+#elif defined(DATA_A_ROCMFPX_FP8)
+#define dequantFuncA dequantFuncROCMFPXFP8
+#define dequantFuncA_v dequantFuncROCMFPXFP8_v
 #elif defined(DATA_A_NVFP4)
 #define dequantFuncA dequantFuncNVFP4
 #define dequantFuncA_v dequantFuncNVFP4_v
