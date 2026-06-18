@@ -787,6 +787,215 @@ static __device__ __forceinline__ void dequantize_V_rocmfp4_fast(const void * __
     }
 }
 
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_rocmfpx_fp3(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_rocmfp3 * K = (const block_rocmfp3 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+
+        const int ib  = k_KQ / QI_ROCMFP3;
+        const int iqs = k_KQ % QI_ROCMFP3;
+
+        const int v_packed = rocmfpx_pack4_fp3_vec_cuda(K[ib].qs, iqs * 4);
+
+        const int base     = 4 * iqs;
+        const int half_idx = base < QK_ROCMFP3/2 ? 0 : 1;
+
+        const float2 * Q_ds = (const float2 *) Q_ds_v;
+        const float Q_d = Q_ds[k_KQ_0/nthreads].x;
+
+        sum += vec_dot_q8_0_q8_1_impl<float, 1>(&v_packed, &Q_q8[k_KQ_0/nthreads],
+                 rocmfpx_ue4m3_to_fp32_finite(K[ib].e[half_idx]), Q_d);
+    }
+
+    return sum;
+}
+
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_rocmfpx_fp6(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_rocmfp6 * K = (const block_rocmfp6 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+
+        const int ib  = k_KQ / QI_ROCMFP6;
+        const int iqs = k_KQ % QI_ROCMFP6;
+
+        const int v = rocmfpx_pack4_fp6_vec_cuda(K[ib].qs, iqs * 4);
+        const int half_idx = iqs / (QI_ROCMFP6/2);
+
+        const float2 * Q_ds = (const float2 *) Q_ds_v;
+        const float Q_d = Q_ds[k_KQ_0/nthreads].x;
+
+        sum += vec_dot_q8_0_q8_1_impl<float, 1>(&v, &Q_q8[k_KQ_0/nthreads],
+                 rocmfpx_ue4m3_to_fp32_finite(K[ib].e[half_idx]), Q_d);
+    }
+
+    return sum;
+}
+
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_rocmfpx_fp8(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_rocmfp8 * K = (const block_rocmfp8 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+
+        const int ib  = k_KQ / QI_ROCMFP8;
+        const int iqs = k_KQ % QI_ROCMFP8;
+
+        int v;
+        memcpy(&v, K[ib].qs + 4*iqs, sizeof(v));
+
+        const float2 * Q_ds = (const float2 *) Q_ds_v;
+        const float Q_d = Q_ds[k_KQ_0/nthreads].x;
+
+        sum += vec_dot_q8_0_q8_1_impl<float, 1>(&v, &Q_q8[k_KQ_0/nthreads],
+                 rocmfpx_ue4m3_to_fp32_finite(K[ib].e), Q_d);
+    }
+
+    return sum;
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_rocmfpx_fp3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_rocmfp3 * x = (const block_rocmfp3 *) vx;
+
+    const int64_t ib  = i0 / QK_ROCMFP3;
+    const int     pos = i0 % QK_ROCMFP3;
+
+    static_assert(ne % 2 == 0, "bad ne");
+
+    float vals[ne];
+    const int base0 = int((pos / 4) * 4);
+    const int base1 = int(((pos + ne - 1) / 4) * 4);
+    const int packed0 = rocmfpx_pack4_fp3_vec_cuda(x[ib].qs, base0);
+    const int packed1 = base1 != base0 ? rocmfpx_pack4_fp3_vec_cuda(x[ib].qs, base1) : packed0;
+#pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const int idx  = pos + l;
+        const int base = (idx / 4) * 4;
+        const int packed = base == base0 ? packed0 : packed1;
+        const int8_t q = ((const int8_t *) &packed)[idx % 4];
+        const float  d = rocmfpx_ue4m3_to_fp32_finite(x[ib].e[idx >= QK_ROCMFP3/2]);
+        vals[l] = d * q;
+    }
+
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same<T, half>::value) {
+#pragma unroll
+        for (int l0 = 0; l0 < ne; l0 += 2) {
+            ((half2 *) dst)[l0/2] = make_half2(vals[l0 + 0], vals[l0 + 1]);
+        }
+    } else
+#endif // FP16_AVAILABLE
+    if constexpr (std::is_same<T, float>::value) {
+#pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            ((float *) dst)[l] = vals[l];
+        }
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
+    }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_rocmfpx_fp6(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_rocmfp6 * x = (const block_rocmfp6 *) vx;
+
+    const int64_t ib  = i0 / QK_ROCMFP6;
+    const int     pos = i0 % QK_ROCMFP6;
+
+    static_assert(ne % 2 == 0, "bad ne");
+
+    float vals[ne];
+    const int base0 = int((pos / 4) * 4);
+    const int base1 = int(((pos + ne - 1) / 4) * 4);
+    const int packed0 = rocmfpx_pack4_fp6_vec_cuda(x[ib].qs, base0);
+    const int packed1 = base1 != base0 ? rocmfpx_pack4_fp6_vec_cuda(x[ib].qs, base1) : packed0;
+#pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const int idx  = pos + l;
+        const int base = (idx / 4) * 4;
+        const int packed = base == base0 ? packed0 : packed1;
+        const int8_t q = ((const int8_t *) &packed)[idx % 4];
+        const float  d = rocmfpx_ue4m3_to_fp32_finite(x[ib].e[idx >= QK_ROCMFP6/2]);
+        vals[l] = d * q;
+    }
+
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same<T, half>::value) {
+#pragma unroll
+        for (int l0 = 0; l0 < ne; l0 += 2) {
+            ((half2 *) dst)[l0/2] = make_half2(vals[l0 + 0], vals[l0 + 1]);
+        }
+    } else
+#endif // FP16_AVAILABLE
+    if constexpr (std::is_same<T, float>::value) {
+#pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            ((float *) dst)[l] = vals[l];
+        }
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
+    }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_rocmfpx_fp8(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_rocmfp8 * x = (const block_rocmfp8 *) vx;
+
+    const int64_t ib  = i0 / QK_ROCMFP8;
+    const int     iqs = i0 % QK_ROCMFP8;
+
+    static_assert(ne % 2 == 0, "bad ne");
+    int8_t qs[ne];
+#pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        qs[l] = x[ib].qs[iqs + l];
+    }
+
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same<T, half>::value) {
+        const half2 d = __float2half2_rn(rocmfpx_ue4m3_to_fp32_finite(x[ib].e));
+
+#pragma unroll
+        for (int l0 = 0; l0 < ne; l0 += 2) {
+            ((half2 *) dst)[l0/2] = d * make_half2(qs[l0 + 0], qs[l0 + 1]);
+        }
+    } else
+#endif // FP16_AVAILABLE
+    if constexpr (std::is_same<T, float>::value) {
+        const float d = rocmfpx_ue4m3_to_fp32_finite(x[ib].e);
+
+#pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            ((float *) dst)[l] = d * qs[l];
+        }
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
+    }
+}
+
 template <ggml_type type_K, int D, int nthreads>
 constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     if constexpr (type_K == GGML_TYPE_F16) {
@@ -805,6 +1014,12 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_rocmfp4<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
         return vec_dot_fattn_vec_KQ_rocmfp4_fast<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_Q3_0_ROCMFPX) {
+        return vec_dot_fattn_vec_KQ_rocmfpx_fp3<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_Q6_0_ROCMFPX) {
+        return vec_dot_fattn_vec_KQ_rocmfpx_fp6<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_Q8_0_ROCMFPX) {
+        return vec_dot_fattn_vec_KQ_rocmfpx_fp8<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
     } else {
@@ -831,6 +1046,12 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_rocmfp4<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
         return dequantize_V_rocmfp4_fast<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_Q3_0_ROCMFPX) {
+        return dequantize_V_rocmfpx_fp3<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_Q6_0_ROCMFPX) {
+        return dequantize_V_rocmfpx_fp6<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_Q8_0_ROCMFPX) {
+        return dequantize_V_rocmfpx_fp8<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_BF16) {
         return dequantize_V_bf16<float, ne>;
     } else {

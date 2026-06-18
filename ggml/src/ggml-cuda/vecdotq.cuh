@@ -350,8 +350,12 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
 #define VDR_ROCMFP4_FAST_Q8_1_MMVQ GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR
 #define VDR_ROCMFP4_FAST_Q8_1_MMQ  GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR
 #define VDR_ROCMFP3_Q8_1_MMVQ 2
-#define VDR_ROCMFP6_Q8_1_MMVQ 2
+#define VDR_ROCMFP6_Q8_1_MMVQ 4
 #define VDR_ROCMFP8_Q8_1_MMVQ 2
+
+#define VDR_ROCMFP3_Q8_1_MMQ 4
+#define VDR_ROCMFP6_Q8_1_MMQ 4
+#define VDR_ROCMFP8_Q8_1_MMQ 8
 
 static __device__ __forceinline__ uint32_t rocmfpx_get_bits_vec_cuda(const uint8_t * src, const int bit_pos, const int nbits) {
     uint32_t code = 0;
@@ -459,7 +463,7 @@ static __device__ __forceinline__ float vec_dot_rocmfpx_fp3_q8_1(
         const int reg_shift = start_bit & 31;
         const uint32_t val_low = qs[reg_idx];
         const uint32_t val_high = qs[reg_idx + 1];
-        const uint32_t bits12 = ((val_low >> reg_shift) | (val_high << (32 - reg_shift))) & 0xFFFu;
+        const uint32_t bits12 = (reg_shift == 0) ? (val_low & 0xFFFu) : (((val_low >> reg_shift) | (val_high << (32 - reg_shift))) & 0xFFFu);
 
         const char4 v = make_char4(
             (int8_t) rocmfpx_decode_fp3_code_vec_cuda(bits12 & 7u),
@@ -486,19 +490,42 @@ static __device__ __forceinline__ float vec_dot_rocmfpx_fp6_q8_1(
 
     const block_rocmfp6 * bq6 = (const block_rocmfp6 *) vbq + kbx;
 
+    uint32_t qs0, qs1, qs2, qs3, qs4, qs5;
+    memcpy(&qs0, bq6->qs +  0, 4);
+    memcpy(&qs1, bq6->qs +  4, 4);
+    memcpy(&qs2, bq6->qs +  8, 4);
+    memcpy(&qs3, bq6->qs + 12, 4);
+    memcpy(&qs4, bq6->qs + 16, 4);
+    memcpy(&qs5, bq6->qs + 20, 4);
+
+    const uint32_t qs[6] = { qs0, qs1, qs2, qs3, qs4, qs5 };
+
     int sumi0 = 0;
     int sumi1 = 0;
 
 #pragma unroll
     for (int i = 0; i < VDR_ROCMFP6_Q8_1_MMVQ; ++i) {
         const int base = 4 * (iqs + i);
-        const int v = rocmfpx_pack4_fp6_vec_cuda(bq6->qs, base);
+        const int start_bit = 6 * base;
+        const int reg_idx = start_bit >> 5;
+        const int reg_shift = start_bit & 31;
+        const uint32_t val_low  = qs[reg_idx];
+        const uint32_t val_high = qs[reg_idx + 1];
+        const uint32_t bits24 = (reg_shift == 0) ? (val_low & 0xFFFFFFu) :
+            (((val_low >> reg_shift) | (val_high << (32 - reg_shift))) & 0xFFFFFFu);
+
+        const char4 v = make_char4(
+            (int8_t) rocmfpx_decode_fp6_code_vec_cuda(bits24 & 63u),
+            (int8_t) rocmfpx_decode_fp6_code_vec_cuda((bits24 >>  6) & 63u),
+            (int8_t) rocmfpx_decode_fp6_code_vec_cuda((bits24 >> 12) & 63u),
+            (int8_t) rocmfpx_decode_fp6_code_vec_cuda((bits24 >> 18) & 63u));
+        const int val_packed = *((const int *) &v);
         const int u = get_int_b4(bq8_1->qs, iqs + i);
 
         if (base < QK_ROCMFP6/2) {
-            sumi0 = ggml_cuda_dp4a(v, u, sumi0);
+            sumi0 = ggml_cuda_dp4a(val_packed, u, sumi0);
         } else {
-            sumi1 = ggml_cuda_dp4a(v, u, sumi1);
+            sumi1 = ggml_cuda_dp4a(val_packed, u, sumi1);
         }
     }
 

@@ -762,6 +762,7 @@ extern "C" {
     "use ggml_row_size() instead");
 
     GGML_API const char * ggml_type_name(enum ggml_type type);
+    GGML_API enum ggml_type ggml_type_from_name(const char * name); // GGML_TYPE_COUNT if unknown
     GGML_API const char * ggml_op_name  (enum ggml_op   op);
     GGML_API const char * ggml_op_symbol(enum ggml_op   op);
 

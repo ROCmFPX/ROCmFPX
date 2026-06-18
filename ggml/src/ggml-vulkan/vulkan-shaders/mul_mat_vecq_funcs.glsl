@@ -172,6 +172,97 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
 }
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP3)
+uint rocmfpx_vq_fp3_get_bits(uint ib, uint bit_pos) {
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 3u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int rocmfpx_vq_fp3_decode(uint code) {
+    const uint mag_code = code & 3u;
+    const int mag = mag_code == 3u ? 4 : int(mag_code);
+    return (code & 4u) != 0u ? -mag : mag;
+}
+
+int32_t rocmfpx_vq_fp3_pack4(uint ib, uint iqs, uint lane) {
+    const uint start_bit = 12u * (iqs + lane);
+    const uint reg_shift = start_bit & 31u;
+    const uint reg_idx = start_bit >> 5;
+    const uint qs0 = pack32(u8vec4(data_a[ib].qs[0], data_a[ib].qs[1], data_a[ib].qs[2], data_a[ib].qs[3]));
+    const uint qs1 = pack32(u8vec4(data_a[ib].qs[4], data_a[ib].qs[5], data_a[ib].qs[6], data_a[ib].qs[7]));
+    const uint qs2 = pack32(u8vec4(data_a[ib].qs[8], data_a[ib].qs[9], data_a[ib].qs[10], data_a[ib].qs[11]));
+    const uint val_low  = reg_idx == 0u ? qs0 : (reg_idx == 1u ? qs1 : qs2);
+    const uint val_high = reg_idx == 0u ? qs1 : (reg_idx == 1u ? qs2 : 0u);
+    const uint bits12 = ((val_low >> reg_shift) | (val_high << (32u - reg_shift))) & 0xFFFu;
+    return pack32(i8vec4(int8_t(rocmfpx_vq_fp3_decode(bits12 & 7u)),
+                         int8_t(rocmfpx_vq_fp3_decode((bits12 >> 3) & 7u)),
+                         int8_t(rocmfpx_vq_fp3_decode((bits12 >> 6) & 7u)),
+                         int8_t(rocmfpx_vq_fp3_decode((bits12 >> 9) & 7u))));
+}
+
+FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+    int32_t sumi0 = 0;
+    int32_t sumi1 = 0;
+    [[unroll]] for (uint lane = 0u; lane < 2u; ++lane) {
+        const int32_t v = rocmfpx_vq_fp3_pack4(ib_a, iqs, lane);
+        const uint base = 4u * (iqs + lane);
+        const int32_t u = cache_b_qs[lane];
+        if (base < QUANT_K / 2u) {
+            sumi0 = dotPacked4x8EXT(v, u);
+        } else {
+            sumi1 = dotPacked4x8EXT(v, u);
+        }
+    }
+    const FLOAT_TYPE d0 = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[0]));
+    const FLOAT_TYPE d1 = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[1]));
+    return FLOAT_TYPE(cache_b_ds.x * (d0 * float(sumi0) + d1 * float(sumi1)));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP6)
+int32_t rocmfpx_vq_fp6_pack4(uint ib, uint base) {
+    return rocmfpx_fp6_pack4_qs(data_a[ib].qs, base);
+}
+
+FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+    int32_t sumi0 = 0;
+    int32_t sumi1 = 0;
+    [[unroll]] for (uint lane = 0u; lane < 2u; ++lane) {
+        const uint base = 4u * (iqs + lane);
+        const int32_t v = rocmfpx_vq_fp6_pack4(ib_a, base);
+        const int32_t u = cache_b_qs[lane];
+        if (base < QUANT_K / 2u) {
+            sumi0 = dotPacked4x8EXT(v, u);
+        } else {
+            sumi1 = dotPacked4x8EXT(v, u);
+        }
+    }
+    const FLOAT_TYPE d0 = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[0]));
+    const FLOAT_TYPE d1 = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[1]));
+    return FLOAT_TYPE(cache_b_ds.x * (d0 * float(sumi0) + d1 * float(sumi1)));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP8)
+FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+    const i32vec2 data_a_qs = i32vec2(
+        pack32(i8vec4(data_a[ib_a].qs[iqs * 4 + 0u], data_a[ib_a].qs[iqs * 4 + 1u],
+                      data_a[ib_a].qs[iqs * 4 + 2u], data_a[ib_a].qs[iqs * 4 + 3u])),
+        pack32(i8vec4(data_a[ib_a].qs[iqs * 4 + 4u], data_a[ib_a].qs[iqs * 4 + 5u],
+                      data_a[ib_a].qs[iqs * 4 + 6u], data_a[ib_a].qs[iqs * 4 + 7u])));
+
+    const int32_t q_sum0 = dotPacked4x8EXT(data_a_qs.x, cache_b_qs[0]);
+    const int32_t q_sum1 = dotPacked4x8EXT(data_a_qs.y, cache_b_qs[1]);
+
+    const FLOAT_TYPE d = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e));
+    return FLOAT_TYPE(cache_b_ds.x * d * (float(q_sum0) + float(q_sum1)));
+}
+#endif
+
 #if defined(DATA_A_QUANT_LEGACY) || defined(DATA_A_MXFP4)
 FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
     int32_t q_sum = 0;

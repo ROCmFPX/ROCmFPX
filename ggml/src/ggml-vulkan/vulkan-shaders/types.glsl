@@ -1810,6 +1810,31 @@ struct block_nvfp4
 #define A_TYPE block_nvfp4
 #endif
 
+#if defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFPX_FAMILY) || defined(FA_ROCMFPX_FAMILY)
+// UE4M3 scale bytes use only 7 bits; sign (bit 7) is always zero.
+shared float ue4m3_fp32_lut[128];
+
+float ue4m3_to_fp32_build(uint u) {
+    if (u == 0u || u == 127u) {
+        return 0.0;
+    }
+    const uint exp = (u >> 3) & 15u;
+    const uint man = u & 7u;
+#if defined(DATA_A_ROCMFPX_FAMILY) || defined(FA_ROCMFPX_FAMILY)
+    if (exp == 0u) {
+        return float(man) * (1.0 / 1024.0);
+    }
+    const uint bits = (exp + 119u) << 23 | (man << 20);
+#else
+    if (exp == 0u) {
+        return float(man) * (1.0 / 512.0);
+    }
+    const uint bits = (exp + 120u) << 23 | (man << 20);
+#endif
+    return uintBitsToFloat(bits);
+}
+#endif
+
 #if defined(DATA_A_IQ4_NL) || defined(DATA_A_IQ4_XS)
 const int8_t kvalues_iq4nl_const[16] = {
     int8_t(-127), int8_t(-104), int8_t(-83), int8_t(-65), int8_t(-49), int8_t(-35), int8_t(-22), int8_t(-10),
@@ -1825,6 +1850,11 @@ void init_iq_shmem(uvec3 wgsize)
     for (uint i = gl_LocalInvocationIndex.x; i < kvalues_iq4nl.length(); i += wgsize.x) {
         kvalues_iq4nl[i] = FLOAT_TYPE(kvalues_iq4nl_const[i]);
     }
+#if defined(FA_ROCMFPX_FAMILY)
+    for (uint i = gl_LocalInvocationIndex.x; i < 128u; i += wgsize.x) {
+        ue4m3_fp32_lut[i] = ue4m3_to_fp32_build(i);
+    }
+#endif
     barrier();
 }
 #endif
@@ -1846,31 +1876,6 @@ const int8_t kvalues_rocmfp4_const[16] = {
 
 shared int8_t kvalues_rocmfp4[16];
 shared float rocmfp4_ue4m3_fp32_lut[128];
-#endif
-
-#if defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFPX_FAMILY)
-// UE4M3 scale bytes use only 7 bits; sign (bit 7) is always zero.
-shared float ue4m3_fp32_lut[128];
-
-float ue4m3_to_fp32_build(uint u) {
-    if (u == 0u || u == 127u) {
-        return 0.0;
-    }
-    const uint exp = (u >> 3) & 15u;
-    const uint man = u & 7u;
-#if defined(DATA_A_ROCMFPX_FAMILY)
-    if (exp == 0u) {
-        return float(man) * (1.0 / 1024.0);
-    }
-    const uint bits = (exp + 119u) << 23 | (man << 20);
-#else
-    if (exp == 0u) {
-        return float(man) * (1.0 / 512.0);
-    }
-    const uint bits = (exp + 120u) << 23 | (man << 20);
-#endif
-    return uintBitsToFloat(bits);
-}
 #endif
 
 #if defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST)
@@ -1954,9 +1959,47 @@ float e8m0_to_fp32(uint8_t x) {
 float ue4m3_to_fp32(uint8_t x) {
     return rocmfp4_ue4m3_fp32_lut[min(uint(x), 127u)];
 }
-#elif defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFPX_FAMILY)
+#elif defined(DATA_A_NVFP4) || defined(DATA_A_ROCMFPX_FAMILY) || defined(FA_ROCMFPX_FAMILY)
 float ue4m3_to_fp32(uint8_t x) {
     return ue4m3_fp32_lut[uint(x)];
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FAMILY)
+const int8_t kvalues_rocmfpx_fp6_const[64] = {
+    int8_t(0), int8_t(1), int8_t(2), int8_t(3), int8_t(4), int8_t(5), int8_t(6), int8_t(7),
+    int8_t(8), int8_t(9), int8_t(10), int8_t(11), int8_t(12), int8_t(13), int8_t(14), int8_t(15),
+    int8_t(16), int8_t(17), int8_t(18), int8_t(19), int8_t(20), int8_t(21), int8_t(22), int8_t(23),
+    int8_t(24), int8_t(25), int8_t(26), int8_t(27), int8_t(28), int8_t(29), int8_t(30), int8_t(31),
+    int8_t(0), int8_t(-1), int8_t(-2), int8_t(-3), int8_t(-4), int8_t(-5), int8_t(-6), int8_t(-7),
+    int8_t(-8), int8_t(-9), int8_t(-10), int8_t(-11), int8_t(-12), int8_t(-13), int8_t(-14), int8_t(-15),
+    int8_t(-16), int8_t(-17), int8_t(-18), int8_t(-19), int8_t(-20), int8_t(-21), int8_t(-22), int8_t(-23),
+    int8_t(-24), int8_t(-25), int8_t(-26), int8_t(-27), int8_t(-28), int8_t(-29), int8_t(-30), int8_t(-31)
+};
+
+uint rocmfpx_fp6_code_at(uint q0, uint q1, uint q2, uint q3, uint q4, uint q5, uint bit_pos) {
+    const uint reg_idx = bit_pos >> 5;
+    const uint shift = bit_pos & 31u;
+    const uint low  = reg_idx == 0u ? q0 : reg_idx == 1u ? q1 : reg_idx == 2u ? q2 :
+                      reg_idx == 3u ? q3 : reg_idx == 4u ? q4 : q5;
+    const uint high = reg_idx == 0u ? q1 : reg_idx == 1u ? q2 : reg_idx == 2u ? q3 :
+                      reg_idx == 3u ? q4 : reg_idx == 4u ? q5 : 0u;
+    return ((low >> shift) | (high << (32u - shift))) & 0x3Fu;
+}
+
+int32_t rocmfpx_fp6_pack4_qs(const uint8_t qs[24], uint ei) {
+    const uint qs0 = pack32(u8vec4(qs[0], qs[1], qs[2], qs[3]));
+    const uint qs1 = pack32(u8vec4(qs[4], qs[5], qs[6], qs[7]));
+    const uint qs2 = pack32(u8vec4(qs[8], qs[9], qs[10], qs[11]));
+    const uint qs3 = pack32(u8vec4(qs[12], qs[13], qs[14], qs[15]));
+    const uint qs4 = pack32(u8vec4(qs[16], qs[17], qs[18], qs[19]));
+    const uint qs5 = pack32(u8vec4(qs[20], qs[21], qs[22], qs[23]));
+    const uint b0 = ei * 6u;
+    return pack32(i8vec4(
+        kvalues_rocmfpx_fp6_const[rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 0u)],
+        kvalues_rocmfpx_fp6_const[rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 6u)],
+        kvalues_rocmfpx_fp6_const[rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 12u)],
+        kvalues_rocmfpx_fp6_const[rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 18u)]));
 }
 #endif
 

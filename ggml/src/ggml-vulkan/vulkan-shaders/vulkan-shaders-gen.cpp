@@ -690,16 +690,16 @@ void process_shaders() {
             }
 
             string_to_spv("flash_attn_f32_f16", "flash_attn.comp",
-                merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"FA_ROCMFP4", "1"}}), fp16, false, false, f16acc);
+                merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"FA_ROCMFP4", "1"}, {"FA_ROCMFPX_FAMILY", "1"}}), fp16, false, false, f16acc);
 
             if (fp16) {
                 string_to_spv("flash_attn_f32_f16_dot2", "flash_attn.comp",
-                    merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"DOT2_F16", "1"}, {"FA_ROCMFP4", "1"}}), fp16, false, false, f16acc);
+                    merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"DOT2_F16", "1"}, {"FA_ROCMFP4", "1"}, {"FA_ROCMFPX_FAMILY", "1"}}), fp16, false, false, f16acc);
             }
 
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
             string_to_spv("flash_attn_f32_f16", "flash_attn.comp",
-                merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"MMQ", "1"}, {"FA_MMQ_MIXED", "1"}, {"FA_ROCMFP4", "1"}}), fp16, false, false, f16acc, "_int8");
+                merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"MMQ", "1"}, {"FA_MMQ_MIXED", "1"}, {"FA_ROCMFP4", "1"}, {"FA_ROCMFPX_FAMILY", "1"}}), fp16, false, false, f16acc, "_int8");
 #endif
         }
     }
@@ -748,7 +748,9 @@ void process_shaders() {
 
         // mul mat vec with integer dot product
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
-        if (is_legacy_quant(tname) || tname == "mxfp4" || tname == "rocmfp4" || tname == "rocmfp4_fast" || is_k_quant(tname) || tname == "iq1_s" || tname == "iq1_m") {
+        if (is_legacy_quant(tname) || tname == "mxfp4" || tname == "rocmfp4" || tname == "rocmfp4_fast" ||
+            tname == "rocmfpx_fp3" || tname == "rocmfpx_fp6" || tname == "rocmfpx_fp8" ||
+            is_k_quant(tname) || tname == "iq1_s" || tname == "iq1_m") {
             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}}));
             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}}));
             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup_no_shmem", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
@@ -1185,7 +1187,9 @@ void write_output_files() {
 
     for (const std::string& btype : btypes) {
     for (const auto& tname : type_names) {
-        if (btype == "q8_1" && !is_legacy_quant(tname) && tname != "mxfp4" && tname != "rocmfp4" && tname != "rocmfp4_fast" && !is_k_quant(tname) && tname != "iq1_s" && tname != "iq1_m") {
+        if (btype == "q8_1" && !is_legacy_quant(tname) && tname != "mxfp4" && tname != "rocmfp4" && tname != "rocmfp4_fast" &&
+            tname != "rocmfpx_fp3" && tname != "rocmfpx_fp6" && tname != "rocmfpx_fp8" &&
+            !is_k_quant(tname) && tname != "iq1_s" && tname != "iq1_m") {
             continue;
         }
         hdr << "extern const void * arr_dmmv_"   << tname << "_" << btype << "_f32_data[3];\n";

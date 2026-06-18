@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BIN="${BIN:-$ROOT/build-strix-rocmfp4/bin/llama-completion}"
-MODEL="${MODEL:-/home/caf/strix-fp4/models/rocmfpx-hermes-tests/hermes-Q3_0_ROCMFPX_AGENT.gguf}"
+MODEL="${MODEL:-$ROOT/../models/rocmfpx-hermes-tests/hermes-Q3_0_ROCMFPX_AGENT.gguf}"
 BACKEND="${BACKEND:-ROCm0}"
 SKIP_MISSING_MODEL="${SKIP_MISSING_MODEL:-1}"
 export BACKEND MODEL
@@ -33,11 +33,18 @@ trap 'rm -f "$tmp_out"' EXIT
 
 PROMPT='Hermes tool-call check. Return only JSON: {"tool_call":{"name":"browser.search","arguments":{"query":"ROCmFPX agent preset"}},"final":null}. Do not add markdown.'
 
+extra_args=()
+if [[ -n "${LLAMA_COMPLETION_ARGS:-}" ]]; then
+    # shellcheck disable=SC2206
+    extra_args=(${LLAMA_COMPLETION_ARGS})
+fi
+
 timeout --kill-after=20s 3m "$BIN" \
     -m "$MODEL" -dev "$BACKEND" -ngl 999 -c "${CTX_SIZE:-4096}" \
     -t "${THREADS:-16}" -tb "${THREADS_BATCH:-32}" --no-mmap --simple-io \
     --no-display-prompt --no-warmup --no-perf -no-cnv --strict-json \
-    --temp 0 --seed 123 -n "${N_PREDICT:-128}" -p "$PROMPT" >"$tmp_out" 2>&1
+    --temp 0 --seed 123 -n "${N_PREDICT:-128}" -p "$PROMPT" \
+    "${extra_args[@]}" >"$tmp_out" 2>&1
 
 python3 - "$tmp_out" <<'PY'
 import json, os, pathlib, sys

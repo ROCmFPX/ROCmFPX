@@ -31,6 +31,12 @@ layout (binding = 1) readonly buffer K_PACKED_ROCMFP4 { block_rocmfp4 data[]; } 
 layout (binding = 2) readonly buffer V_PACKED_ROCMFP4 { block_rocmfp4 data[]; } v_packed_rocmfp4;
 layout (binding = 1) readonly buffer K_PACKED_ROCMFP4_FAST { block_rocmfp4_fast data[]; } k_packed_rocmfp4_fast;
 layout (binding = 2) readonly buffer V_PACKED_ROCMFP4_FAST { block_rocmfp4_fast data[]; } v_packed_rocmfp4_fast;
+layout (binding = 1) readonly buffer K_PACKED_ROCMFPX_FP3 { block_rocmfpx_fp3 data[]; } k_packed_rocmfpx_fp3;
+layout (binding = 2) readonly buffer V_PACKED_ROCMFPX_FP3 { block_rocmfpx_fp3 data[]; } v_packed_rocmfpx_fp3;
+layout (binding = 1) readonly buffer K_PACKED_ROCMFPX_FP6 { block_rocmfpx_fp6 data[]; } k_packed_rocmfpx_fp6;
+layout (binding = 2) readonly buffer V_PACKED_ROCMFPX_FP6 { block_rocmfpx_fp6 data[]; } v_packed_rocmfpx_fp6;
+layout (binding = 1) readonly buffer K_PACKED_ROCMFPX_FP8 { block_rocmfpx_fp8 data[]; } k_packed_rocmfpx_fp8;
+layout (binding = 2) readonly buffer V_PACKED_ROCMFPX_FP8 { block_rocmfpx_fp8 data[]; } v_packed_rocmfpx_fp8;
 layout (binding = 1) readonly buffer K_PACKED_IQ4_NL { block_iq4_nl_packed16 data[]; } k_packed_iq4_nl;
 layout (binding = 2) readonly buffer V_PACKED_IQ4_NL { block_iq4_nl_packed16 data[]; } v_packed_iq4_nl;
 layout (binding = 1) readonly buffer K_PACKED_Q1_0 { block_q1_0 data[]; } k_packed_q1_0;
@@ -44,25 +50,13 @@ layout (binding = 2) readonly buffer V_PACKED_BF16 { u16vec4 data[]; } v_packed_
 layout (binding = 1) readonly buffer K_PACKED_Q4_1_P32 { block_q4_1_packed32 data[]; } k_packed_q4_1_p32;
 layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 data[]; } k_packed_q5_1_p32;
 
+const int8_t fa_kvalues_rocmfp4_const[16] = {
+    int8_t(0), int8_t(1), int8_t(2), int8_t(3), int8_t(4), int8_t(6), int8_t(8), int8_t(10),
+    int8_t(0), int8_t(-1), int8_t(-2), int8_t(-3), int8_t(-4), int8_t(-6), int8_t(-8), int8_t(-10),
+};
+
 int8_t fa_rocmfp4_code_i8(uint q) {
-    switch (q & 0xFu) {
-        case  0u: return int8_t(  0);
-        case  1u: return int8_t(  1);
-        case  2u: return int8_t(  2);
-        case  3u: return int8_t(  3);
-        case  4u: return int8_t(  4);
-        case  5u: return int8_t(  6);
-        case  6u: return int8_t(  8);
-        case  7u: return int8_t( 10);
-        case  8u: return int8_t(  0);
-        case  9u: return int8_t( -1);
-        case 10u: return int8_t( -2);
-        case 11u: return int8_t( -3);
-        case 12u: return int8_t( -4);
-        case 13u: return int8_t( -6);
-        case 14u: return int8_t( -8);
-        default:  return int8_t(-10);
-    }
+    return fa_kvalues_rocmfp4_const[q & 0xFu];
 }
 
 FLOAT_TYPE fa_rocmfp4_code_value(uint q) {
@@ -90,6 +84,92 @@ FLOAT_TYPE fa_rocmfp4_ue4m3_to_fp_half(uint8_t x) {
 
     const uint bits = (exp + 119u) << 23 | (man << 20);
     return FLOAT_TYPE(uintBitsToFloat(bits));
+}
+
+uint fa_rocmfpx_fp3_get_bits_qs(const uint8_t qs[12], uint bit_pos) {
+    uint code = 0u;
+    [[unroll]] for (uint bit = 0u; bit < 3u; ++bit) {
+        const uint src_bit = bit_pos + bit;
+        code |= ((uint(qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+    }
+    return code;
+}
+
+int fa_rocmfpx_fp3_decode(uint code) {
+    const uint mag_code = code & 3u;
+    const int mag = mag_code == 3u ? 4 : int(mag_code);
+    return (code & 4u) != 0u ? -mag : mag;
+}
+
+int32_t fa_rocmfpx_fp3_pack4_qs(const uint8_t qs[12], uint ei) {
+    const uint start_bit = ei * 3u;
+    const uint reg_shift = start_bit & 31u;
+    const uint reg_idx = start_bit >> 5;
+    const uint qs0 = pack32(u8vec4(qs[0], qs[1], qs[2], qs[3]));
+    const uint qs1 = pack32(u8vec4(qs[4], qs[5], qs[6], qs[7]));
+    const uint qs2 = pack32(u8vec4(qs[8], qs[9], qs[10], qs[11]));
+    const uint val_low  = reg_idx == 0u ? qs0 : (reg_idx == 1u ? qs1 : qs2);
+    const uint val_high = reg_idx == 0u ? qs1 : (reg_idx == 1u ? qs2 : 0u);
+    const uint bits12 = ((val_low >> reg_shift) | (val_high << (32u - reg_shift))) & 0xFFFu;
+    return pack32(i8vec4(int8_t(fa_rocmfpx_fp3_decode(bits12 & 7u)),
+                         int8_t(fa_rocmfpx_fp3_decode((bits12 >> 3) & 7u)),
+                         int8_t(fa_rocmfpx_fp3_decode((bits12 >> 6) & 7u)),
+                         int8_t(fa_rocmfpx_fp3_decode((bits12 >> 9) & 7u))));
+}
+
+const int8_t fa_kvalues_rocmfpx_fp6_const[64] = {
+    int8_t(0), int8_t(1), int8_t(2), int8_t(3), int8_t(4), int8_t(5), int8_t(6), int8_t(7),
+    int8_t(8), int8_t(9), int8_t(10), int8_t(11), int8_t(12), int8_t(13), int8_t(14), int8_t(15),
+    int8_t(16), int8_t(17), int8_t(18), int8_t(19), int8_t(20), int8_t(21), int8_t(22), int8_t(23),
+    int8_t(24), int8_t(25), int8_t(26), int8_t(27), int8_t(28), int8_t(29), int8_t(30), int8_t(31),
+    int8_t(0), int8_t(-1), int8_t(-2), int8_t(-3), int8_t(-4), int8_t(-5), int8_t(-6), int8_t(-7),
+    int8_t(-8), int8_t(-9), int8_t(-10), int8_t(-11), int8_t(-12), int8_t(-13), int8_t(-14), int8_t(-15),
+    int8_t(-16), int8_t(-17), int8_t(-18), int8_t(-19), int8_t(-20), int8_t(-21), int8_t(-22), int8_t(-23),
+    int8_t(-24), int8_t(-25), int8_t(-26), int8_t(-27), int8_t(-28), int8_t(-29), int8_t(-30), int8_t(-31)
+};
+
+uint fa_rocmfpx_fp6_code_at(uint q0, uint q1, uint q2, uint q3, uint q4, uint q5, uint bit_pos) {
+    const uint reg_idx = bit_pos >> 5;
+    const uint shift = bit_pos & 31u;
+    const uint low  = reg_idx == 0u ? q0 : reg_idx == 1u ? q1 : reg_idx == 2u ? q2 :
+                      reg_idx == 3u ? q3 : reg_idx == 4u ? q4 : q5;
+    const uint high = reg_idx == 0u ? q1 : reg_idx == 1u ? q2 : reg_idx == 2u ? q3 :
+                      reg_idx == 3u ? q4 : reg_idx == 4u ? q5 : 0u;
+    return ((low >> shift) | (high << (32u - shift))) & 0x3Fu;
+}
+
+int32_t fa_rocmfpx_fp6_pack4_regs(uint qs0, uint qs1, uint qs2, uint qs3, uint qs4, uint qs5, uint ei) {
+    const uint b0 = ei * 6u;
+    return pack32(i8vec4(
+        fa_kvalues_rocmfpx_fp6_const[fa_rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 0u)],
+        fa_kvalues_rocmfpx_fp6_const[fa_rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 6u)],
+        fa_kvalues_rocmfpx_fp6_const[fa_rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 12u)],
+        fa_kvalues_rocmfpx_fp6_const[fa_rocmfpx_fp6_code_at(qs0, qs1, qs2, qs3, qs4, qs5, b0 + 18u)]));
+}
+
+int32_t fa_rocmfpx_fp6_pack4_qs(const uint8_t qs[24], uint ei) {
+    return fa_rocmfpx_fp6_pack4_regs(
+        pack32(u8vec4(qs[0], qs[1], qs[2], qs[3])),
+        pack32(u8vec4(qs[4], qs[5], qs[6], qs[7])),
+        pack32(u8vec4(qs[8], qs[9], qs[10], qs[11])),
+        pack32(u8vec4(qs[12], qs[13], qs[14], qs[15])),
+        pack32(u8vec4(qs[16], qs[17], qs[18], qs[19])),
+        pack32(u8vec4(qs[20], qs[21], qs[22], qs[23])),
+        ei);
+}
+
+#if defined(FA_ROCMFPX_FAMILY)
+FLOAT_TYPE fa_ue4m3_to_fp(uint8_t x) {
+    return FLOAT_TYPE(ue4m3_fp32_lut[uint(x)]);
+}
+#else
+FLOAT_TYPE fa_ue4m3_to_fp(uint8_t x) {
+    return fa_rocmfp4_ue4m3_to_fp_half(x);
+}
+#endif
+
+int32_t fa_rocmfpx_fp8_pack4_qs(const int8_t qs[32], uint ei) {
+    return pack32(i8vec4(qs[ei + 0u], qs[ei + 1u], qs[ei + 2u], qs[ei + 3u]));
 }
 
 // Per-quant decode bodies are expanded once for the K view set and once for
@@ -189,6 +269,37 @@ FLOAT_TYPE fa_rocmfp4_ue4m3_to_fp_half(uint8_t x) {
                             fa_rocmfp4_code_value((vui >> 24) & 0xF));                            \
 }
 
+#define FA_DEQUANT4_ROCMFPX_FP3(BUF) {                                                            \
+    const i8vec4 v = unpack8(fa_rocmfpx_fp3_pack4_qs(BUF.data[a_offset + ib].qs, iqs));           \
+    const FLOAT_TYPE d0 = fa_ue4m3_to_fp(BUF.data[a_offset + ib].e[0]);                           \
+    const FLOAT_TYPE d1 = fa_ue4m3_to_fp(BUF.data[a_offset + ib].e[1]);                           \
+    const uint idx = iqs;                                                                           \
+    return FLOAT_TYPEV4(FLOAT_TYPE(v.x) * ((idx + 0u) >= 16u ? d1 : d0),                         \
+                        FLOAT_TYPE(v.y) * ((idx + 1u) >= 16u ? d1 : d0),                         \
+                        FLOAT_TYPE(v.z) * ((idx + 2u) >= 16u ? d1 : d0),                         \
+                        FLOAT_TYPE(v.w) * ((idx + 3u) >= 16u ? d1 : d0));                        \
+}
+
+#define FA_DEQUANT4_ROCMFPX_FP6(BUF) {                                                            \
+    const i8vec4 v = unpack8(fa_rocmfpx_fp6_pack4_qs(BUF.data[a_offset + ib].qs, iqs));           \
+    const FLOAT_TYPE d0 = fa_ue4m3_to_fp(BUF.data[a_offset + ib].e[0]);                           \
+    const FLOAT_TYPE d1 = fa_ue4m3_to_fp(BUF.data[a_offset + ib].e[1]);                           \
+    const uint idx = iqs;                                                                           \
+    return FLOAT_TYPEV4(FLOAT_TYPE(v.x) * ((idx + 0u) >= 16u ? d1 : d0),                         \
+                        FLOAT_TYPE(v.y) * ((idx + 1u) >= 16u ? d1 : d0),                         \
+                        FLOAT_TYPE(v.z) * ((idx + 2u) >= 16u ? d1 : d0),                         \
+                        FLOAT_TYPE(v.w) * ((idx + 3u) >= 16u ? d1 : d0));                        \
+}
+
+#define FA_DEQUANT4_ROCMFPX_FP8(BUF) {                                                            \
+    const uint idx = iqs;                                                                           \
+    const FLOAT_TYPE d = fa_ue4m3_to_fp(BUF.data[a_offset + ib].e);                               \
+    return d * FLOAT_TYPEV4(FLOAT_TYPE(int(BUF.data[a_offset + ib].qs[idx + 0u])),                \
+                            FLOAT_TYPE(int(BUF.data[a_offset + ib].qs[idx + 1u])),                \
+                            FLOAT_TYPE(int(BUF.data[a_offset + ib].qs[idx + 2u])),                \
+                            FLOAT_TYPE(int(BUF.data[a_offset + ib].qs[idx + 3u])));               \
+}
+
 #define FA_DEQUANT4_IQ4_NL(BUF) {                                                                 \
     const uint shift = (iqs & 0x10) >> 2;                                                         \
     const uint qs_i = (iqs & 0xC) >> 1;                                                           \
@@ -223,6 +334,9 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(k_packed_q8_0)
             case FA_TYPE_Q4_0_ROCMFP4:      FA_DEQUANT4_ROCMFP4(k_packed_rocmfp4)
             case FA_TYPE_Q4_0_ROCMFP4_FAST: FA_DEQUANT4_ROCMFP4_FAST(k_packed_rocmfp4_fast)
+            case FA_TYPE_Q3_0_ROCMFPX:      FA_DEQUANT4_ROCMFPX_FP3(k_packed_rocmfpx_fp3)
+            case FA_TYPE_Q6_0_ROCMFPX:      FA_DEQUANT4_ROCMFPX_FP6(k_packed_rocmfpx_fp6)
+            case FA_TYPE_Q8_0_ROCMFPX:      FA_DEQUANT4_ROCMFPX_FP8(k_packed_rocmfpx_fp8)
             case FA_TYPE_IQ4_NL: FA_DEQUANT4_IQ4_NL(k_packed_iq4_nl)
             case FA_TYPE_BF16: FA_DEQUANT4_BF16(k_packed_bf16)
             case FA_TYPE_Q1_0: FA_DEQUANT4_Q1_0(k_packed_q1_0)
@@ -237,6 +351,9 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(v_packed_q8_0)
             case FA_TYPE_Q4_0_ROCMFP4:      FA_DEQUANT4_ROCMFP4(v_packed_rocmfp4)
             case FA_TYPE_Q4_0_ROCMFP4_FAST: FA_DEQUANT4_ROCMFP4_FAST(v_packed_rocmfp4_fast)
+            case FA_TYPE_Q3_0_ROCMFPX:      FA_DEQUANT4_ROCMFPX_FP3(v_packed_rocmfpx_fp3)
+            case FA_TYPE_Q6_0_ROCMFPX:      FA_DEQUANT4_ROCMFPX_FP6(v_packed_rocmfpx_fp6)
+            case FA_TYPE_Q8_0_ROCMFPX:      FA_DEQUANT4_ROCMFPX_FP8(v_packed_rocmfpx_fp8)
             case FA_TYPE_IQ4_NL: FA_DEQUANT4_IQ4_NL(v_packed_iq4_nl)
             case FA_TYPE_BF16: FA_DEQUANT4_BF16(v_packed_bf16)
             case FA_TYPE_Q1_0: FA_DEQUANT4_Q1_0(v_packed_q1_0)

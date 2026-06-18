@@ -81,16 +81,6 @@ static const char * llama_ftype_to_name(llama_ftype ftype) {
 // ggml_type name lookup
 // ---------------------------------------------------------------------------
 
-static ggml_type ggml_type_from_name(const std::string & name) {
-    for (int i = 0; i < GGML_TYPE_COUNT; i++) {
-        const char * tname = ggml_type_name((ggml_type) i);
-        if (tname && name == tname) {
-            return (ggml_type) i;
-        }
-    }
-    return GGML_TYPE_COUNT;
-}
-
 // ---------------------------------------------------------------------------
 // File parser for snapshot files (quant type schemas)
 // ---------------------------------------------------------------------------
@@ -138,7 +128,7 @@ static bool parse_snapshot_file(const std::string & path, std::vector<snapshot_s
                 return false;
             }
 
-            ggml_type dtype = ggml_type_from_name(default_str);
+            ggml_type dtype = ggml_type_from_name(default_str.c_str());
             if (dtype == GGML_TYPE_COUNT) {
                 fprintf(stderr, "parse error: unknown default type '%s'\n", default_str.c_str());
                 return false;
@@ -163,7 +153,7 @@ static bool parse_snapshot_file(const std::string & path, std::vector<snapshot_s
         std::string tname = line.substr(0, sp);
         std::string ttype = line.substr(sp + 1);
 
-        ggml_type gt = ggml_type_from_name(ttype);
+        ggml_type gt = ggml_type_from_name(ttype.c_str());
         if (gt == GGML_TYPE_COUNT) {
             fprintf(stderr, "parse error: unknown type '%s' for tensor '%s'\n", ttype.c_str(), tname.c_str());
             return false;

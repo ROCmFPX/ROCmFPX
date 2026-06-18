@@ -10,7 +10,9 @@ layout (constant_id =  5) const uint32_t Clamp = 0;
 layout (constant_id =  6) const uint32_t D_split = 16;
 layout (constant_id =  7) const uint32_t row_split = 1;
 layout (constant_id =  8) const uint32_t SubGroupSize = 32;
-layout (constant_id =  9) const uint32_t SHMEM_STAGING = 0;
+layout (constant_id =  9) const uint32_t SHMEM_STAGING = 0; // 0=none, 1=K+V, 2=K-only
+#define K_SHMEM_STAGING ((SHMEM_STAGING == 1u) || (SHMEM_STAGING == 2u))
+#define V_SHMEM_STAGING (SHMEM_STAGING == 1u)
 layout (constant_id = 10) const uint32_t Flags = 0;
 layout (constant_id = 11) const uint32_t LIMIT_OCCUPANCY_SHMEM = 0;
 // ggml_type enumerant for K/V
@@ -102,6 +104,9 @@ layout (binding = 6) readonly buffer MO {uint32_t data_mask_opt[];};
 #define FA_TYPE_Q1_0 41u
 #define FA_TYPE_Q4_0_ROCMFP4      100u
 #define FA_TYPE_Q4_0_ROCMFP4_FAST 101u
+#define FA_TYPE_Q6_0_ROCMFPX      102u
+#define FA_TYPE_Q8_0_ROCMFPX      103u
+#define FA_TYPE_Q3_0_ROCMFPX      104u
 
 #if defined(BFLOAT16)
 #define O_TYPE float
@@ -129,6 +134,10 @@ uint fa_block_elems(uint ty) {
         case FA_TYPE_Q4_0_ROCMFP4:
         case FA_TYPE_Q4_0_ROCMFP4_FAST:
             return uint(QUANT_K_ROCMFP4);
+        case FA_TYPE_Q3_0_ROCMFPX:
+        case FA_TYPE_Q6_0_ROCMFPX:
+        case FA_TYPE_Q8_0_ROCMFPX:
+            return uint(QUANT_K_ROCMFPX_FP8);
         default:           return 1u;
     }
 }
@@ -144,7 +153,10 @@ uint fa_quant_r_mmq(uint ty) {
         case FA_TYPE_Q5_1: return uint(QUANT_R_Q5_1);
         case FA_TYPE_Q8_0: return uint(QUANT_R_Q8_0);
         case FA_TYPE_Q4_0_ROCMFP4:
-        case FA_TYPE_Q4_0_ROCMFP4_FAST: return 1u;
+        case FA_TYPE_Q4_0_ROCMFP4_FAST:
+        case FA_TYPE_Q3_0_ROCMFPX:
+        case FA_TYPE_Q6_0_ROCMFPX:
+        case FA_TYPE_Q8_0_ROCMFPX: return 1u;
         default:           return 1u;
     }
 }
@@ -152,6 +164,11 @@ uint fa_quant_r_mmq(uint ty) {
 bool fa_type_needs_shmem(uint ty) {
     switch (ty) {
         case FA_TYPE_IQ4_NL: return true;
+#if defined(FA_ROCMFPX_FAMILY)
+        case FA_TYPE_Q3_0_ROCMFPX:
+        case FA_TYPE_Q6_0_ROCMFPX:
+        case FA_TYPE_Q8_0_ROCMFPX: return true;
+#endif
         default:             return false;
     }
 }
@@ -165,6 +182,16 @@ bool fa_type_needs_shmem(uint ty) {
 // through dequantize4 / the MMQ helpers to unpack from the packed block layout.
 #define USE_DECODE_K (FaTypeK != FA_TYPE_F16)
 #define USE_DECODE_V (FaTypeV != FA_TYPE_F16)
+
+// ROCm quant V types that keep packed i8 in vblocksh and apply scale at Pf multiply.
+#define FA_V_MMQ_TYPE(ty) ((ty) == FA_TYPE_Q4_0_ROCMFP4 || (ty) == FA_TYPE_Q4_0_ROCMFP4_FAST || \
+                           (ty) == FA_TYPE_Q3_0_ROCMFPX || (ty) == FA_TYPE_Q6_0_ROCMFPX || \
+                           (ty) == FA_TYPE_Q8_0_ROCMFPX)
+#ifdef MMQ
+#define USE_V_MMQ FA_V_MMQ_TYPE(FaTypeV)
+#else
+#define USE_V_MMQ false
+#endif
 
 #define CEIL_DIV(a, b) (((a) + (b) - 1) / (b))
 

@@ -620,6 +620,37 @@ static common_chat_tool amount_tool{
     })",
 };
 
+static common_chat_tool calendar_create_event_tool{
+    /* .name = */ "Calendar.create_event",
+    /* .description = */ "Create a calendar event",
+    /* .parameters = */ R"({
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string"
+            },
+            "participants": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "metadata": {
+                "type": "object",
+                "properties": {
+                    "priority": {
+                        "type": "string"
+                    },
+                    "reminder": {
+                        "type": "boolean"
+                    }
+                }
+            }
+        },
+        "required": ["title"]
+    })",
+};
+
 static common_chat_tool toggle_tool{
     /* .name = */ "toggle",
     /* .description = */ "Toggle a feature",

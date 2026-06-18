@@ -1373,6 +1373,21 @@ const char * ggml_type_name(enum ggml_type type) {
     return type_traits[type].type_name;
 }
 
+enum ggml_type ggml_type_from_name(const char * name) {
+    if (!name) {
+        return GGML_TYPE_COUNT;
+    }
+
+    for (int i = 0; i < GGML_TYPE_COUNT; ++i) {
+        const char * tname = type_traits[i].type_name;
+        if (tname && strcmp(name, tname) == 0) {
+            return (enum ggml_type) i;
+        }
+    }
+
+    return GGML_TYPE_COUNT;
+}
+
 bool ggml_is_quantized(enum ggml_type type) {
     assert(type >= 0);
     assert(type < GGML_TYPE_COUNT);

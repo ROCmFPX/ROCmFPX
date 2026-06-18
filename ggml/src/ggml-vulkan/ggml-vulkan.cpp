@@ -460,7 +460,7 @@ struct vk_fa_pipeline_state {
     uint32_t HSK, HSV;
     uint32_t Br, Bc;
     uint32_t D_split, row_split;
-    bool shmem_staging;
+    uint32_t shmem_staging; // 0=none, 1=K+V, 2=K-only (ROCmFPX V MMQ direct)
     FaCodePath path;
     uint32_t workgroup_size, subgroup_size;
     bool aligned;
@@ -3130,7 +3130,7 @@ struct vk_fa_tuning_params {
     uint32_t block_cols;
     uint32_t d_split;
     uint32_t row_split;
-    bool shmem_staging;
+    uint32_t shmem_staging; // 0=none, 1=K+V, 2=K-only (ROCmFPX V MMQ direct)
     bool disable_subgroups;
     uint32_t limit_occupancy_shmem;
 
@@ -3195,7 +3195,12 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device, 
 
     result.d_split = std::min(std::min(result.subgroup_size, 8u), D_lsb / 4);
 
-    result.shmem_staging = (device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk < 256 && hsv < 256) ? 1 : 0;
+    const bool rocmfp4_quant_kv = k_type == GGML_TYPE_Q4_0_ROCMFP4 || k_type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
+                                  v_type == GGML_TYPE_Q4_0_ROCMFP4 || v_type == GGML_TYPE_Q4_0_ROCMFP4_FAST;
+    // ROCmFPX V MMQ uses the on-the-fly packed path (SHMEM_STAGING=0) on AMD; forcing
+    // staging only helps ROCmFP4 correctness and costs ~2x decode on ROCmFPX KV.
+    result.shmem_staging = ((device->vendor_id == VK_VENDOR_ID_NVIDIA && hsk <= 256 && hsv <= 256) ||
+                            (rocmfp4_quant_kv && device->vendor_id == VK_VENDOR_ID_AMD && hsk <= 256 && hsv <= 256)) ? 1 : 0;
 
     if (!reduce_block_rows && !ggml_vk_flash_attn_scalar_shmem_support(device, result, hsk, hsv, f32acc, k_type, v_type)) {
         result.block_rows /= 2;
@@ -3282,10 +3287,14 @@ static vk_fa_tuning_params get_fa_tuning_params_coopmat2(const vk_device& device
 static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_t hsk, uint32_t hsv, uint32_t n_rows, uint32_t n_kv, ggml_type k_type, ggml_type v_type, bool f32acc) {
     FaCodePath path = device->coopmat2 ? FA_COOPMAT2 :
                       device->coopmat1_fa_support ? FA_COOPMAT1 : FA_SCALAR;
-    const bool rocmfp4_kv = k_type == GGML_TYPE_Q4_0_ROCMFP4 || k_type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
-                            v_type == GGML_TYPE_Q4_0_ROCMFP4 || v_type == GGML_TYPE_Q4_0_ROCMFP4_FAST;
+    const bool rocm_quant_kv = k_type == GGML_TYPE_Q4_0_ROCMFP4 || k_type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
+                               k_type == GGML_TYPE_Q3_0_ROCMFPX || k_type == GGML_TYPE_Q6_0_ROCMFPX ||
+                               k_type == GGML_TYPE_Q8_0_ROCMFPX ||
+                               v_type == GGML_TYPE_Q4_0_ROCMFP4 || v_type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
+                               v_type == GGML_TYPE_Q3_0_ROCMFPX || v_type == GGML_TYPE_Q6_0_ROCMFPX ||
+                               v_type == GGML_TYPE_Q8_0_ROCMFPX;
 
-    if (rocmfp4_kv) {
+    if (rocm_quant_kv) {
         path = FA_SCALAR;
     }
 
@@ -3359,7 +3368,7 @@ static std::vector<uint32_t> get_fa_spec_constants(const vk_fa_pipeline_state& s
         /* 6 D_split         */ state.D_split,
         /* 7 row_split       */ state.row_split,
         /* 8 SubGroupSize    */ state.subgroup_size,
-        /* 9 SHMEM_STAGING   */ state.shmem_staging ? 1u : 0u,
+        /* 9 SHMEM_STAGING   */ state.shmem_staging,
         /*10 Flags           */ state.flags,
         /*11 LIMIT_OCCUPANCY_SHMEM */ state.limit_occupancy_shmem,
         /*12 FaTypeK         */ static_cast<uint32_t>(state.k_type),
@@ -3567,24 +3576,49 @@ static uint32_t get_subgroup_size(const std::string &pipeline_name, const vk_dev
     return 0; // If no matching configuration is found
 }
 
-// Whether scalar flash attention will use the MMQ path for the given K/V types.
-static bool ggml_vk_fa_type_needs_shmem(ggml_type type) {
+// LUT shmem for IQ4_NL / ROCmFPX UE4M3 decode in scalar FA shaders.
+static bool ggml_vk_fa_type_needs_lut_shmem(ggml_type type) {
     switch (type) {
     case GGML_TYPE_IQ4_NL:
+    case GGML_TYPE_Q3_0_ROCMFPX:
+    case GGML_TYPE_Q6_0_ROCMFPX:
+    case GGML_TYPE_Q8_0_ROCMFPX:
         return true;
     default:
         return false;
     }
 }
 
+// Types that need LUT shmem but cannot use the integer-dot MMQ FA shader.
+static bool ggml_vk_fa_type_blocks_mmq(ggml_type type) {
+    return type == GGML_TYPE_IQ4_NL;
+}
+
+static bool ggml_vk_fa_scalar_uses_k_mmq(ggml_type k_type) {
+    return k_type == GGML_TYPE_Q4_0 || k_type == GGML_TYPE_Q4_1 ||
+           k_type == GGML_TYPE_Q5_0 || k_type == GGML_TYPE_Q5_1 ||
+           k_type == GGML_TYPE_Q8_0 || k_type == GGML_TYPE_Q4_0_ROCMFP4 ||
+           k_type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
+           k_type == GGML_TYPE_Q3_0_ROCMFPX || k_type == GGML_TYPE_Q6_0_ROCMFPX ||
+           k_type == GGML_TYPE_Q8_0_ROCMFPX;
+}
+
+static bool ggml_vk_fa_scalar_uses_v_mmq(ggml_type v_type) {
+#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+    return v_type == GGML_TYPE_Q4_0_ROCMFP4 || v_type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
+           v_type == GGML_TYPE_Q3_0_ROCMFPX || v_type == GGML_TYPE_Q6_0_ROCMFPX ||
+           v_type == GGML_TYPE_Q8_0_ROCMFPX;
+#else
+    GGML_UNUSED(v_type);
+    return false;
+#endif
+}
+
 static bool ggml_vk_fa_scalar_uses_mmq(const vk_device& device, ggml_type k_type, ggml_type v_type) {
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+    const bool needs_mmq = ggml_vk_fa_scalar_uses_k_mmq(k_type) || ggml_vk_fa_scalar_uses_v_mmq(v_type);
     return device->integer_dot_product && device->subgroup_clustered &&
-           !ggml_vk_fa_type_needs_shmem(v_type) &&
-           (k_type == GGML_TYPE_Q4_0 || k_type == GGML_TYPE_Q4_1 ||
-            k_type == GGML_TYPE_Q5_0 || k_type == GGML_TYPE_Q5_1 ||
-            k_type == GGML_TYPE_Q8_0 || k_type == GGML_TYPE_Q4_0_ROCMFP4 ||
-            k_type == GGML_TYPE_Q4_0_ROCMFP4_FAST);
+           !ggml_vk_fa_type_blocks_mmq(v_type) && needs_mmq;
 #else
     GGML_UNUSED(device);
     GGML_UNUSED(k_type);
@@ -4764,6 +4798,9 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_MXFP4][i], "mul_mat_vec_mxfp4_q8_1_f32", arr_dmmv_mxfp4_q8_1_f32_len[reduc], arr_dmmv_mxfp4_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_0_ROCMFP4][i], "mul_mat_vec_rocmfp4_q8_1_f32", arr_dmmv_rocmfp4_q8_1_f32_len[reduc], arr_dmmv_rocmfp4_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_0_ROCMFP4_FAST][i], "mul_mat_vec_rocmfp4_fast_q8_1_f32", arr_dmmv_rocmfp4_fast_q8_1_f32_len[reduc], arr_dmmv_rocmfp4_fast_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
+                ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q3_0_ROCMFPX][i], "mul_mat_vec_rocmfpx_fp3_q8_1_f32", arr_dmmv_rocmfpx_fp3_q8_1_f32_len[reduc], arr_dmmv_rocmfpx_fp3_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
+                ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q6_0_ROCMFPX][i], "mul_mat_vec_rocmfpx_fp6_q8_1_f32", arr_dmmv_rocmfpx_fp6_q8_1_f32_len[reduc], arr_dmmv_rocmfpx_fp6_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
+                ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q8_0_ROCMFPX][i], "mul_mat_vec_rocmfpx_fp8_q8_1_f32", arr_dmmv_rocmfpx_fp8_q8_1_f32_len[reduc], arr_dmmv_rocmfpx_fp8_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
 
                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q2_K][i], "mul_mat_vec_q2_k_q8_1_f32", arr_dmmv_q2_k_q8_1_f32_len[reduc], arr_dmmv_q2_k_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {2*rm_kq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_kq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q3_K][i], "mul_mat_vec_q3_k_q8_1_f32", arr_dmmv_q3_k_q8_1_f32_len[reduc], arr_dmmv_q3_k_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_kq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_kq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
@@ -4823,6 +4860,9 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_MXFP4], "mul_mat_vec_id_mxfp4_q8_1_f32", arr_dmmv_id_mxfp4_q8_1_f32_len[reduc], arr_dmmv_id_mxfp4_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int}, 1, true, use_subgroups, subgroup_size_int);
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_Q4_0_ROCMFP4], "mul_mat_vec_id_rocmfp4_q8_1_f32", arr_dmmv_id_rocmfp4_q8_1_f32_len[reduc], arr_dmmv_id_rocmfp4_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int}, 1, true, use_subgroups, subgroup_size_int);
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_Q4_0_ROCMFP4_FAST], "mul_mat_vec_id_rocmfp4_fast_q8_1_f32", arr_dmmv_id_rocmfp4_fast_q8_1_f32_len[reduc], arr_dmmv_id_rocmfp4_fast_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int}, 1, true, use_subgroups, subgroup_size_int);
+            ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_Q3_0_ROCMFPX], "mul_mat_vec_id_rocmfpx_fp3_q8_1_f32", arr_dmmv_id_rocmfpx_fp3_q8_1_f32_len[reduc], arr_dmmv_id_rocmfpx_fp3_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int}, 1, true, use_subgroups, subgroup_size_int);
+            ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_Q6_0_ROCMFPX], "mul_mat_vec_id_rocmfpx_fp6_q8_1_f32", arr_dmmv_id_rocmfpx_fp6_q8_1_f32_len[reduc], arr_dmmv_id_rocmfpx_fp6_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int}, 1, true, use_subgroups, subgroup_size_int);
+            ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_Q8_0_ROCMFPX], "mul_mat_vec_id_rocmfpx_fp8_q8_1_f32", arr_dmmv_id_rocmfpx_fp8_q8_1_f32_len[reduc], arr_dmmv_id_rocmfpx_fp8_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {2*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_stdq_int}, 1, true, use_subgroups, subgroup_size_int);
 
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_Q2_K], "mul_mat_vec_id_q2_k_q8_1_f32", arr_dmmv_id_q2_k_q8_1_f32_len[reduc], arr_dmmv_id_q2_k_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {2*rm_kq_int, 1, 1}, {wg_size_subgroup_int, 2*rm_kq_int}, 1, true, use_subgroups, subgroup_size_int);
             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_Q3_K], "mul_mat_vec_id_q3_k_q8_1_f32", arr_dmmv_id_q3_k_q8_1_f32_len[reduc], arr_dmmv_id_q3_k_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1*rm_kq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_kq_int}, 1, true, use_subgroups, subgroup_size_int);
@@ -9900,14 +9940,16 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
     const uint32_t float_type_size = (device->fp16 && k_type != GGML_TYPE_BF16) ? sizeof(ggml_fp16_t) : sizeof(float);
 
     const bool mmq = ggml_vk_fa_scalar_uses_mmq(device, k_type, v_type);
+    const bool needs_lut = ggml_vk_fa_type_needs_lut_shmem(k_type) || ggml_vk_fa_type_needs_lut_shmem(v_type);
 
     // tmpsh is overestimated slightly
     const uint32_t tmpsh = wg_size * sizeof(float);
     const uint32_t tmpshv4 = wg_size * 4 * float_type_size;
 
     const uint32_t masksh = Bc * (Br + 1) * float_type_size;
-    // DATA_A_IQ4_NL is compiled into the FA shaders unconditionally, so its shared table is always allocated.
-    const uint32_t iq_shmem = 16 * float_type_size;
+    // DATA_A_IQ4_NL is compiled into the FA shaders unconditionally; ROCmFPX LUT
+    // shmem is also required when either K or V uses UE4M3 decode.
+    const uint32_t iq_shmem = (mmq || needs_lut) ? 128 * sizeof(float) : 16 * float_type_size;
 
     uint32_t Qf, kvsh, kblocksh_size;
     if (mmq) {
@@ -9915,19 +9957,22 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
         const uint32_t block_b_size = 8 * sizeof(int32_t) + 2 * float_type_size;
         Qf = Br * (hsk / 32) * block_b_size;
 
-        // kvsh uses D = HSV (K goes through kblocksh instead)
-        kvsh = params.shmem_staging ? Bc * (hsv / 4 + 1) * 4 * float_type_size : 4 * float_type_size;
+        const bool v_staging = params.shmem_staging == 1;
+        const bool k_staging = params.shmem_staging == 1 || params.shmem_staging == 2;
+
+        kvsh = v_staging ? Bc * (hsv / 4 + 1) * 4 * float_type_size : 4 * float_type_size;
 
         // The mixed MMQ shader uses a superset block_a_cache that fits every
         // FA-supported quant: int32_t qs[8] + uint32_t qh + FLOAT_TYPEV2 dm.
         // Single-scale types leave dm.y unused; non-Q5_* leave qh unused.
         const uint32_t block_a_size = 8 * sizeof(int32_t) + sizeof(uint32_t) + 2 * float_type_size;
-        kblocksh_size = params.shmem_staging ? Bc * (hsk / 32) * block_a_size : block_a_size;
+        kblocksh_size = k_staging ? Bc * (hsk / 32) * block_a_size : block_a_size;
     } else {
         Qf = Br * (hsk / 4 + 1) * 4 * float_type_size;
 
         const uint32_t D = std::max(hsk, hsv);
-        kvsh = params.shmem_staging ? Bc * (D / 4 + 1) * 4 * float_type_size : 4 * float_type_size;
+        const bool v_staging = params.shmem_staging == 1;
+        kvsh = v_staging ? Bc * (D / 4 + 1) * 4 * float_type_size : 4 * float_type_size;
 
         kblocksh_size = 0;
     }

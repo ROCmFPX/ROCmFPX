@@ -17,6 +17,12 @@ static bool ggml_is_power_of_2(int n) {
     return (n & (n - 1)) == 0;
 }
 
+static bool ggml_is_rocmfpx_kv_type(ggml_type type) {
+    return type == GGML_TYPE_Q3_0_ROCMFPX ||
+           type == GGML_TYPE_Q6_0_ROCMFPX ||
+           type == GGML_TYPE_Q8_0_ROCMFPX;
+}
+
 // orthonormal Walsh-Hadamard rotation matrix
 // note: res^2 == I
 static void ggml_gen_hadamard(ggml_tensor * tensor) {
@@ -287,14 +293,24 @@ llama_kv_cache::llama_kv_cache(
         LLAMA_LOG_WARN("%s: attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)\n", __func__);
     }
 
+    // Walsh-Hadamard attn_rot corrupts ROCmFPX KV cache (especially fp3 K in flash-attn).
+    const bool attn_rot_k_rocmfpx = ggml_is_rocmfpx_kv_type(type_k);
+    const bool attn_rot_v_rocmfpx = ggml_is_rocmfpx_kv_type(type_v);
+    if (attn_rot_k_rocmfpx || attn_rot_v_rocmfpx) {
+        LLAMA_LOG_WARN("%s: attention rotation disabled for ROCmFPX KV cache (K=%s, V=%s)\n", __func__,
+                ggml_type_name(type_k), ggml_type_name(type_v));
+    }
+
     attn_rot_k =
         !attn_rot_disable &&
+        !attn_rot_k_rocmfpx &&
         n_embd_head_k_all > 0 &&
         ggml_is_quantized(type_k) &&
         hparams.n_embd_head_k() % 64 == 0;
 
     attn_rot_v =
         !attn_rot_disable &&
+        !attn_rot_v_rocmfpx &&
         n_embd_head_v_all > 0 &&
         ggml_is_quantized(type_v) &&
         hparams.n_embd_head_v() % 64 == 0;

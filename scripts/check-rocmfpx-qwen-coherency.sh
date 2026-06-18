@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/rocmfpx-lib.sh"
 rocmfpx_setup_env
 
 BIN="${BIN:-$ROOT/build-strix-rocmfp4/bin/llama-completion}"
-MODEL="${MODEL:-/home/caf/strix-fp4/models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-LEAN.gguf}"
+MODEL="${MODEL:-$ROOT/../models/rocmfpx-bf16-tests/Qwen3-0.6B-Q3_0_ROCMFPX_COHERENT-LEAN.gguf}"
 N_PREDICT="${N_PREDICT:-256}"
 TEMP="${TEMP:-0}"
 
@@ -15,11 +15,17 @@ cd "$ROOT"
 
 rocmfpx_require_binary "$BIN"
 
+global_extra_args=()
+if [[ -n "${LLAMA_COMPLETION_ARGS:-}" ]]; then
+    # shellcheck disable=SC2206
+    global_extra_args=(${LLAMA_COMPLETION_ARGS})
+fi
+
 run_probe() {
     local name="$1"
     local prompt="$2"
     shift 2
-    local extra_args=("$@")
+    local extra_args=("${global_extra_args[@]}" "$@")
     local tmp_out
     tmp_out="$(mktemp)"
     if ! timeout --kill-after=30s 5m "$BIN" \
@@ -86,14 +92,31 @@ PY
     rm -f "$tmp_out"
 }
 
-run_probe coding \
-    "Write a Python function named find_duplicates that returns duplicate values from a list. Output only the function."
+probes="${COHERENCY_PROBES:-coding,summary,json}"
+probes="${probes// /}"
 
-run_probe summary \
-    "Summarize why offsite backups matter in exactly three short bullet points."
+IFS=',' read -r -a probe_list <<< "$probes"
 
-run_probe json \
-    "Return a JSON object with keys answer and method. answer must be 391 and method must be multiplication." \
-    --strict-json
+for probe in "${probe_list[@]}"; do
+    case "$probe" in
+        coding)
+            run_probe coding \
+                "Write a Python function named find_duplicates that returns duplicate values from a list. Output only the function."
+            ;;
+        summary)
+            run_probe summary \
+                "Summarize why offsite backups matter in exactly three short bullet points."
+            ;;
+        json)
+            run_probe json \
+                "Return a JSON object with keys answer and method. answer must be 391 and method must be multiplication." \
+                --strict-json
+            ;;
+        *)
+            echo "unknown coherency probe: $probe" >&2
+            exit 1
+            ;;
+    esac
+done
 
-echo "All coherency probes passed for ${MODEL}"
+echo "All coherency probes passed for ${MODEL} (probes=${probes})"
