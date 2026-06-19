@@ -1,299 +1,272 @@
-# ROCmFP4 for llama.cpp
+# ROCmFPX for llama.cpp
 
-Experimental AMD-focused FP4 quantization and backend work for `llama.cpp`,
-developed on Framework Desktop with AMD Strix Halo 395+ and 128 GB unified RAM.
+Experimental AMD-focused ROCmFP3, ROCmFP6, and ROCmFP8 quantization formats for
+`llama.cpp`, built on the ROCmFP4 research branch.
 
-ROCmFP4 adds new GGUF tensor formats, quantization presets, ROCm/HIP kernels,
-Vulkan shader support, and reproducible regression guards for long-context MTP
-inference. The goal is a practical 4-bit format for AMD systems that keeps model
-coherence protected while improving memory use and decode speed.
+This branch is for people who want to download, compile, quantize, and test the
+ROCmFPX family directly from:
 
-> Status: experimental research build. Results are hardware-, driver-, model-,
-> and prompt-sensitive. Do not treat these numbers as upstream llama.cpp claims
-> until they are independently reproduced.
-
-## What Is ROCmFP4?
-
-ROCmFP4 is a custom 4-bit weight format for GGUF models:
-
-- `Q4_0_ROCMFP4`: dual-scale 4.50 BPW layout using two finite UE4M3 scale bytes
-  per 32-weight block.
-- `Q4_0_ROCMFP4_FAST`: single-scale 4.25 BPW layout for speed-sensitive tensor
-  roles.
-- Tensor-aware presets that mix ROCmFP4 layouts with protected higher-precision
-  tensors where quality matters.
-- ROCm/HIP vector-dot, copy, dequant, and FlashAttention handling for the new
-  layouts.
-- Vulkan decode and MMQ shader support for the same GGUF tensor types.
-- MTP regression guards for long-context target/draft decode.
-
-ROCmFP4 is not MXFP4, NVFP4, or a renamed Q4 format. It uses a Codebook10 4-bit
-value table and finite unsigned E4M3 half-scale semantics tuned for the current
-AMD backend paths in this tree.
-
-## Proven Local Results
-
-Current strongest reproduced local result:
-
-| Hardware | Model | Backend | Context | Profile | Decode |
-|---|---|---:|---:|---|---:|
-| Framework AMD Strix Halo 395+, 128 GB unified RAM | Qwen3.6 35B A3B MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | reasoning on, draft-MTP, q8 main KV, q4 draft KV | 104.4 tok/s short, 89.3 tok/s sustained |
-| Framework AMD Strix Halo 395+, 128 GB unified RAM | Qwen3.6 27B MTP ROCmFP4 STRIX_LEAN | ROCm0 | 262144 | draft-MTP | 33.6 tok/s short, 28.0 tok/s sustained |
-
-The benchmark policy is intentionally conservative: a microbenchmark win is not
-promoted unless end-to-end decode guards hold or improve.
-
-## Validation Matrix
-
-| Target | Script | Status |
-|---|---|---|
-| Strix Halo / RDNA3.5 (`gfx1151`) | `scripts/build-strix-rocmfp4-mtp.sh` | Validated locally on Framework Desktop / Ryzen AI MAX+ 395 |
-| RDNA3 (`gfx1100` class) | `scripts/build-rdna3.sh` | Build target provided; community validation wanted |
-| RDNA2 (`gfx1030` class) | `scripts/build-rdna2.sh` | Build target provided; community validation wanted |
-| RDNA4 (`gfx1200` class) | `scripts/build-rdna4.sh` | Experimental; requires ROCm support for `gfx1200` device libraries |
-| Vulkan fallback | Manual CMake path | Recommended when HIP support is incomplete or a GPU is not mapped cleanly |
-
-## Latest Validated Snapshot
-
-- Validated integration snapshot: `4860505ee`
-- Validation date: `2026-06-13`
-
-This snapshot passed the promoted Strix Halo gate with:
-
-- ROCmFP4 quantization tests
-- MTMD C API smoke test
-- ROCm copy and FlashAttention backend tests
-- ROCmFP4 copy, FlashAttention, and runtime regression guards
-- Qwen3.6 35B A3B MTP ROCmFP4 smoke test
-
-## Documentation
-
-| Guide | Who it's for |
-|---|---|
-| [`docs/STRIX-HALO-QUICKSTART.md`](docs/STRIX-HALO-QUICKSTART.md) | Strix Halo users — full install, quantize, run, validate |
-| [`docs/BUILD-AMD-ARCHITECTURES.md`](docs/BUILD-AMD-ARCHITECTURES.md) | AMD GPU build flags and scripts, including RDNA2 through RDNA4 plus experimental gfx906 |
-| [`docs/ROCmFP4-REPRODUCIBILITY.md`](docs/ROCmFP4-REPRODUCIBILITY.md) | Regression guards and proof commands |
-| [`docs/ROCmFP4-MTP-COMPARISON.md`](docs/ROCmFP4-MTP-COMPARISON.md) | Benchmark history and promoted profiles |
-| [`docs/ROCmFP4-DECODE-SPEED-EXPERIMENTS.md`](docs/ROCmFP4-DECODE-SPEED-EXPERIMENTS.md) | Opt-in decode tuning profiles, graph timing, and future quantization research notes |
-| [`docs/ROCmFPX-EXPERIMENT.md`](docs/ROCmFPX-EXPERIMENT.md) | Experimental ROCmFP3/ROCmFP6/ROCmFP8 format staging |
-| [`docs/ROCmFPX-HANDOFF.md`](docs/ROCmFPX-HANDOFF.md) | Operational handoff for ROCmFPX family review, build, quant, and test flow |
-| [`ggml/rocmfp4/README.md`](ggml/rocmfp4/README.md) | Format details and expert HIP tuning knobs |
-
-## ROCmFPX Quantization
-
-ROCmFPX is the family for ROCmFP3, ROCmFP6, and ROCmFP8. Use BF16 or F16 as
-the source. The straight presets are the default family quants; the agent
-presets keep the same family but spend extra precision on agent-sensitive
-tensors.
-
-Use the wrapper:
-
-```bash
-scripts/quantize-rocmfpx-agent.sh
+```text
+https://github.com/charlie12345/ROCmFPX/tree/experimental-rocmfpx-branch
 ```
 
-Straight family quants:
+> Status: experimental research build. Results are hardware-, driver-, model-,
+> and prompt-sensitive. Use BF16/F16 sources for real quality tests.
+
+## What Is ROCmFPX?
+
+ROCmFPX is a family of GGUF model-weight quants:
+
+| Family name | GGUF preset | Role |
+|---|---|---|
+| ROCmFP3 | `Q3_0_ROCMFPX` | smallest experimental ROCmFPX weight format |
+| ROCmFP6 | `Q6_0_ROCMFPX` | middle quality/size ROCmFPX weight format |
+| ROCmFP8 | `Q8_0_ROCMFPX` | high-quality ROCmFPX reference format |
+
+Agent-specific versions are also available:
+
+| Family name | Agent preset | Role |
+|---|---|---|
+| ROCmFP3 Agent | `Q3_0_ROCMFPX_AGENT` | low-bit ROCmFPX with protected agent tensors |
+| ROCmFP6 Agent | `Q6_0_ROCMFPX_AGENT` | middle ROCmFPX with protected agent tensors |
+| ROCmFP8 Agent | `Q8_0_ROCMFPX_AGENT` | high-quality ROCmFPX with protected agent tensors |
+| ROCmFP4 Agent | `Q4_0_ROCMFP4_COHERENT` | ROCmFP4 coherent agent-oriented preset |
+
+ROCmFPX is not a K/V-cache-only compression trick. It is a set of actual GGUF
+model-weight tensor formats with CPU reference paths plus ROCm/HIP and Vulkan
+kernel coverage.
+
+## Why It Is Different From Regular Quants
+
+Most regular GGUF quants target broad size/quality tradeoffs. ROCmFPX is
+AMD-oriented and keeps the ROCmFP4 discipline:
+
+- 32-weight blocks for CPU, HIP, and Vulkan kernel compatibility
+- finite unsigned UE4M3 scale bytes
+- explicit integer-code-times-decoded-scale dequant math
+- reconstruction-MSE scale selection where low-bit coherency needs it
+- tensor-aware routing for low-bit coherency instead of applying one blunt type
+  everywhere
+- optional agent presets for JSON, tool calling, coding, and chat coherency
+
+The agent presets do not invent a separate dequant kernel. They use the same
+ROCmFPX math but protect the tensors that tend to break structured output:
+token/output embeddings, attention Q/K/V/O, selected FFN-down, and selected
+FFN-gate tensors.
+
+## Clone And Build
+
+```bash
+git clone https://github.com/charlie12345/ROCmFPX.git
+cd ROCmFPX
+git checkout experimental-rocmfpx-branch
+```
+
+Pick the build script for your machine:
+
+| Hardware | Build command | Output folder |
+|---|---|---|
+| Strix Halo / RDNA3.5 (`gfx1151`) | `env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh` | `build-strix-rocmfp4/` |
+| RDNA2 / RX 6000 (`gfx1030` class) | `env JOBS=16 scripts/build-rdna2.sh` | `build-rdna2/` |
+| RDNA3 / RX 7000 (`gfx1100` class) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
+| RDNA4 / RX 9000 (`gfx1200` class) | `env JOBS=16 scripts/build-rdna4.sh` | `build-rdna4/` |
+| Vulkan fallback | use the Vulkan CMake path in `docs/BUILD-AMD-ARCHITECTURES.md` | custom |
+
+For Strix Halo, the common runtime environment is:
+
+```bash
+export HSA_OVERRIDE_GFX_VERSION=11.5.1
+export GGML_HIP_ENABLE_UNIFIED_MEMORY=1
+```
+
+Key binaries after build:
+
+```text
+build-strix-rocmfp4/bin/llama-quantize
+build-strix-rocmfp4/bin/llama-cli
+build-strix-rocmfp4/bin/llama-server
+build-strix-rocmfp4/bin/llama-bench
+build-strix-rocmfp4/bin/test-backend-ops
+```
+
+For RDNA2/RDNA3/RDNA4 builds, use the same binary names under that build
+folder, for example `build-rdna3/bin/llama-quantize`.
+
+## Quantize Straight ROCmFPX Models
+
+Use BF16 or F16 GGUF sources. The wrapper keeps split GGUFs split by default.
+
+ROCmFP3:
 
 ```bash
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q3_0_ROCMFPX.gguf \
   FORMAT=rocmfp3 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
+```
 
+ROCmFP6:
+
+```bash
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q6_0_ROCMFPX.gguf \
   FORMAT=rocmfp6 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
+```
 
+ROCmFP8:
+
+```bash
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q8_0_ROCMFPX.gguf \
   FORMAT=rocmfp8 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
 ```
 
-Agent family quants:
+You can also call `llama-quantize` directly:
+
+```bash
+build-strix-rocmfp4/bin/llama-quantize source.gguf out-q3.gguf Q3_0_ROCMFPX
+build-strix-rocmfp4/bin/llama-quantize source.gguf out-q6.gguf Q6_0_ROCMFPX
+build-strix-rocmfp4/bin/llama-quantize source.gguf out-q8.gguf Q8_0_ROCMFPX
+```
+
+## Quantize Agent ROCmFPX Models
+
+Use agent mode when the model will be used for Hermes/OpenClaw-style workflows,
+tool calling, JSON output, coding, or chat agents.
+
+ROCmFP3 Agent:
 
 ```bash
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q3_0_ROCMFPX_AGENT.gguf \
   FORMAT=rocmfp3 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
+```
 
+ROCmFP6 Agent:
+
+```bash
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q6_0_ROCMFPX_AGENT.gguf \
   FORMAT=rocmfp6 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
+```
 
+ROCmFP8 Agent:
+
+```bash
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q8_0_ROCMFPX_AGENT.gguf \
   FORMAT=rocmfp8 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
 ```
 
-If you want ROCmFP4 for agent use, the matching call is:
+ROCmFP4 Agent:
 
 ```bash
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q4_0_ROCMFP4_COHERENT_AGENT.gguf \
   FORMAT=rocmfp4 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
 ```
 
-Agent-specific dequant/routing policy:
+The wrapper maps `FORMAT` and `PROFILE` like this:
 
-- keep token and output embeddings protected
-- keep attention Q/K/V/O at higher precision than the bulk model
-- keep selected FFN-down tensors higher precision
-- keep selective FFN-gate tensors higher precision
-- leave the bulk FFN-up tensors on the family format
-
-That gives you the agent behavior without turning the whole model into a large
-generic high-bit quant.
-
-## Repository Layout
-
-- `ggml/rocmfp4/` — ROCmFP4 format definitions, CPU reference quant/dequant, and
-  HIP helper kernels
-- `ggml/rocmfpx/` — isolated experimental ROCmFP3/ROCmFP6/ROCmFP8 formats
-  with CPU reference paths plus ROCm/HIP and Vulkan staging hooks
-- `ggml/src/ggml-cuda/` — upstream HIP/CUDA backend files with AMD ROCmFP4
-  integration (HIP builds use this directory even with `-DGGML_CUDA=OFF`)
-- `ggml/src/ggml-vulkan/vulkan-shaders/` — Vulkan shader support for ROCmFP4
-- `scripts/build-*.sh` — build scripts per AMD GPU generation
-- `scripts/check-rocmfp4-*.sh` — correctness and performance regression guards
-
-## Build
-
-```bash
-git clone https://github.com/charlie12345/rocmfp4-llama.git
-cd rocmfp4-llama
-git checkout mtp-rocmfp4-strix
-```
-
-Pick the script that matches your GPU:
-
-| Your GPU | Build command | Output folder |
+| FORMAT | PROFILE | Preset |
 |---|---|---|
-| Strix Halo / RDNA3.5 | `env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh` | `build-strix-rocmfp4/` |
-| RDNA2 (RX 6000) | `env JOBS=16 scripts/build-rdna2.sh` | `build-rdna2/` |
-| RDNA3 (RX 7000, including RX 7600-class cards) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
-| RDNA4 (RX 9000) | `env JOBS=16 scripts/build-rdna4.sh` | `build-rdna4/` |
-| Vega 20 / gfx906 experimental (MI50 / MI60) | `env JOBS=16 scripts/build-gfx906.sh` | `build-gfx906/` |
-| Windows RDNA2 | `build-hip.bat` | `build-hip/` |
+| `rocmfp3` | `straight` | `Q3_0_ROCMFPX` |
+| `rocmfp3` | `agent` | `Q3_0_ROCMFPX_AGENT` |
+| `rocmfp4` | `straight` | `Q4_0_ROCMFP4` |
+| `rocmfp4` | `agent` | `Q4_0_ROCMFP4_COHERENT` |
+| `rocmfp6` | `straight` | `Q6_0_ROCMFPX` |
+| `rocmfp6` | `agent` | `Q6_0_ROCMFPX_AGENT` |
+| `rocmfp8` | `straight` | `Q8_0_ROCMFPX` |
+| `rocmfp8` | `agent` | `Q8_0_ROCMFPX_AGENT` |
 
-Not sure which GPU you have? See
-[`docs/BUILD-AMD-ARCHITECTURES.md`](docs/BUILD-AMD-ARCHITECTURES.md) for the full
-`gfx` target table, runtime environment variables, and Vulkan-only builds.
+## What The Agent Preset Protects
 
-Strix Halo users: follow
-[`docs/STRIX-HALO-QUICKSTART.md`](docs/STRIX-HALO-QUICKSTART.md) for
-prerequisites, MTP flags, and troubleshooting.
+The agent profile is a tensor-routing choice. It keeps the ROCmFPX block
+formats but spends more bits on tensors that affect structured behavior:
 
-Key binaries after a successful build:
+- token and output embeddings
+- attention Q/K/V/O tensors
+- selected FFN-down tensors
+- selective FFN-gate tensors
+- bulk FFN-up tensors stay on the family quant where possible
 
-```text
-bin/llama-cli
-bin/llama-server
-bin/llama-quantize
-bin/llama-bench
-bin/test-backend-ops
-bin/test-quantize-fns
-bin/test-quantize-perf
-```
+This is why agent quants are slightly larger than straight quants. The goal is
+to preserve JSON shape, tool-call shape, coding behavior, and chat coherency
+without forcing the whole model to a generic high-bit quant.
 
-## Quantize a Model
+## Run A Quantized Model
 
-Start from an F16 or BF16 GGUF source model. Quantizing an already heavily
-quantized GGUF into ROCmFP4 is useful for smoke tests only; for real quality,
-use an F16/BF16 source.
-
-Compact Strix profile:
+Simple ROCm run:
 
 ```bash
-./build-strix-rocmfp4/bin/llama-quantize \
-  /path/to/source-bf16.gguf \
-  /path/to/model-ROCmFP4-STRIX_LEAN.gguf \
-  Q4_0_ROCMFP4_STRIX_LEAN
-```
-
-Quality-biased Strix profile:
-
-```bash
-./build-strix-rocmfp4/bin/llama-quantize \
-  /path/to/source-bf16.gguf \
-  /path/to/model-ROCmFP4-STRIX.gguf \
-  Q4_0_ROCMFP4_STRIX
-```
-
-Pure experimental formats:
-
-```bash
-./build-strix-rocmfp4/bin/llama-quantize source.gguf out-dual.gguf Q4_0_ROCMFP4
-./build-strix-rocmfp4/bin/llama-quantize source.gguf out-fast.gguf Q4_0_ROCMFP4_FAST
-```
-
-Use the Strix presets for serious testing. The pure FAST format is smaller and
-can be faster, but may trade away too much coherence on sensitive tensors.
-
-## Run a ROCmFP4 Model
-
-Example interactive run:
-
-```bash
-cd rocmfp4-llama
-HSA_OVERRIDE_GFX_VERSION=11.5.1 \
-GGML_HIP_ENABLE_UNIFIED_MEMORY=1 \
-./build-strix-rocmfp4/bin/llama-cli \
-  -m /path/to/model-ROCmFP4-STRIX_LEAN.gguf \
+build-strix-rocmfp4/bin/llama-cli \
+  -m /path/to/model-Q8_0_ROCMFPX_AGENT.gguf \
   -dev ROCm0 \
   -ngl 999 \
-  -c 262144 \
+  -fa on \
+  -c 8192 \
   -b 512 \
   -ub 512 \
-  -fa on \
-  -ctk q8_0 \
-  -ctv q8_0 \
-  --spec-type draft-mtp \
-  --spec-draft-n-max 3 \
-  --spec-draft-n-min 0 \
-  --spec-draft-p-min 0.0 \
-  --spec-draft-p-split 0.10 \
-  --spec-draft-type-k q4_0 \
-  --spec-draft-type-v q4_0 \
-  --reasoning on \
   --jinja
 ```
 
-For models that do not support MTP or reasoning, remove the `--spec-*` and
-`--reasoning` flags.
-
-## Regression Guards
-
-Run the full promoted gate:
+OpenAI-compatible server:
 
 ```bash
-env HSA_OVERRIDE_GFX_VERSION=11.5.1 scripts/check-rocmfp4-all-regression.sh
+build-strix-rocmfp4/bin/llama-server \
+  -m /path/to/model-Q8_0_ROCMFPX_AGENT.gguf \
+  --host 127.0.0.1 \
+  --port 8138 \
+  -dev ROCm0 \
+  -ngl 999 \
+  -fa on \
+  -c 8192 \
+  -b 512 \
+  -ub 512 \
+  --jinja \
+  --reasoning off
 ```
 
-Focused guards:
+## K/V Cache Rule
+
+ROCmFPX model quants and K/V cache types are separate runtime controls.
+
+The current guard promotes `-ctk q3_0_rocmfpx` to `q6_0_rocmfpx` because fp3 K
+cache was below the observed tool-call and agent coherency floor. `q3_0_rocmfpx`
+can still be used for V cache.
+
+## Test Agent Behavior
+
+The agentic smoke harness checks chat, coding, JSON, tool-call JSON, coherency,
+and streaming. It also refuses to start when ROCm reports an active KFD process,
+so each run starts after VRAM/process cleanup.
 
 ```bash
-scripts/check-rocmfp4-quant-regression.sh
-scripts/check-rocmfp4-rocm-runtime-regression.sh
-scripts/check-rocmfp4-rocm-fattn-regression.sh
-scripts/check-rocmfp4-vulkan-runtime-regression.sh
-scripts/check-rocmfp4-qwen-mtp-regression.sh
-scripts/check-rocmfp4-qwen35-a3b-mtp-regression.sh
+MODEL=/path/to/model-Q8_0_ROCMFPX_AGENT.gguf \
+BACKEND=ROCm0 \
+ALIAS=rocmfpx-agent \
+OUT_DIR=/tmp/rocmfpx-agentic-smoke \
+scripts/check-rocmfpx-agentic-smoke.sh
 ```
 
-The scripts accept environment overrides for model paths, binary paths, context,
-cache type, MTP settings, and speed floors. See each script for the exact
-variables.
+## Local Reference Results
 
-## Design Principles
+Current Strix Halo local reference points:
 
-- Coherence first: tensor-aware presets are preferred over pure speed profiles.
-- AMD-specific work must be isolated and measurable.
-- ROCm and Vulkan paths must avoid silent fallback where ROCmFP4-specific
-  kernels exist.
-- Rejected experiments are recorded so they are not repeatedly rediscovered.
-- Claims must cite model, backend, context window, flags, hardware, and date.
+| Model | Size / BPW | Result |
+|---|---:|---|
+| ROCmFP8 Agent from BF16 | `31,568.94 MiB / 8.39 BPW` | agentic smoke pass |
+| ROCmFP4 Agent from BF16 | `17,136.79 MiB / 4.55 BPW` | agentic smoke pass |
+| BF16 baseline | source | agentic smoke pass |
 
-## Current Limitations
+ROCmFP4 Agent benchmark on ROCm0:
 
-- This is not native FP4 tensor-core execution. rocWMMA FP4 input support is not
-  available in the local headers used by this build.
-- ROCmFP4 is currently optimized for AMD Strix Halo behavior and may need
-  retuning on other GPUs.
-- TurboQuant and TriAttention are not runtime flags in this isolated tree.
-- Some scripts reference local model defaults; override `MODEL`, `ROCMFP4_MODEL`,
-  or `BASELINE_MODEL` for your checkout.
+```text
+pp512: 650.63 t/s
+tg128: 76.55 t/s
+```
+
+## Code Layout
+
+- `ggml/rocmfpx/` - ROCmFP3/ROCmFP6/ROCmFP8 reference formats
+- `ggml/rocmfp4/` - ROCmFP4 reference path this family inherits from
+- `scripts/quantize-rocmfpx-agent.sh` - simple straight-vs-agent quant wrapper
+- `scripts/check-rocmfpx-agentic-smoke.sh` - OpenAI-compatible agent smoke test
+- `docs/ROCmFPX-HANDOFF.md` - detailed handoff for reviewers and other agents
+- `docs/ROCmFPX-EXPERIMENT.md` - experiment history, routing notes, and gates
+- `docs/BUILD-AMD-ARCHITECTURES.md` - RDNA2/RDNA3/RDNA4/Strix build details
 
 ## License
 
