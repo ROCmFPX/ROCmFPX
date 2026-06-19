@@ -20,6 +20,9 @@
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
+// Internal staging hook used by multi-head MTP graph builders.
+void llm_graph_set_mtp_speculative_step(int32_t step);
+
 const std::map<std::string, common_speculative_type> common_speculative_type_from_name_map = {
     {"none",          COMMON_SPECULATIVE_TYPE_NONE},
     {"draft-simple",  COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE},
@@ -887,7 +890,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         auto * ctx_dft = this->params.ctx_dft;
         GGML_ASSERT(ctx_tgt && ctx_dft && "MTP requires ctx_tgt and ctx_dft to be set");
 
-        n_embd = llama_model_n_embd(llama_get_model(ctx_dft));
+        n_embd = llama_model_n_embd_pre_norm(llama_get_model(ctx_dft));
 
         LOG_INF("%s: adding speculative implementation 'draft-mtp'\n", __func__);
         LOG_INF("%s: - n_max=%d, n_min=%d, p_min=%.2f, n_embd=%d, backend_sampling=%d\n", __func__, this->params.n_max, this->params.n_min, this->params.p_min, n_embd, (int) this->params.backend_sampling);
@@ -940,7 +943,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         llama_set_embeddings_pre_norm(ctx_tgt, true, /*masked*/ false);
         llama_set_embeddings_pre_norm(ctx_dft, true, full_hidden_rows ? /*masked*/ false : /*masked*/ true);
-        llama_set_mtp_source(ctx_dft, ctx_tgt);
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 
@@ -1067,6 +1069,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             set_h(i_batch_beg[seq_id], pending_h[seq_id].data());
         }
 
+        llm_graph_set_mtp_speculative_step(0);
         const int32_t rc = llama_decode(ctx_dft, batch);
         if (rc != 0) {
             LOG_ERR("%s: llama_decode(ctx_dft) failed rc=%d (pos=%d)\n", __func__, (int) rc, (int) batch_in.pos[0]);
@@ -1139,6 +1142,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             return;
         }
 
+        llm_graph_set_mtp_speculative_step(0);
         int ret = llama_decode(ctx_dft, batch);
         if (ret != 0) {
             LOG_WRN("%s: llama_decode returned %d\n", __func__, ret);
@@ -1203,6 +1207,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
 
             // evaluate the drafted tokens on the draft model
+            llm_graph_set_mtp_speculative_step(i + 1);
             ret = llama_decode(ctx_dft, batch);
             if (ret != 0) {
                 LOG_WRN("%s: llama_decode[%d] returned %d\n", __func__, i, ret);

@@ -298,13 +298,6 @@ static bool tensor_allows_quantization(const llama_model_quantize_params * param
     // This used to be a regex, but <regex> has an extreme cost to compile times.
     bool quantize = name.rfind("weight") == name.size() - 6; // ends with 'weight'?
 
-    // DeepSeek V4 source checkpoints contain native MXFP4 routed experts and
-    // an integer token-id-to-expert-id table. Preserve both representations.
-    if (arch == LLM_ARCH_DEEPSEEK4) {
-        quantize &= tensor->type != GGML_TYPE_MXFP4;
-        quantize &= name.find("ffn_gate_tid2eid.weight") == std::string::npos;
-    }
-
     // do not quantize norm tensors
     quantize &= name.find("_norm.weight") == std::string::npos;
 
@@ -313,6 +306,13 @@ static bool tensor_allows_quantization(const llama_model_quantize_params * param
     // do not quantize expert gating tensors
     // NOTE: can't use LLM_TN here because the layer number is not known
     quantize &= name.find("ffn_gate_inp.weight") == std::string::npos;
+
+    // DeepSeek V4 source checkpoints contain native MXFP4 routed experts and
+    // hash routing tables that must not be requantized.
+    if (arch == LLM_ARCH_DEEPSEEK4) {
+        quantize &= tensor->type != GGML_TYPE_MXFP4;
+        quantize &= name.find("ffn_gate_tid2eid.weight") == std::string::npos;
+    }
 
     // these are very small (e.g. 4x4)
     quantize &= name.find("altup")  == std::string::npos;
@@ -660,7 +660,6 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
             ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN) {
             // Strix Halo quality/speed recipe: keep attention V in the
             // dual-scale ROCmFP4 layout. Together with ATTENTION_K below this
@@ -728,7 +727,6 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX ||
             ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN) {
             // Matching K/V in the dual-scale custom layout improved PPL more
             // than attention-V alone while keeping the large tensors on the
@@ -736,7 +734,6 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             new_type = GGML_TYPE_Q4_0_ROCMFP4;
         }
         else if (qs.model.hparams.n_expert == 8 && !rocmfpx_is_family(ftype)) {
-        else if (qs.model.hparams.n_expert == 8) {
             // for the 8-expert model, bumping this to Q8_0 trades just ~128MB
             // TODO: explore better strategies
             new_type = GGML_TYPE_Q8_0;
@@ -790,7 +787,6 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
-        if      (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
             // Down projections carry residual-stream detail. Spend extra bits
             // here so the experimental FP4 tensors do not dominate perplexity.
             // The final third is less sensitive on Qwen3-4B in the Strix FP4
@@ -856,7 +852,6 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
             // Output projections are another high-leverage location; Q5_K is
             // a modest size increase that helps preserve chat coherence.
             new_type = GGML_TYPE_Q5_K;
@@ -917,7 +912,6 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4 && use_more_bits(i_layer, n_layer)) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4 && use_more_bits(i_layer, n_layer)) {
             // Gate projections are the cheapest place to buy back coherence in
             // this preset. Keep selected layers at Q5_K, but leave FFN-up in
             // ROCmFP4 to avoid sliding back to a bulky/slower mostly-Q5 mix.
@@ -947,7 +941,6 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             }
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4) {
             GGML_UNUSED(i_layer);
             GGML_UNUSED(n_layer);
         }

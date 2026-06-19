@@ -982,7 +982,6 @@ float * llama_context::get_embeddings_pre_norm_ith(int32_t i) {
             throw std::runtime_error("no pre-norm embeddings");
         }
 
-        const uint32_t n_embd = model.hparams.n_embd_out();
         const uint32_t n_embd = model.n_embd_pre_norm();
 
         if (!cparams.embeddings_pre_norm_masked) {
@@ -1456,7 +1455,6 @@ int llama_context::encode(const llama_batch & batch_inp) {
     const auto & hparams = model.hparams;
 
     // eagle3/DFlash: features as encoder input, and non-draft paths fall back to model's input dim
-    const int64_t n_embd = hparams.n_embd_inp();
     const int64_t n_embd  = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP
         ? model.n_embd_pre_norm()
         : hparams.n_embd_inp();
@@ -1594,7 +1592,6 @@ int llama_context::encode(const llama_batch & batch_inp) {
         ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
         GGML_ASSERT(backend_h != nullptr);
 
-        const uint32_t n_embd = hparams.n_embd_out();
         const uint32_t n_embd = model.n_embd_pre_norm();
         GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_pre_norm.size);
         ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm.data, 0, n_tokens*n_embd*sizeof(float));
@@ -2064,7 +2061,6 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_pre_norm);
                 GGML_ASSERT(backend_h != nullptr);
 
-                const uint32_t n_embd = hparams.n_embd_out();
                 const uint32_t n_embd = model.n_embd_pre_norm();
                 float * embd_pre_norm_out = embd_pre_norm.data + offset*n_embd;
 
@@ -2160,6 +2156,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     const auto n_vocab    = vocab.n_tokens();
     const auto n_embd_pre_norm = model.n_embd_pre_norm();
     const auto n_embd_out = hparams.n_embd_out();
+    const auto n_embd     = hparams.n_embd;
 
     bool has_logits        = true;
     bool has_embd          = cparams.embeddings;
@@ -2177,17 +2174,13 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     logits.size        = has_logits        ? n_vocab*n_outputs_max     : 0;
     embd.size          = has_embd          ? n_embd_out*n_outputs_max  : 0;
-    embd_pre_norm.size = has_embd_pre_norm ? n_embd_out*n_outputs_max  : 0;
-    if (has_embd_pre_norm && !cparams.embeddings_pre_norm_masked) {
-        embd_pre_norm.size = (size_t) n_embd_out * n_batch;
-    }
+    embd_pre_norm.size = has_embd_pre_norm ? n_embd_pre_norm*n_outputs_max : 0;
 
     for (bool enabled : cparams.embeddings_layer_inp) {
         if (enabled) {
             embd_layer_inp_float_count += (size_t) n_embd * n_batch;
         }
     }
-    embd_pre_norm.size = has_embd_pre_norm ? n_embd_pre_norm*n_outputs_max : 0;
 
     if (has_embd_pre_norm && !cparams.embeddings_pre_norm_masked) {
         // unmasked: pre-norm row exists for every token in the batch, not just
@@ -3833,6 +3826,8 @@ void llama_set_mtp_source(llama_context * ctx, llama_context * src) {
 
 void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool value) {
     ctx->set_embeddings_layer_inp(lid, value);
+}
+
 int32_t llama_model_n_embd_pre_norm(const llama_model * model) {
     return model->n_embd_pre_norm();
 }

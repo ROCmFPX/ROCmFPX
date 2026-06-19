@@ -6017,6 +6017,127 @@ void ggml_compute_forward_rope_back(
     }
 }
 
+// ggml_compute_forward_dsv4_rope_tail
+
+template<typename T>
+static void ggml_compute_forward_dsv4_rope_tail_flt(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const ggml_tensor * src2 = dst->src[2];
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16);
+    GGML_ASSERT(src1->type == GGML_TYPE_I32);
+
+    const int n_dims     = ((int32_t *) dst->op_params)[0];
+    const int mode       = ((int32_t *) dst->op_params)[1];
+    const int n_ctx_orig = ((int32_t *) dst->op_params)[2];
+    const bool inverse   = ((int32_t *) dst->op_params)[3] != 0;
+
+    float freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow;
+    memcpy(&freq_base,   (int32_t *) dst->op_params + 4, sizeof(float));
+    memcpy(&freq_scale,  (int32_t *) dst->op_params + 5, sizeof(float));
+    memcpy(&ext_factor,  (int32_t *) dst->op_params + 6, sizeof(float));
+    memcpy(&attn_factor, (int32_t *) dst->op_params + 7, sizeof(float));
+    memcpy(&beta_fast,   (int32_t *) dst->op_params + 8, sizeof(float));
+    memcpy(&beta_slow,   (int32_t *) dst->op_params + 9, sizeof(float));
+
+    GGML_TENSOR_UNARY_OP_LOCALS
+
+    GGML_ASSERT(nb0 == nb00);
+    GGML_ASSERT(nb0 == sizeof(T));
+    GGML_ASSERT(n_dims <= ne0);
+    GGML_ASSERT(n_dims % 2 == 0);
+    GGML_ASSERT(mode == GGML_ROPE_TYPE_NORMAL || mode == GGML_ROPE_TYPE_NEOX);
+
+    const int64_t n_nope = ne0 - n_dims;
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int nr = ggml_nrows(dst);
+    const int dr = (nr + nth - 1)/nth;
+    const int ir0 = dr*ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    const float theta_scale = powf(freq_base, -2.0f/n_dims);
+
+    float corr_dims[2];
+    ggml_rope_yarn_corr_dims(n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, corr_dims);
+
+    const float * freq_factors = NULL;
+    if (src2 != NULL) {
+        GGML_ASSERT(src2->type == GGML_TYPE_F32);
+        GGML_ASSERT(src2->ne[0] >= n_dims / 2);
+        freq_factors = (const float *) src2->data;
+    }
+
+    const float sin_sign = inverse ? -1.0f : 1.0f;
+    const int32_t * pos = (const int32_t *) src1->data;
+
+    int ir = 0;
+    int64_t last_i2 = -1;
+
+    for (int64_t i3 = 0; i3 < ne3; i3++) {
+        for (int64_t i2 = 0; i2 < ne2; i2++) {
+            for (int64_t i1 = 0; i1 < ne1; i1++) {
+                if (ir++ < ir0) continue;
+                if (ir   > ir1) break;
+
+                float * cache = (float *) params->wdata + (n_dims + CACHE_LINE_SIZE_F32)*ith;
+                if (last_i2 != i2) {
+                    const int64_t p = pos[i2];
+                    ggml_rope_cache_init(p, freq_scale, freq_factors, corr_dims, n_dims, ext_factor, attn_factor, cache, sin_sign, theta_scale);
+                    last_i2 = i2;
+                }
+
+                const T * src = (const T *)((const char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01);
+                T * dst_data  =       (T *)((      char *)  dst->data + i3*nb3  + i2*nb2  + i1*nb1);
+
+                for (int64_t i0 = 0; i0 < n_nope; ++i0) {
+                    dst_data[i0] = src[i0];
+                }
+
+                const T * src_tail = src + n_nope;
+                T * dst_tail = dst_data + n_nope;
+
+                switch (mode) {
+                    case GGML_ROPE_TYPE_NORMAL:
+                        rotate_pairs<T>(n_dims, 1, cache, src_tail, dst_tail, 1);
+                        break;
+                    case GGML_ROPE_TYPE_NEOX:
+                        rotate_pairs<T>(n_dims, n_dims/2, cache, src_tail, dst_tail);
+                        break;
+                    default:
+                        GGML_ABORT("rope type not supported");
+                }
+            }
+        }
+    }
+}
+
+void ggml_compute_forward_dsv4_rope_tail(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+
+    switch (src0->type) {
+        case GGML_TYPE_F16:
+            {
+                ggml_compute_forward_dsv4_rope_tail_flt<ggml_fp16_t>(params, dst);
+            } break;
+        case GGML_TYPE_F32:
+            {
+                ggml_compute_forward_dsv4_rope_tail_flt<float>(params, dst);
+            } break;
+        default:
+            {
+                GGML_ABORT("fatal error");
+            }
+    }
+}
+
 // ggml_compute_forward_conv_transpose_1d
 
 static void ggml_compute_forward_conv_transpose_1d_f16_f32(
@@ -11020,6 +11141,8 @@ void ggml_compute_forward_rwkv_wkv7(
             }
     }
 }
+
+#include "dsv4-ops.inc"
 
 // ggml_compute_forward_map_custom1
 

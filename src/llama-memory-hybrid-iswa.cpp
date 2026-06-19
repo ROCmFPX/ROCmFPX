@@ -168,6 +168,8 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
         return;
     }
 
+    const ggml_type dsv4_cache_type_k = ggml_is_quantized(type_k) ? GGML_TYPE_F16 : type_k;
+
     dsv4_n_seq_max = n_seq_max;
     dsv4_cache_layers.resize(hparams.n_layer);
 
@@ -216,8 +218,8 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
             dev_name = ggml_backend_dev_name(dev);
         }
 
-        LLAMA_LOG_DEBUG("%s: DeepSeek4 compressed KV layer %3d: dev = %s, ratio = %u, rows = %u\n",
-                __func__, il, dev_name, ratio, n_comp);
+        LLAMA_LOG_DEBUG("%s: DeepSeek4 compressed KV layer %3d: dev = %s, ratio = %u, rows = %u, type = %s\n",
+                __func__, il, dev_name, ratio, n_comp, ggml_type_name(dsv4_cache_type_k));
 
         ggml_context * ctx = ctx_for_buft(buft);
         if (!ctx) {
@@ -226,11 +228,11 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
 
         auto & cache = dsv4_cache_layers[il];
         cache.n_comp = n_comp;
-        cache.attn_k = ggml_new_tensor_3d(ctx, type_k, hparams.n_embd_head_k(il), n_comp, dsv4_n_seq_max);
+        cache.attn_k = ggml_new_tensor_3d(ctx, dsv4_cache_type_k, hparams.n_embd_head_k(il), n_comp, dsv4_n_seq_max);
         ggml_format_name(cache.attn_k, "cache_dsv4_attn_k_l%d", il);
 
         if (ratio == 4) {
-            cache.index_k = ggml_new_tensor_3d(ctx, type_k, hparams.indexer_head_size, n_comp, dsv4_n_seq_max);
+            cache.index_k = ggml_new_tensor_3d(ctx, dsv4_cache_type_k, hparams.indexer_head_size, n_comp, dsv4_n_seq_max);
             ggml_format_name(cache.index_k, "cache_dsv4_index_k_l%d", il);
         }
     }
@@ -289,9 +291,15 @@ llama_memory_context_ptr llama_memory_hybrid_iswa::init_batch(llama_batch_allocr
                 // if all tokens are output, split by sequence
                 ubatch = balloc.split_seq(n_ubatch);
             } else {
-                // Use non-sequential split when KV cache is unified (needed for hellaswag/winogrande/multiple-choice)
-                const bool unified = (mem_attn->get_base()->get_n_stream() == 1);
-                ubatch = balloc.split_equal(n_ubatch, !unified);
+                if (mem_recr->n_rs_seq > 0) {
+                    // [TAG_RECURRENT_ROLLBACK_SPLITS]
+                    // TODO: recurrent state rollback does not support equal splits
+                    ubatch = balloc.split_seq(n_ubatch);
+                } else {
+                    // Use non-sequential split when KV cache is unified (needed for hellaswag/winogrande/multiple-choice)
+                    const bool unified = (mem_attn->get_base()->get_n_stream() == 1);
+                    ubatch = balloc.split_equal(n_ubatch, !unified);
+                }
             }
 
             if (ubatch.n_tokens == 0) {

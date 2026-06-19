@@ -583,6 +583,11 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_DSV4_HC_SPLIT_SINKHORN,
+        GGML_OP_DSV4_HC_WEIGHTED_SUM,
+        GGML_OP_DSV4_HC_EXPAND,
+        GGML_OP_DSV4_FP8_KV_QUANTIZE,
+        GGML_OP_DSV4_ROPE_TAIL,
 
         GGML_OP_UNARY,
 
@@ -2588,6 +2593,49 @@ extern "C" {
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state,
             int64_t               K);
+
+    // DeepSeek V4 hyperconnection helpers.
+    GGML_API struct ggml_tensor * ggml_dsv4_hc_split_sinkhorn(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * mixes,
+            struct ggml_tensor  * scale,
+            struct ggml_tensor  * base,
+            int                   n_hc,
+            int                   sinkhorn_iters,
+            float                 eps);
+
+    GGML_API struct ggml_tensor * ggml_dsv4_hc_weighted_sum(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * weights);
+
+    GGML_API struct ggml_tensor * ggml_dsv4_hc_expand(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * block_out,
+            struct ggml_tensor  * residual,
+            struct ggml_tensor  * post,
+            struct ggml_tensor  * comb);
+
+    GGML_API struct ggml_tensor * ggml_dsv4_fp8_kv_quantize(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   n_rot);
+
+    GGML_API struct ggml_tensor * ggml_dsv4_rope_tail(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * pos,
+            struct ggml_tensor  * freq_factors,
+            int                   n_dims,
+            int                   mode,
+            int                   n_ctx_orig,
+            float                 freq_base,
+            float                 freq_scale,
+            float                 ext_factor,
+            float                 attn_factor,
+            float                 beta_fast,
+            float                 beta_slow,
+            bool                  inverse);
 
     // custom operators
 

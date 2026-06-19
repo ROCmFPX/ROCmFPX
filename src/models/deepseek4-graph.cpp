@@ -909,6 +909,22 @@ static ggml_tensor * dsv4_cache_view_3d(ggml_context * ctx, ggml_tensor * cache,
     return ggml_reshape_3d(ctx, view, cache->ne[0], 1, n_rows);
 }
 
+static void dsv4_prepare_concat_cache_inputs(
+        ggml_context * ctx,
+        ggml_tensor *& a,
+        ggml_tensor *& b) {
+    if (a->type == b->type && !ggml_is_quantized(a->type)) {
+        return;
+    }
+
+    if (a->type != GGML_TYPE_F32) {
+        a = ggml_cast(ctx, a, GGML_TYPE_F32);
+    }
+    if (b->type != GGML_TYPE_F32) {
+        b = ggml_cast(ctx, b, GGML_TYPE_F32);
+    }
+}
+
 } // namespace
 
 llm_build_deepseek4::llm_build_deepseek4(const llama_model & model, const llm_graph_params & params) :
