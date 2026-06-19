@@ -32,6 +32,46 @@ ROCm0, and Vulkan0.
 
 The staging is structured to ensure that the existing ROCmFP4 path remains stable.
 
+## ROCmFP4 Quant / Kernel / Dequant Contract
+
+The ROCmFPX family should be developed as real GGUF model-weight quant formats,
+parallel to `Q4_0_ROCMFP4`, not as a new K/V-cache-only compression layer. K and
+V cache flags are runtime cache-type controls in llama.cpp; they are separate
+from the model-file quant presets listed below.
+
+ROCmFP4 instructions that carry forward:
+
+- **Block shape:** keep 32 weights per block. This preserves the existing
+  Q4/Q8 reduction shape used by CPU dots, HIP MMVQ/MMQ, and Vulkan MMV/MMQ/DMMV
+  paths.
+- **Scale encoding:** use finite unsigned UE4M3 scale bytes and reject invalid
+  scale bytes. ROCmFP4 treats `0x7f` and sign-bit scale bytes as invalid; ROCmFPX
+  validation should follow that rule.
+- **Scale selection:** use reconstruction-MSE search where low-bit coherency
+  depends on local scale quality. ROCmFP4 searches 16-weight half-blocks;
+  ROCmFP3 and ROCmFP6 follow that policy. ROCmFP8 is one 32-weight scale today
+  because it is the high-quality reference point.
+- **Dequantization:** decode integer codes with an explicit codebook/range and
+  multiply by the decoded UE4M3 scale. ROCmFP4 uses Codebook10 at half scale;
+  ROCmFP3/6/8 keep their own code ranges but must keep the same deterministic
+  integer-code-times-scale structure.
+- **Kernel coverage:** do not call a ROCmFPX format runtime-complete until CPU
+  reference, HIP, and Vulkan paths cover `CPY`, `GET_ROWS`, `SET_ROWS`,
+  `MUL_MAT`, and `MUL_MAT_ID`, with backend-op coverage.
+- **Feature parity:** MTP, EAGLE3, speculative decoding, RoPE/attention scaling,
+  tool-calling grammar paths, and long-context behavior should continue to use
+  normal llama.cpp runtime surfaces. The quant format must not require a
+  separate inference stack.
+
+ROCmFP4 Codebook10 itself is not copied into FP3/FP6/FP8. The inherited part is
+the quantization discipline and kernel contract. The ROCmFPX code ranges are:
+
+| Format | Code range | Scale policy |
+|---|---|---|
+| `Q3_0_ROCMFPX` | `0, +/-1, +/-2, +/-4` | two UE4M3 scales, one per 16 weights |
+| `Q6_0_ROCMFPX` | signed magnitude up to `31` | two UE4M3 scales, one per 16 weights |
+| `Q8_0_ROCMFPX` | signed int8 clamped to `[-127, 127]` | one UE4M3 scale per 32 weights |
+
 ## Current Layouts
 
 | Format | Block | BPW | Current Role |

@@ -76,6 +76,7 @@ This snapshot passed the promoted Strix Halo gate with:
 | [`docs/ROCmFP4-MTP-COMPARISON.md`](docs/ROCmFP4-MTP-COMPARISON.md) | Benchmark history and promoted profiles |
 | [`docs/ROCmFP4-DECODE-SPEED-EXPERIMENTS.md`](docs/ROCmFP4-DECODE-SPEED-EXPERIMENTS.md) | Opt-in decode tuning profiles, graph timing, and future quantization research notes |
 | [`docs/ROCmFPX-EXPERIMENT.md`](docs/ROCmFPX-EXPERIMENT.md) | Experimental ROCmFP3/ROCmFP6/ROCmFP8 format staging |
+| [`docs/ROCmFPX-HANDOFF.md`](docs/ROCmFPX-HANDOFF.md) | Operational handoff for ROCmFPX family review, build, quant, and test flow |
 | [`ggml/rocmfp4/README.md`](ggml/rocmfp4/README.md) | Format details and expert HIP tuning knobs |
 
 ## Repository Layout

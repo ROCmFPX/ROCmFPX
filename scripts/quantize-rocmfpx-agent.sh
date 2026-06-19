@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Quantize BF16/F16 GGUFs to ROCmFP4/ROCmFPX with a simple straight-vs-agent choice.
+#
+# Defaults are intentionally conservative for user-facing agent builds:
+#   FORMAT=rocmfp8 PROFILE=agent -> Q8_0_ROCMFPX_AGENT
+#
+# Examples:
+#   SRC=model-BF16.gguf OUT=model-ROCmFP8-AGENT.gguf scripts/quantize-rocmfpx-agent.sh
+#   PROFILE=straight FORMAT=rocmfp8 SRC=model-BF16.gguf OUT=model-ROCmFP8.gguf scripts/quantize-rocmfpx-agent.sh
+#   FORMAT=rocmfp4 PROFILE=agent SRC=model-BF16.gguf OUT=model-ROCmFP4-AGENT.gguf scripts/quantize-rocmfpx-agent.sh
+#   FORMAT=rocmfp6 PROFILE=agent SRC=model-BF16.gguf OUT=model-ROCmFP6-AGENT.gguf scripts/quantize-rocmfpx-agent.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+BUILD_DIR="${BUILD_DIR:-$ROOT/build-strix-rocmfp4}"
+QUANTIZE_BIN="${QUANTIZE_BIN:-$BUILD_DIR/bin/llama-quantize}"
+
+SRC="${SRC:-}"
+OUT="${OUT:-}"
+FORMAT="${FORMAT:-rocmfp8}"
+PROFILE="${PROFILE:-agent}"
+KEEP_SPLIT="${KEEP_SPLIT:-1}"
+DRY_RUN="${DRY_RUN:-0}"
+NTHREADS="${NTHREADS:-}"
+
+usage() {
+    cat <<EOF
+Usage: SRC=/path/to/BF16.gguf OUT=/path/to/out.gguf $(basename "$0")
+
+Required:
+  SRC                 BF16/F16/F32 GGUF input
+  OUT                 Output GGUF path or split-output prefix
+
+Optional:
+  FORMAT=rocmfp8      rocmfp3 | rocmfp4 | rocmfp6 | rocmfp8
+  PROFILE=agent       agent | straight
+  KEEP_SPLIT=1        Preserve input shard count when source is split
+  DRY_RUN=1           Ask llama-quantize for the estimated output size only
+  NTHREADS=N          Optional llama-quantize nthreads argument
+
+Preset mapping:
+  rocmfp3 straight -> Q3_0_ROCMFPX
+  rocmfp3 agent    -> Q3_0_ROCMFPX_AGENT
+  rocmfp4 straight -> Q4_0_ROCMFP4
+  rocmfp4 agent    -> Q4_0_ROCMFP4_COHERENT
+  rocmfp6 straight -> Q6_0_ROCMFPX
+  rocmfp6 agent    -> Q6_0_ROCMFPX_AGENT
+  rocmfp8 straight -> Q8_0_ROCMFPX
+  rocmfp8 agent    -> Q8_0_ROCMFPX_AGENT
+EOF
+}
+
+if [[ -z "$SRC" || -z "$OUT" ]]; then
+    usage >&2
+    exit 2
+fi
+if [[ ! -x "$QUANTIZE_BIN" ]]; then
+    echo "missing llama-quantize: $QUANTIZE_BIN" >&2
+    exit 1
+fi
+if [[ ! -f "$SRC" ]]; then
+    echo "missing source: $SRC" >&2
+    exit 1
+fi
+
+case "$FORMAT:$PROFILE" in
+    rocmfp3:straight) PRESET="Q3_0_ROCMFPX" ;;
+    rocmfp3:agent)    PRESET="Q3_0_ROCMFPX_AGENT" ;;
+    rocmfp4:straight) PRESET="Q4_0_ROCMFP4" ;;
+    rocmfp4:agent)    PRESET="Q4_0_ROCMFP4_COHERENT" ;;
+    rocmfp6:straight) PRESET="Q6_0_ROCMFPX" ;;
+    rocmfp6:agent)    PRESET="Q6_0_ROCMFPX_AGENT" ;;
+    rocmfp8:straight) PRESET="Q8_0_ROCMFPX" ;;
+    rocmfp8:agent)    PRESET="Q8_0_ROCMFPX_AGENT" ;;
+    *)
+        echo "unsupported FORMAT/PROFILE: FORMAT=$FORMAT PROFILE=$PROFILE" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+quant_args=()
+if [[ "$KEEP_SPLIT" == "1" ]]; then
+    quant_args+=(--keep-split)
+fi
+if [[ "$DRY_RUN" == "1" ]]; then
+    quant_args+=(--dry-run)
+fi
+
+mkdir -p "$(dirname "$OUT")"
+
+echo "Source:  $SRC"
+echo "Output:  $OUT"
+echo "Format:  $FORMAT"
+echo "Profile: $PROFILE"
+echo "Preset:  $PRESET"
+echo "Split:   $KEEP_SPLIT"
+
+if [[ -n "$NTHREADS" ]]; then
+    "$QUANTIZE_BIN" "${quant_args[@]}" "$SRC" "$OUT" "$PRESET" "$NTHREADS"
+else
+    "$QUANTIZE_BIN" "${quant_args[@]}" "$SRC" "$OUT" "$PRESET"
+fi
+
+if [[ "$DRY_RUN" != "1" ]]; then
+    python3 - "$SRC" "$OUT" "$FORMAT" "$PROFILE" "$PRESET" <<'PY'
+import glob
+import json
+import os
+import sys
+
+src, out, fmt, profile, preset = sys.argv[1:6]
+stem, ext = os.path.splitext(out)
+paths = sorted(glob.glob(f"{stem}-*-of-*{ext}")) or ([out] if os.path.exists(out) else [])
+print(json.dumps({
+    "status": "pass",
+    "source": src,
+    "output": out,
+    "format": fmt,
+    "profile": profile,
+    "preset": preset,
+    "files": [{"path": p, "bytes": os.path.getsize(p)} for p in paths],
+}, indent=2))
+PY
+fi

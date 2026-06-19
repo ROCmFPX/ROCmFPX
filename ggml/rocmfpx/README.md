@@ -5,6 +5,32 @@ ROCmFP8 quantization family. It is intentionally separate from `ggml/rocmfp4/`
 so the promoted ROCmFP4 GGUF formats and kernels are not affected while the new
 layouts are evaluated.
 
+## ROCmFP4 Instructions To Preserve
+
+ROCmFPX is a sibling model-weight quant family, not a new K/V-only compression
+scheme. The promoted ROCmFP4 implementation remains the template for how the
+family should behave in llama.cpp:
+
+- Keep 32-weight blocks so CPU, HIP, and Vulkan kernels can reuse the same
+  Q4/Q8-style reduction shape and GGUF row-size assumptions.
+- Use finite unsigned UE4M3 scale bytes only. `0x7f` and sign-bit scale bytes
+  are invalid, matching the ROCmFP4 validation rule.
+- Prefer reconstruction-MSE scale selection over plain max-abs scaling. ROCmFP4
+  searches each 16-weight half-block; ROCmFP3 and ROCmFP6 follow the same
+  half-block policy, while ROCmFP8 currently uses one full-block scale.
+- Preserve the ROCmFP4 kernel contract: CPU reference quant/dequant/dot first,
+  then HIP/Vulkan `CPY`, `GET_ROWS`, `SET_ROWS`, `MUL_MAT`, and `MUL_MAT_ID`
+  paths, with backend-op coverage before claiming runtime support.
+- Keep dequant math explicit and deterministic: integer code times decoded
+  UE4M3 scale. ROCmFP4 uses the Codebook10 half-scale table; ROCmFPX formats
+  use their own integer code ranges but must retain the same finite-scale and
+  integer-dot discipline.
+
+The ROCmFP4 Codebook10 levels are not reused by FP3/FP6/FP8 directly:
+`ROCmFP3` uses `0, +/-1, +/-2, +/-4`, `ROCmFP6` uses signed-magnitude levels up
+to `31`, and `ROCmFP8` uses signed int8 levels clamped to `[-127, 127]`.
+What is inherited is the block/scale/kernel/dequant contract.
+
 Current status (June 16, 2026):
 - CPU reference quantize/dequantize exists for all three formats.
 - `Q3_0_ROCMFPX`, `Q6_0_ROCMFPX`, and `Q8_0_ROCMFPX` are registered as

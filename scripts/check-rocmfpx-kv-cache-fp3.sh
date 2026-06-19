@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Regression gate: fp3 KV cache (-ctk/-ctv q3_0_rocmfpx) must not produce garbage.
-# Requires flash-attn on (quantized V cache). fp3 K routes to FA tile kernel (vec KQ drifts).
+# Regression gate: fp3-facing KV cache flags must not produce garbage.
+# q3_0_rocmfpx is coherent as V cache, but q3 K is below the Hermes/tool-call
+# coherency floor. The CLI promotes -ctk q3_0_rocmfpx to q6_0_rocmfpx and keeps
+# -ctv q3_0_rocmfpx, so this gate verifies the safe public behavior.
 #
 # Re-run after changes to ggml/rocmfpx/, set-rows.cu, cpy-utils.cuh, or fattn-*.
 
