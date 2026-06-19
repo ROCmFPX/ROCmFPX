@@ -120,17 +120,30 @@ The main wrapper is:
 scripts/quantize-rocmfpx-agent.sh
 ```
 
-Examples:
+Family quants:
 
 ```bash
-SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q8_0_ROCMFPX_AGENT.gguf \
-  FORMAT=rocmfp8 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
-
-SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q4_0_ROCMFP4_COHERENT_AGENT.gguf \
-  FORMAT=rocmfp4 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q3_0_ROCMFPX.gguf \
+  FORMAT=rocmfp3 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
 
 SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q6_0_ROCMFPX.gguf \
   FORMAT=rocmfp6 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
+
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q8_0_ROCMFPX.gguf \
+  FORMAT=rocmfp8 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
+```
+
+Agent quants:
+
+```bash
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q3_0_ROCMFPX_AGENT.gguf \
+  FORMAT=rocmfp3 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
+
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q6_0_ROCMFPX_AGENT.gguf \
+  FORMAT=rocmfp6 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
+
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q8_0_ROCMFPX_AGENT.gguf \
+  FORMAT=rocmfp8 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
 ```
 
 The wrapper maps to these presets:
@@ -143,6 +156,26 @@ The wrapper maps to these presets:
 - agent FP6 -> `Q6_0_ROCMFPX_AGENT`
 - straight FP8 -> `Q8_0_ROCMFPX`
 - agent FP8 -> `Q8_0_ROCMFPX_AGENT`
+
+For ROCmFP4 agent use, the matching form is:
+
+```bash
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q4_0_ROCMFP4_COHERENT_AGENT.gguf \
+  FORMAT=rocmfp4 PROFILE=agent scripts/quantize-rocmfpx-agent.sh
+```
+
+Agent-specific dequant/routing policy:
+
+- keep token and output embeddings protected
+- keep attention Q/K/V/O at higher precision than the bulk model
+- keep selected FFN-down tensors higher precision
+- keep selective FFN-gate tensors higher precision
+- leave bulk FFN-up tensors on the family format
+
+In practice, the agent presets are still ROCmFPX quants, but the tensor mix is
+tuned for structured output and tool use rather than minimum size. They do not
+introduce a new dequant kernel; they use the same ROCmFPX math and a more
+protected tensor selection.
 
 ## How To Test
 
