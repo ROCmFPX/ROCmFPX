@@ -1,14 +1,17 @@
 # ROCmFPX for llama.cpp
 
-Experimental AMD-focused ROCmFP3, ROCmFP6, and ROCmFP8 quantization formats for
-`llama.cpp`, built on the ROCmFP4 research branch.
+Experimental AMD-focused ROCmFP3, ROCmFP4, ROCmFP6, and ROCmFP8 quantization
+formats for `llama.cpp`.
 
-This branch is for people who want to download, compile, quantize, and test the
-ROCmFPX family directly from:
+This repository is for people who want to download, compile, quantize, and test
+the ROCmFPX family directly from:
 
 ```text
 https://github.com/charlie12345/ROCmFPX/tree/experimental-rocmfpx-branch
 ```
+
+The same source is intended to live on `main` so GitHub shows the ROCmFPX
+instructions by default.
 
 > Status: experimental research build. Results are hardware-, driver-, model-,
 > and prompt-sensitive. Use BF16/F16 sources for real quality tests.
@@ -20,6 +23,7 @@ ROCmFPX is a family of GGUF model-weight quants:
 | Family name | GGUF preset | Role |
 |---|---|---|
 | ROCmFP3 | `Q3_0_ROCMFPX` | smallest experimental ROCmFPX weight format |
+| ROCmFP4 | `Q4_0_ROCMFP4`, `Q4_0_ROCMFP4_FAST` | promoted 4-bit ROCm family baseline |
 | ROCmFP6 | `Q6_0_ROCMFPX` | middle quality/size ROCmFPX weight format |
 | ROCmFP8 | `Q8_0_ROCMFPX` | high-quality ROCmFPX reference format |
 
@@ -35,6 +39,16 @@ Agent-specific versions are also available:
 ROCmFPX is not a K/V-cache-only compression trick. It is a set of actual GGUF
 model-weight tensor formats with CPU reference paths plus ROCm/HIP and Vulkan
 kernel coverage.
+
+## Contributors And Credit
+
+This work builds on `llama.cpp`; upstream authors and contributors retain credit
+under the MIT license. See `AUTHORS`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`.
+
+ROCmFP4 and ROCmFPX experiment work in this branch was driven by
+`charlie12345` / `caf`, with iterative code and review assistance from Codex,
+Grok, Gemini, and Composer 2.5. Preserve these credits when copying the branch
+or publishing derived builds.
 
 ## Why It Is Different From Regular Quants
 
@@ -59,6 +73,11 @@ FFN-gate tensors.
 ```bash
 git clone https://github.com/charlie12345/ROCmFPX.git
 cd ROCmFPX
+```
+
+If you specifically want the experimental branch name:
+
+```bash
 git checkout experimental-rocmfpx-branch
 ```
 
@@ -103,6 +122,13 @@ SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q3_0_ROCMFPX.gguf \
   FORMAT=rocmfp3 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
 ```
 
+ROCmFP4:
+
+```bash
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q4_0_ROCMFP4.gguf \
+  FORMAT=rocmfp4 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
+```
+
 ROCmFP6:
 
 ```bash
@@ -121,6 +147,7 @@ You can also call `llama-quantize` directly:
 
 ```bash
 build-strix-rocmfp4/bin/llama-quantize source.gguf out-q3.gguf Q3_0_ROCMFPX
+build-strix-rocmfp4/bin/llama-quantize source.gguf out-q4.gguf Q4_0_ROCMFP4
 build-strix-rocmfp4/bin/llama-quantize source.gguf out-q6.gguf Q6_0_ROCMFPX
 build-strix-rocmfp4/bin/llama-quantize source.gguf out-q8.gguf Q8_0_ROCMFPX
 ```
