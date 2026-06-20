@@ -72,11 +72,97 @@ shared FLOAT_TYPEV4 kvsh[V_SHMEM_STAGING ? Bc * kvsh_stride : 1];
 shared block_a_cache kblocksh[K_SHMEM_STAGING ? Bc * qf_stride : 1];
 #endif
 
+#ifndef MMQ
+const bool TURBO_K = (FaTypeK == FA_TYPE_TURBO3_0) || (FaTypeK == FA_TYPE_TURBO4_0);
+const bool TURBO_V = (FaTypeV == FA_TYPE_TURBO3_0) || (FaTypeV == FA_TYPE_TURBO4_0);
+const bool TURBO_WHT = TURBO_K || TURBO_V;
+const uint32_t TURBO_WHT_STRIDE = D;
+shared float turbo_wht_sh[TURBO_WHT ? Br * TURBO_WHT_STRIDE : 1];
+#endif
+
 shared vec4 occupancy_limiter[LIMIT_OCCUPANCY_SHMEM > 0 ? LIMIT_OCCUPANCY_SHMEM : 1];
 
 #ifdef MMQ
 #include "flash_attn_mmq_funcs.glsl"
 #include "flash_attn_mmq_v_funcs.glsl"
+#endif
+
+#ifndef MMQ
+float fa_qf_get(uint32_t r, uint32_t e) {
+    const uint32_t idx = r * qf_stride + (e >> 2);
+    switch (e & 3u) {
+        case 0u: return float(Qf[idx].x);
+        case 1u: return float(Qf[idx].y);
+        case 2u: return float(Qf[idx].z);
+        default: return float(Qf[idx].w);
+    }
+}
+
+void fa_qf_set(uint32_t r, uint32_t e, float v) {
+    const uint32_t idx = r * qf_stride + (e >> 2);
+    switch (e & 3u) {
+        case 0u: Qf[idx].x = FLOAT_TYPE(v); break;
+        case 1u: Qf[idx].y = FLOAT_TYPE(v); break;
+        case 2u: Qf[idx].z = FLOAT_TYPE(v); break;
+        default: Qf[idx].w = FLOAT_TYPE(v); break;
+    }
+}
+
+void turbo_wht_rows(uint32_t head_dim, uint32_t tid) {
+    barrier();
+    for (uint32_t h = 1u; h < head_dim; h <<= 1u) {
+        for (uint32_t idx = tid; idx < Br * (head_dim >> 1); idx += gl_WorkGroupSize.x) {
+            const uint32_t row = idx / (head_dim >> 1);
+            const uint32_t pair = idx % (head_dim >> 1);
+            const uint32_t g = pair / h;
+            const uint32_t pos = pair % h;
+            const uint32_t i0 = row * TURBO_WHT_STRIDE + g * h * 2u + pos;
+            const uint32_t i1 = i0 + h;
+            const float a = turbo_wht_sh[i0];
+            const float b = turbo_wht_sh[i1];
+            turbo_wht_sh[i0] = a + b;
+            turbo_wht_sh[i1] = a - b;
+        }
+        barrier();
+    }
+
+    const float wht_scale = (head_dim == 256u) ? 0.0625 : 0.08838834764831844;
+    for (uint32_t idx = tid; idx < Br * head_dim; idx += gl_WorkGroupSize.x) {
+        const uint32_t row = idx / head_dim;
+        const uint32_t elem = idx % head_dim;
+        turbo_wht_sh[row * TURBO_WHT_STRIDE + elem] *= wht_scale;
+    }
+    barrier();
+}
+
+void turbo_wht_q(uint32_t tid) {
+    for (uint32_t idx = tid; idx < Br * HSK; idx += gl_WorkGroupSize.x) {
+        const uint32_t row = idx / HSK;
+        const uint32_t elem = idx % HSK;
+        const bool valid = i * Br + row < N;
+        turbo_wht_sh[row * TURBO_WHT_STRIDE + elem] = valid ? fa_qf_get(row, elem) : 0.0f;
+    }
+
+    turbo_wht_rows(HSK, tid);
+
+    for (uint32_t idx = tid; idx < Br * HSK; idx += gl_WorkGroupSize.x) {
+        const uint32_t row = idx / HSK;
+        const uint32_t elem = idx % HSK;
+        if (i * Br + row < N) {
+            fa_qf_set(row, elem, turbo_wht_sh[row * TURBO_WHT_STRIDE + elem]);
+        }
+    }
+    barrier();
+}
+
+vec4 turbo_wht_vec4(uint32_t row, uint32_t vec_idx) {
+    const uint32_t elem = 4u * vec_idx;
+    const uint32_t base = row * TURBO_WHT_STRIDE + elem;
+    return vec4(turbo_wht_sh[base + 0u],
+                turbo_wht_sh[base + 1u],
+                turbo_wht_sh[base + 2u],
+                turbo_wht_sh[base + 3u]);
+}
 #endif
 
 void main() {
@@ -150,6 +236,12 @@ void main() {
 #endif
     }
     barrier();
+
+#ifndef MMQ
+    if (TURBO_K) {
+        turbo_wht_q(tid);
+    }
+#endif
 
     FLOAT_TYPEV4 Of[rows_per_thread][HSV_per_thread / 4];
     [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
@@ -993,6 +1085,36 @@ void main() {
         }
     }
 
+#ifndef MMQ
+    if (TURBO_V) {
+        for (uint32_t idx = tid; idx < Br * HSV; idx += gl_WorkGroupSize.x) {
+            const uint32_t row = idx / HSV;
+            const uint32_t elem = idx % HSV;
+            turbo_wht_sh[row * TURBO_WHT_STRIDE + elem] = 0.0f;
+        }
+        barrier();
+
+        if (col_tid == 0) {
+            [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
+                const uint32_t row = tile_row(r);
+                if (i * Br + row < N) {
+                    [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
+                        const uint32_t vec_idx = d * D_split + d_tid;
+                        const uint32_t elem = 4u * vec_idx;
+                        const uint32_t base = row * TURBO_WHT_STRIDE + elem;
+                        turbo_wht_sh[base + 0u] = float(Of[r][d].x);
+                        turbo_wht_sh[base + 1u] = float(Of[r][d].y);
+                        turbo_wht_sh[base + 2u] = float(Of[r][d].z);
+                        turbo_wht_sh[base + 3u] = float(Of[r][d].w);
+                    }
+                }
+            }
+        }
+
+        turbo_wht_rows(HSV, tid);
+    }
+#endif
+
     uint32_t o_offset = (gqa_iq1*p.ne1*HSV + iq3*p.ne2*p.ne1*HSV) / 4;
 
     if (p.gqa_ratio > 1) {
@@ -1000,7 +1122,17 @@ void main() {
             const uint row = tile_row(r);
             if (row < N) {
                 [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
-                    gqaStore(row, d * D_split + d_tid, Of[r][d], o_offset, iq2, N);
+#ifndef MMQ
+                    if (TURBO_V) {
+                        const uint32_t vec_idx = d * D_split + d_tid;
+                        if (col_tid == 0) {
+                            data_ov4[o_offset + (iq2 + row) * HSV / 4 + vec_idx] = D_TYPEV4(turbo_wht_vec4(row, vec_idx));
+                        }
+                    } else
+#endif
+                    {
+                        gqaStore(row, d * D_split + d_tid, Of[r][d], o_offset, iq2, N);
+                    }
                 }
             }
         }
@@ -1009,7 +1141,17 @@ void main() {
             const uint row = tile_row(r);
             if (i * Br + row < N) {
                 [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
-                    data_ov4[o_offset + (iq2 * HSV + (i * Br + row) * p.ne1 * HSV) / 4 + d * D_split + d_tid] = D_TYPEV4(Of[r][d]);
+#ifndef MMQ
+                    if (TURBO_V) {
+                        const uint32_t vec_idx = d * D_split + d_tid;
+                        if (col_tid == 0) {
+                            data_ov4[o_offset + (iq2 * HSV + (i * Br + row) * p.ne1 * HSV) / 4 + vec_idx] = D_TYPEV4(turbo_wht_vec4(row, vec_idx));
+                        }
+                    } else
+#endif
+                    {
+                        data_ov4[o_offset + (iq2 * HSV + (i * Br + row) * p.ne1 * HSV) / 4 + d * D_split + d_tid] = D_TYPEV4(Of[r][d]);
+                    }
                 }
             }
         }

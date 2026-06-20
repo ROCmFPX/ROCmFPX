@@ -107,6 +107,8 @@ layout (binding = 6) readonly buffer MO {uint32_t data_mask_opt[];};
 #define FA_TYPE_Q6_0_ROCMFPX      102u
 #define FA_TYPE_Q8_0_ROCMFPX      103u
 #define FA_TYPE_Q3_0_ROCMFPX      104u
+#define FA_TYPE_TURBO3_0          105u
+#define FA_TYPE_TURBO4_0          106u
 
 #if defined(BFLOAT16)
 #define O_TYPE float
@@ -138,6 +140,8 @@ uint fa_block_elems(uint ty) {
         case FA_TYPE_Q6_0_ROCMFPX:
         case FA_TYPE_Q8_0_ROCMFPX:
             return uint(QUANT_K_ROCMFPX_FP8);
+        case FA_TYPE_TURBO3_0: return uint(QUANT_K_TURBO3_0);
+        case FA_TYPE_TURBO4_0: return uint(QUANT_K_TURBO4_0);
         default:           return 1u;
     }
 }

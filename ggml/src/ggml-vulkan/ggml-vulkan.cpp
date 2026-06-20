@@ -148,6 +148,12 @@ static bool ggml_vk_is_turbo_type(ggml_type type) {
     return type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0;
 }
 
+static bool ggml_vk_flash_attn_turbo_fused_support(uint32_t hsk, uint32_t hsv, ggml_type k_type, ggml_type v_type) {
+    return (ggml_vk_is_turbo_type(k_type) || ggml_vk_is_turbo_type(v_type)) &&
+           hsk == hsv &&
+           (hsk == 128 || hsk == 256);
+}
+
 #define VK_VENDOR_ID_AMD 0x1002
 #define VK_VENDOR_ID_APPLE 0x106b
 #define VK_VENDOR_ID_INTEL 0x8086
@@ -1717,6 +1723,7 @@ struct vk_op_flash_attn_split_k_reduce_push_constants {
     uint32_t ne3;
     uint32_t k_num;
     uint32_t sinks;
+    uint32_t flags;
 };
 
 struct vk_op_flash_attn_mask_opt_push_constants {
@@ -3322,8 +3329,12 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
                                v_type == GGML_TYPE_Q4_0_ROCMFP4 || v_type == GGML_TYPE_Q4_0_ROCMFP4_FAST ||
                                v_type == GGML_TYPE_Q3_0_ROCMFPX || v_type == GGML_TYPE_Q6_0_ROCMFPX ||
                                v_type == GGML_TYPE_Q8_0_ROCMFPX;
+    const bool turbo_kv = ggml_vk_is_turbo_type(k_type) || ggml_vk_is_turbo_type(v_type);
 
     if (rocm_quant_kv) {
+        path = FA_SCALAR;
+    }
+    if (turbo_kv) {
         path = FA_SCALAR;
     }
 
@@ -10008,7 +10019,8 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
         kblocksh_size = 0;
     }
 
-    const uint32_t total_size = tmpsh + tmpshv4 + masksh + iq_shmem + Qf + kvsh + kblocksh_size;
+    const uint32_t turbo_wht_sh = (ggml_vk_is_turbo_type(k_type) || ggml_vk_is_turbo_type(v_type)) ? Br * std::max(hsk, hsv) * sizeof(float) : 0;
+    const uint32_t total_size = tmpsh + tmpshv4 + masksh + iq_shmem + Qf + kvsh + kblocksh_size + turbo_wht_sh;
     const bool supported = total_size <= device->properties.limits.maxComputeSharedMemorySize;
 
     VK_LOG_DEBUG("ggml_vk_flash_attn_scalar_shmem_support(HSK=" << hsk << ", HSV=" << hsv << ", mmq=" << mmq << ", total_size=" << total_size << ", supported=" << supported);
@@ -10056,7 +10068,8 @@ static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, co
 
     const uint32_t slope = Br * acctype;
 
-    const uint32_t total_size = tmpsh + iq_shmem + Qf + Psh + sfsh + ksh + pvsh + slope;
+    const uint32_t turbo_wht_sh = (ggml_vk_is_turbo_type(k_type) || ggml_vk_is_turbo_type(v_type)) ? (Br / row_split) * std::max(hsk, hsv) * sizeof(float) : 0;
+    const uint32_t total_size = tmpsh + iq_shmem + Qf + Psh + sfsh + ksh + pvsh + slope + turbo_wht_sh;
     const bool supported = total_size <= device->properties.limits.maxComputeSharedMemorySize;
 
     VK_LOG_DEBUG("ggml_vk_flash_attn_coopmat_shmem_support(HSK=" << hsk << ", HSV=" << hsv << ", f32acc=" << f32acc << ", total_size=" << total_size << ", supported=" << supported);
@@ -10117,8 +10130,11 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     assert(q->type == GGML_TYPE_F32);
     const bool k_turbo = ggml_vk_is_turbo_type(k->type);
     const bool v_turbo = ggml_vk_is_turbo_type(v->type);
-    const ggml_type k_fa_type = k_turbo ? GGML_TYPE_F16 : k->type;
-    const ggml_type v_fa_type = v_turbo ? GGML_TYPE_F16 : v->type;
+    const bool turbo_fused = ggml_vk_flash_attn_turbo_fused_support(HSK, HSV, k->type, v->type);
+    const bool k_predequant = k_turbo && !turbo_fused;
+    const bool v_predequant = v_turbo && !turbo_fused;
+    const ggml_type k_fa_type = k_predequant ? GGML_TYPE_F16 : k->type;
+    const ggml_type v_fa_type = v_predequant ? GGML_TYPE_F16 : v->type;
     uint32_t gqa_ratio = 1;
     uint32_t qk_ratio = neq2 / nek2;
     uint32_t workgroups_x = (uint32_t)neq1;
@@ -10144,11 +10160,11 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
     tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, N, KV, k_fa_type, v_fa_type, f32acc);
 
-    // Turbo pre-dequant preserves KV-cache memory order ([head_dim, head, kv])
+    // Turbo fallback pre-dequant preserves KV-cache memory order ([head_dim, head, kv])
     // and uses strides here to present the graph's logical [head_dim, kv, head] view to FA.
     const uint32_t q_stride = (uint32_t)(nbq1 / ggml_type_size(q->type));
-    uint32_t k_stride = k_turbo ? HSK * (uint32_t) nek2 : (uint32_t)(nbk1 / ggml_type_size(k->type));
-    uint32_t v_stride = v_turbo ? HSV * (uint32_t) nev2 : (uint32_t)(nbv1 / ggml_type_size(v->type));
+    uint32_t k_stride = k_predequant ? HSK * (uint32_t) nek2 : (uint32_t)(nbk1 / ggml_type_size(k->type));
+    uint32_t v_stride = v_predequant ? HSV * (uint32_t) nev2 : (uint32_t)(nbv1 / ggml_type_size(v->type));
 
     // For F32, the shader treats it as a block of size 4 (for vec4 loads)
     if (k_fa_type == GGML_TYPE_F32) {
@@ -10254,26 +10270,26 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     const uint64_t v_ne = ggml_nelements(v);
     const uint64_t k_quant_size = k_ne * ggml_type_size(k->type) / ggml_blck_size(k->type);
     const uint64_t v_quant_size = v_ne * ggml_type_size(v->type) / ggml_blck_size(v->type);
-    const uint64_t k_dequant_size = k_turbo ? k_ne * sizeof(ggml_fp16_t) : 0;
-    const uint64_t v_dequant_size = v_turbo ? v_ne * sizeof(ggml_fp16_t) : 0;
-    const uint64_t mask_opt_offset = v_turbo ? ggml_vk_align_size(v_dequant_size, ctx->device->properties.limits.minStorageBufferOffsetAlignment) : 0;
+    const uint64_t k_dequant_size = k_predequant ? k_ne * sizeof(ggml_fp16_t) : 0;
+    const uint64_t v_dequant_size = v_predequant ? v_ne * sizeof(ggml_fp16_t) : 0;
+    const uint64_t mask_opt_offset = v_predequant ? ggml_vk_align_size(v_dequant_size, ctx->device->properties.limits.minStorageBufferOffsetAlignment) : 0;
     uint64_t fa_prealloc_y_size = v_dequant_size;
     if (use_mask_opt) {
         fa_prealloc_y_size = std::max(fa_prealloc_y_size, mask_opt_offset + mask_opt_size);
     }
 
-    if ((k_turbo && k_dequant_size > ctx->device->properties.limits.maxStorageBufferRange) ||
-        (v_turbo && v_dequant_size > ctx->device->properties.limits.maxStorageBufferRange) ||
+    if ((k_predequant && k_dequant_size > ctx->device->properties.limits.maxStorageBufferRange) ||
+        (v_predequant && v_dequant_size > ctx->device->properties.limits.maxStorageBufferRange) ||
         (use_mask_opt && mask_opt_size > ctx->device->properties.limits.maxStorageBufferRange)) {
         GGML_ABORT("Requested preallocation size is too large");
     }
 
-    vk_pipeline k_to_fp16 = k_turbo ? ggml_vk_get_to_fp16(ctx, k->type) : nullptr;
-    vk_pipeline v_to_fp16 = v_turbo ? ggml_vk_get_to_fp16(ctx, v->type) : nullptr;
-    GGML_ASSERT(!k_turbo || k_to_fp16 != nullptr);
-    GGML_ASSERT(!v_turbo || v_to_fp16 != nullptr);
+    vk_pipeline k_to_fp16 = k_predequant ? ggml_vk_get_to_fp16(ctx, k->type) : nullptr;
+    vk_pipeline v_to_fp16 = v_predequant ? ggml_vk_get_to_fp16(ctx, v->type) : nullptr;
+    GGML_ASSERT(!k_predequant || k_to_fp16 != nullptr);
+    GGML_ASSERT(!v_predequant || v_to_fp16 != nullptr);
 
-    if (k_turbo && ctx->prealloc_size_x < k_dequant_size) {
+    if (k_predequant && ctx->prealloc_size_x < k_dequant_size) {
         ctx->prealloc_size_x = k_dequant_size;
         ggml_vk_preallocate_buffers(ctx, subctx);
     }
@@ -10282,10 +10298,10 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         ggml_vk_preallocate_buffers(ctx, subctx);
     }
 
-    if (k_turbo) {
+    if (k_predequant) {
         ggml_pipeline_request_descriptor_sets(ctx, k_to_fp16, 1);
     }
-    if (v_turbo) {
+    if (v_predequant) {
         ggml_pipeline_request_descriptor_sets(ctx, v_to_fp16, 1);
     }
 
@@ -10322,7 +10338,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
     uint32_t mask_n_head_log2 = ((sinks != nullptr) << 24) | n_head_log2;
 
-    if (k_turbo) {
+    if (k_predequant) {
         if (ctx->prealloc_x_need_sync) {
             ggml_vk_sync_buffers(ctx, subctx);
         }
@@ -10334,7 +10350,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         ggml_vk_sync_buffers(ctx, subctx);
     }
 
-    if (v_turbo) {
+    if (v_predequant) {
         if (ctx->prealloc_y_need_sync) {
             ggml_vk_sync_buffers(ctx, subctx);
         }
@@ -10375,10 +10391,10 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         ctx->prealloc_y_last_decode_vector_staging = false;
     }
 
-    const uint32_t k_nb2 = k_turbo ? (uint32_t)(HSK * sizeof(ggml_fp16_t)) : (uint32_t)nbk2;
-    const uint32_t k_nb3 = k_turbo ? (uint32_t)(HSK * KV * nek2 * sizeof(ggml_fp16_t)) : (uint32_t)nbk3;
-    const uint32_t v_nb2 = v_turbo ? (uint32_t)(HSV * sizeof(ggml_fp16_t)) : (uint32_t)nbv2;
-    const uint32_t v_nb3 = v_turbo ? (uint32_t)(HSV * KV * nev2 * sizeof(ggml_fp16_t)) : (uint32_t)nbv3;
+    const uint32_t k_nb2 = k_predequant ? (uint32_t)(HSK * sizeof(ggml_fp16_t)) : (uint32_t)nbk2;
+    const uint32_t k_nb3 = k_predequant ? (uint32_t)(HSK * KV * nek2 * sizeof(ggml_fp16_t)) : (uint32_t)nbk3;
+    const uint32_t v_nb2 = v_predequant ? (uint32_t)(HSV * sizeof(ggml_fp16_t)) : (uint32_t)nbv2;
+    const uint32_t v_nb3 = v_predequant ? (uint32_t)(HSV * KV * nev2 * sizeof(ggml_fp16_t)) : (uint32_t)nbv3;
 
     const vk_flash_attn_push_constants pc = { N, KV,
                                               (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3,
@@ -10416,10 +10432,11 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
                                     pc, { dispatch_x, workgroups_y, workgroups_z });
 
         ggml_vk_sync_buffers(ctx, subctx);
-        const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr) };
+        const uint32_t split_k_flags = (turbo_fused && v_turbo) ? 1u : 0u;
+        const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr), split_k_flags };
         ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_flash_attn_split_k_reduce,
                                     {split_k_buf, sinks_buf, dst_buf},
-                                    pc2, { (uint32_t)ne1, HSV, (uint32_t)(ne2 * ne3) });
+                                    pc2, { (uint32_t)ne1, split_k_flags != 0 ? 1u : HSV, (uint32_t)(ne2 * ne3) });
         ctx->prealloc_split_k_need_sync = true;
     } else {
         if (gqa_ratio > 1) {
@@ -16894,6 +16911,8 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q3_0_ROCMFPX:
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_Q1_0:
+                    case GGML_TYPE_TURBO3_0:
+                    case GGML_TYPE_TURBO4_0:
                         return true;
                     default:
                         return false;
@@ -16970,6 +16989,8 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q3_0_ROCMFPX:
                     case GGML_TYPE_Q6_0_ROCMFPX:
                     case GGML_TYPE_Q8_0_ROCMFPX:
+                    case GGML_TYPE_TURBO3_0:
+                    case GGML_TYPE_TURBO4_0:
                         return true;
                     default:
                         return false;

@@ -17,9 +17,13 @@ layout (push_constant) uniform parameter {
     uint ne3;
     uint k_num;
     uint sinks;
+    uint flags;
 } p;
 
+#define FA_SPLIT_K_TURBO_V_WHT 1u
+
 shared float tmpsh[BLOCK_SIZE];
+shared float osh[256];
 
 void main() {
     // Each workgroup handles a row
@@ -93,6 +97,49 @@ void main() {
     }
 
     L = (L == 0.0) ? 0.0 : 1.0 / L;
+
+    if ((p.flags & FA_SPLIT_K_TURBO_V_WHT) != 0u) {
+        for (uint d = tid; d < D; d += BLOCK_SIZE) {
+            float O = 0.0;
+            [[unroll]] for (uint k = 0; k < k_num; ++k) {
+                uint o_offset = D * p.ne1 * (k + p.k_num * (i2 + p.ne2 * i3)) + D * n + d;
+                float m = data_a[m_offset + k * lm_stride];
+                O += exp(m - m_max) * data_a[o_offset];
+            }
+            if (p.sinks != 0) {
+                if (sink > m_max) {
+                    float ms = 1.0f;
+                    ms = exp(m_max - sink);
+                    O *= ms;
+                }
+            }
+            osh[d] = O * L;
+        }
+        barrier();
+
+        for (uint h = 1u; h < D; h <<= 1u) {
+            for (uint pair = tid; pair < (D >> 1); pair += BLOCK_SIZE) {
+                const uint g = pair / h;
+                const uint pos = pair % h;
+                const uint i0 = g * h * 2u + pos;
+                const uint i1 = i0 + h;
+                const float a = osh[i0];
+                const float b = osh[i1];
+                osh[i0] = a + b;
+                osh[i1] = a - b;
+            }
+            barrier();
+        }
+
+        const float wht_scale = (D == 256u) ? 0.0625 : 0.08838834764831844;
+        const float FLT_MAX = uintBitsToFloat(0x7F7FFFFF);
+        for (uint d = tid; d < D; d += BLOCK_SIZE) {
+            float O = osh[d] * wht_scale;
+            O = clamp(O, -FLT_MAX, FLT_MAX);
+            data_d[(i3 * p.ne2 + i2) * p.ne1 * D + D * n + d] = O;
+        }
+        return;
+    }
 
     // D dimension is split across workgroups in the y dimension
     uint d = tid + gl_WorkGroupID.y * BLOCK_SIZE;
