@@ -11,6 +11,14 @@ from pathlib import Path
 
 
 SHORT_CONTEXT_LIMIT = 49152
+# Context ladder breakpoints derived from ROCmFPX-EXPERIMENT.md acceptance-rate data.
+# Acceptance drops noticeably past ~32k and deteriorates through 128k.
+CONTEXT_BREAKPOINTS = [
+    (16384,  4, 0.75),   # <16k tokens  : aggressive,  high confidence
+    (49152,  4, 0.25),   # 16k-48k      : moderate cap, lower floor
+    (98304,  2, 0.0),    # 48k-96k      : conservative cap
+    (float("inf"), 1, 0.0),  # >96k     : minimal draft, avoid latency penalty
+]
 PROFILES = ("fp3-mtp", "fp4-general", "dense-coder")
 
 
@@ -30,7 +38,7 @@ def tokenize_count(base_url: str, content: str, api_key: str | None) -> int:
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=300) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:
         data = json.loads(response.read().decode("utf-8"))
     tokens = data.get("tokens")
     if not isinstance(tokens, list):
@@ -39,28 +47,51 @@ def tokenize_count(base_url: str, content: str, api_key: str | None) -> int:
 
 
 def choose_profile(prompt_tokens: int, profile: str) -> dict[str, float | int]:
+    # dense-coder: high draft depth, still scaled back at extreme context.
     if profile == "dense-coder":
+        if prompt_tokens >= 98304:
+            return {
+                "speculative.n_max": 3,
+                "speculative.n_min": 0,
+                "speculative.p_min": 0.0,
+                "speculative.p_split": 0.10,
+            }
         return {
             "speculative.n_max": 6,
             "speculative.n_min": 0,
             "speculative.p_min": 0.0,
+            "speculative.p_split": 0.20,
         }
+    # fp4-general: flat moderate profile, still backs off at long context.
     if profile == "fp4-general":
+        if prompt_tokens >= 98304:
+            return {
+                "speculative.n_max": 2,
+                "speculative.n_min": 0,
+                "speculative.p_min": 0.0,
+                "speculative.p_split": 0.10,
+            }
         return {
             "speculative.n_max": 4,
             "speculative.n_min": 0,
             "speculative.p_min": 0.0,
+            "speculative.p_split": 0.10,
         }
-    if profile == "fp3-mtp" and prompt_tokens < SHORT_CONTEXT_LIMIT:
-        return {
-            "speculative.n_max": 4,
-            "speculative.n_min": 0,
-            "speculative.p_min": 0.75,
-        }
+    # fp3-mtp: 4-bracket ladder matching the acceptance-rate evidence.
+    for token_limit, n_max, p_min in CONTEXT_BREAKPOINTS:
+        if prompt_tokens < token_limit:
+            return {
+                "speculative.n_max": n_max,
+                "speculative.n_min": 0,
+                "speculative.p_min": p_min,
+                "speculative.p_split": 0.10,
+            }
+    # Should never reach here given the inf sentinel, but be safe.
     return {
-        "speculative.n_max": 2,
+        "speculative.n_max": 1,
         "speculative.n_min": 0,
         "speculative.p_min": 0.0,
+        "speculative.p_split": 0.10,
     }
 
 

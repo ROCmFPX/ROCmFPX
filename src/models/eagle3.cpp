@@ -25,7 +25,7 @@ void llama_model_eagle3::load_arch_hparams(llama_model_loader & ml) {
     // compatible with Readhat eagle3 speculator model
     ml.get_key(LLM_KV_NORM_BEFORE_RESIDUAL, hparams.norm_before_residual, false);
     if (hparams.norm_before_residual) {
-        LLAMA_LOG_INFO("%s: EAGLE3gnorm_before_residual = true\n", __func__);
+        LLAMA_LOG_INFO("%s: EAGLE3 norm_before_residual = true\n", __func__);
     }
 
     type = LLM_TYPE_UNKNOWN;
@@ -110,7 +110,7 @@ ggml_tensor * llama_model_eagle3::graph<true>::build_inp_embd_enc() const {
     // Input: Target model features (3 layers concatenated: low, mid, high)
     // Data will be provided via ubatch->embd in encode_eagle3_features()
     auto inp_target = std::make_unique<llm_graph_input_embd>(hparams.n_embd_inp());
-    inp_target->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32,hparams.n_embd_inp(), n_tokens);
+    inp_target->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd_inp(), n_tokens);
     ggml_set_input(inp_target->embd);
 
     cur = inp_target->embd;
@@ -211,10 +211,11 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
         // - false (default): use raw inp_g for residual
         // - true: use normalized g_norm for residual
         // inpL is the concatenated input (normalized inp_embd + normalized inp_g)
-        ggml_tensor * inpSA = hparams.norm_before_residual ? g_norm : inpL;
+        // residual: what gets added back after attention (raw inp_g, or normalized g_norm for Readhat compat)
+        ggml_tensor * residual = hparams.norm_before_residual ? g_norm : inpL;
 
         // Concatenate normalized inp_embd and normalized inp_g
-        cur = ggml_concat(ctx0, embd_norm, g_norm, il);
+        cur = ggml_concat(ctx0, embd_norm, g_norm, 0);  // dim 0 = embedding axis
         cb(cur, "concat_embd", il);
 
         // Self-attention with concatenated input
@@ -254,7 +255,7 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
                 Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
 
         // Add residual and update it
-        ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
+        ggml_tensor * ffn_inp = ggml_add(ctx0, cur, residual);
         cb(ffn_inp, "ffn_inp", il);
 
         // Apply FFN norm to the sum

@@ -15,10 +15,30 @@ ALIAS="${ALIAS:-rocmfpx-mtp}"
 DEVICE="${DEVICE:-Vulkan0}"
 SPEC_DRAFT_DEVICE="${SPEC_DRAFT_DEVICE:-$DEVICE}"
 CTX_SIZE="${CTX_SIZE:-32768}"
+BATCH_SIZE_USER_SET="${BATCH_SIZE+x}"
+UBATCH_SIZE_USER_SET="${UBATCH_SIZE+x}"
+PARALLEL_USER_SET="${PARALLEL+x}"
+POLL_USER_SET="${POLL+x}"
+POLL_BATCH_USER_SET="${POLL_BATCH+x}"
 BATCH_SIZE="${BATCH_SIZE:-2048}"
 UBATCH_SIZE="${UBATCH_SIZE:-512}"
 THREADS="${THREADS:-16}"
 THREADS_BATCH="${THREADS_BATCH:-32}"
+PERF_PRESET="${PERF_PRESET:-balanced}"
+PARALLEL="${PARALLEL:-1}"
+N_GPU_LAYERS="${N_GPU_LAYERS:-999}"
+FLASH_ATTN="${FLASH_ATTN:-on}"
+POLL="${POLL:-50}"
+POLL_BATCH="${POLL_BATCH:-1}"
+PRIO="${PRIO:-0}"
+PRIO_BATCH="${PRIO_BATCH:-0}"
+SPLIT_MODE="${SPLIT_MODE:-}"
+MAIN_GPU="${MAIN_GPU:-}"
+TENSOR_SPLIT="${TENSOR_SPLIT:-}"
+FIT_TARGET="${FIT_TARGET:-}"
+FIT_CTX="${FIT_CTX:-}"
+NO_HOST="${NO_HOST:-0}"
+NO_OP_OFFLOAD="${NO_OP_OFFLOAD:-0}"
 SPEC_DRAFT_THREADS="${SPEC_DRAFT_THREADS:-$THREADS}"
 SPEC_DRAFT_THREADS_BATCH="${SPEC_DRAFT_THREADS_BATCH:-$THREADS_BATCH}"
 CACHE_TYPE_K="${CACHE_TYPE_K:-f16}"
@@ -32,14 +52,63 @@ SPEC_DRAFT_P_SPLIT="${SPEC_DRAFT_P_SPLIT:-0.10}"
 CACHE_RAM="${CACHE_RAM:-0}"
 STRICT_BENCH="${STRICT_BENCH:-1}"
 NO_MMPROJ="${NO_MMPROJ:-1}"
+AUTO_DETECT_MTP="${AUTO_DETECT_MTP:-1}"
+REQUIRE_MTP="${REQUIRE_MTP:-0}"
 
 if [[ -z "$MODEL" ]]; then
     echo "MODEL must point to a ROCmFPX/ROCmFP4 GGUF" >&2
     exit 2
 fi
 
+case "$PERF_PRESET" in
+    balanced)
+        ;;
+    latency)
+        if [[ -z "$POLL_USER_SET" ]]; then POLL=100; fi
+        if [[ -z "$POLL_BATCH_USER_SET" ]]; then POLL_BATCH=1; fi
+        if [[ -z "$PARALLEL_USER_SET" ]]; then PARALLEL=1; fi
+        ;;
+    throughput)
+        if [[ -z "$BATCH_SIZE_USER_SET" ]]; then BATCH_SIZE=2048; fi
+        if [[ -z "$UBATCH_SIZE_USER_SET" ]]; then UBATCH_SIZE=512; fi
+        if [[ -z "$PARALLEL_USER_SET" ]]; then PARALLEL=2; fi
+        ;;
+    *)
+        echo "unknown PERF_PRESET=$PERF_PRESET; use balanced, latency, or throughput" >&2
+        exit 2
+        ;;
+esac
+
 rocmfpx_require_binary "$BIN"
 SKIP_MISSING_MODEL=0 rocmfpx_require_model "$MODEL"
+
+spec_args=(
+    --spec-type draft-mtp
+    --spec-draft-device "$SPEC_DRAFT_DEVICE"
+    --spec-draft-ngl all
+    --spec-draft-threads "$SPEC_DRAFT_THREADS"
+    --spec-draft-threads-batch "$SPEC_DRAFT_THREADS_BATCH"
+    --spec-draft-type-k "$CACHE_TYPE_K_DRAFT"
+    --spec-draft-type-v "$CACHE_TYPE_V_DRAFT"
+    --spec-draft-n-max "$SPEC_DRAFT_N_MAX"
+    --spec-draft-n-min "$SPEC_DRAFT_N_MIN"
+    --spec-draft-p-min "$SPEC_DRAFT_P_MIN"
+    --spec-draft-p-split "$SPEC_DRAFT_P_SPLIT"
+    --no-spec-draft-backend-sampling
+    --spec-draft-poll 1
+    --spec-draft-poll-batch 1
+)
+
+if [[ "$AUTO_DETECT_MTP" == "1" ]]; then
+    if ! "$SCRIPT_DIR/rocmfpx-model-capabilities.py" "$MODEL" --has-mtp --quiet; then
+        if [[ "$REQUIRE_MTP" == "1" ]]; then
+            echo "MODEL does not expose MTP metadata/tensors; refusing to start with REQUIRE_MTP=1" >&2
+            exit 3
+        fi
+        echo "warning: MODEL does not expose MTP metadata/tensors; starting without draft-mtp" >&2
+        spec_args=()
+    fi
+fi
 
 cache_args=(--cache-ram "$CACHE_RAM")
 if [[ "$STRICT_BENCH" == "1" ]]; then
@@ -49,6 +118,38 @@ fi
 mmproj_args=()
 if [[ "$NO_MMPROJ" == "1" ]]; then
     mmproj_args=(--no-mmproj)
+fi
+
+perf_args=(
+    --poll "$POLL"
+    --poll-batch "$POLL_BATCH"
+    --prio "$PRIO"
+    --prio-batch "$PRIO_BATCH"
+)
+
+fit_args=()
+if [[ -n "$FIT_TARGET" ]]; then
+    fit_args+=(-fitt "$FIT_TARGET")
+fi
+if [[ -n "$FIT_CTX" ]]; then
+    fit_args+=(-fitc "$FIT_CTX")
+fi
+
+placement_args=()
+if [[ -n "$SPLIT_MODE" ]]; then
+    placement_args+=(-sm "$SPLIT_MODE")
+fi
+if [[ -n "$MAIN_GPU" ]]; then
+    placement_args+=(-mg "$MAIN_GPU")
+fi
+if [[ -n "$TENSOR_SPLIT" ]]; then
+    placement_args+=(-ts "$TENSOR_SPLIT")
+fi
+if [[ "$NO_HOST" == "1" ]]; then
+    placement_args+=(--no-host)
+fi
+if [[ "$NO_OP_OFFLOAD" == "1" ]]; then
+    placement_args+=(--no-op-offload)
 fi
 
 cd "$ROOT"
@@ -65,8 +166,8 @@ exec "$BIN" \
     --reasoning-budget -1 \
     --no-context-shift \
     -dev "$DEVICE" \
-    -ngl 999 \
-    -fa on \
+    -ngl "$N_GPU_LAYERS" \
+    -fa "$FLASH_ATTN" \
     -b "$BATCH_SIZE" \
     -ub "$UBATCH_SIZE" \
     -t "$THREADS" \
@@ -77,23 +178,13 @@ exec "$BIN" \
     --top-p 0.95 \
     --top-k 20 \
     --seed 123 \
-    --parallel 1 \
+    --parallel "$PARALLEL" \
+    "${perf_args[@]}" \
+    "${fit_args[@]}" \
+    "${placement_args[@]}" \
     "${mmproj_args[@]}" \
     --metrics \
     --no-webui \
     "${cache_args[@]}" \
-    --spec-type draft-mtp \
-    --spec-draft-device "$SPEC_DRAFT_DEVICE" \
-    --spec-draft-ngl all \
-    --spec-draft-threads "$SPEC_DRAFT_THREADS" \
-    --spec-draft-threads-batch "$SPEC_DRAFT_THREADS_BATCH" \
-    --spec-draft-type-k "$CACHE_TYPE_K_DRAFT" \
-    --spec-draft-type-v "$CACHE_TYPE_V_DRAFT" \
-    --spec-draft-n-max "$SPEC_DRAFT_N_MAX" \
-    --spec-draft-n-min "$SPEC_DRAFT_N_MIN" \
-    --spec-draft-p-min "$SPEC_DRAFT_P_MIN" \
-    --spec-draft-p-split "$SPEC_DRAFT_P_SPLIT" \
-    --no-spec-draft-backend-sampling \
-    --spec-draft-poll 1 \
-    --spec-draft-poll-batch 1 \
+    "${spec_args[@]}" \
     "$@"
