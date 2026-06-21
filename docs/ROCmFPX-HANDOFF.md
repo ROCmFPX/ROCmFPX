@@ -80,9 +80,25 @@ still matter at runtime.
 - `Q3_0_ROCMFPX` is not acceptable for K cache in the current build.
 - `common/common.cpp` promotes `-ctk q3_0_rocmfpx` to `q6_0_rocmfpx` and logs a
   warning.
+- TurboQuant cache types `turbo3` and `turbo4` are already present in this tree.
+  They are runtime K/V cache types, not ROCmFPX model-weight formats.
+- The safe TurboQuant+ style serving policy is asymmetric: keep K higher
+  precision and compress V, for example `-ctk q8_0 -ctv turbo4`.
+- Symmetric TurboQuant sweeps can opt into first/last-layer protection with
+  `LLAMA_KV_TURBO_BOUNDARY_LAYERS=2`. That keeps K cache at `q8_0` for the
+  first and last two model layers while leaving middle layers on the requested
+  TurboQuant type. `LLAMA_KV_TURBO_BOUNDARY_V=1` also protects V cache, but
+  leave it off unless a test specifically needs it.
 
 This is a coherency safeguard, not a new compression scheme. It keeps fp3 K
 cache above the observed tool-call / agent floor.
+
+Do not merge the Python `turboquant_plus` package directly into this repository.
+The useful low-risk lesson from that repo is policy, not a new kernel import:
+K compression costs more quality than V compression, so preserve K when the
+workload depends on tools, JSON, coding, or chat coherency. Leave QJL, turbo2,
+and block-size 128 out of the production path unless a separate compatibility
+branch proves them with local PPL, decode, and agentic gates.
 
 ## How To Build
 
@@ -107,6 +123,31 @@ For Strix Halo runs, the working runtime pattern is:
 HSA_OVERRIDE_GFX_VERSION=11.5.1 \
 GGML_HIP_ENABLE_UNIFIED_MEMORY=1 \
 ./build-strix-rocmfp4/bin/llama-cli -m /path/to/model.gguf -dev ROCm0 -ngl 999
+```
+
+TurboQuant asymmetric MTP serving:
+
+```bash
+MODEL=/path/to/model-Q6_0_ROCMFPX_AGENT.gguf \
+DEVICE=Vulkan0 \
+scripts/run-rocmfpx-turboquant-asym-server.sh
+```
+
+The wrapper sets:
+
+- `CACHE_TYPE_K=q8_0`
+- `CACHE_TYPE_V=turbo4`
+- `CACHE_TYPE_K_DRAFT=q8_0`
+- `CACHE_TYPE_V_DRAFT=turbo4`
+
+Boundary-protected symmetric TurboQuant test:
+
+```bash
+LLAMA_KV_TURBO_BOUNDARY_LAYERS=2 \
+CACHE_TYPE_K=turbo4 \
+CACHE_TYPE_V=turbo4 \
+MODEL=/path/to/model.gguf \
+scripts/run-rocmfpx-mtp-server.sh
 ```
 
 ## How To Quant

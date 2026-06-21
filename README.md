@@ -294,6 +294,18 @@ build-strix-rocmfp4/bin/llama-quantize source.gguf out-q6.gguf Q6_0_ROCMFPX
 build-strix-rocmfp4/bin/llama-quantize source.gguf out-q8.gguf Q8_0_ROCMFPX
 ```
 
+For low-bit ROCmFPX quants, pass an imatrix when you have one:
+
+```bash
+IMATRIX=/path/to/imatrix.gguf \
+SRC=/path/to/model-BF16.gguf OUT=/path/to/model-Q3_0_ROCMFPX.gguf \
+  FORMAT=rocmfp3 PROFILE=straight scripts/quantize-rocmfpx-agent.sh
+```
+
+The wrapper forwards `IMATRIX` to `llama-quantize --imatrix`. ROCmFP3,
+ROCmFP6, and ROCmFP8 use imatrix-weighted scale search; ROCmFP4 has its own
+imatrix path.
+
 ## Quantize Agent ROCmFPX Models
 
 Use agent mode when the model will be used for Hermes/OpenClaw-style workflows,
@@ -461,6 +473,59 @@ ROCmFPX model quants and K/V cache types are separate runtime controls.
 The current guard promotes `-ctk q3_0_rocmfpx` to `q6_0_rocmfpx` because fp3 K
 cache was below the observed tool-call and agent coherency floor. `q3_0_rocmfpx`
 can still be used for V cache.
+
+TurboQuant K/V cache support is already built into this tree as the `turbo3`
+and `turbo4` runtime cache types, including CPU reference tests plus ROCm/HIP
+and Vulkan paths. TurboQuant is not a ROCmFPX model-weight quant; use it with
+`-ctk` and `-ctv` at runtime.
+
+The recommended safe TurboQuant+ style policy is asymmetric K/V:
+
+```bash
+build-strix-rocmfp4/bin/llama-server \
+  -m /path/to/model-Q6_0_ROCMFPX_AGENT.gguf \
+  -dev Vulkan0 \
+  -ngl 999 \
+  -fa on \
+  -ctk q8_0 \
+  -ctv turbo4 \
+  --jinja
+```
+
+For the ROCmFPX MTP server wrapper, use the preset script:
+
+```bash
+MODEL=/path/to/model-Q6_0_ROCMFPX_AGENT.gguf \
+DEVICE=Vulkan0 \
+scripts/run-rocmfpx-turboquant-asym-server.sh
+```
+
+This keeps K cache at `q8_0`, where attention quality and tool calls are more
+sensitive, and uses `turbo4` for V cache, where compression is usually cheaper.
+You can still run symmetric TurboQuant for sweeps with `-ctk turbo3 -ctv turbo3`
+or `-ctk turbo4 -ctv turbo4`, but do not treat those as the default agentic
+serving profile.
+
+For symmetric TurboQuant experiments, first/last-layer K protection is available
+as an opt-in compatibility knob:
+
+```bash
+LLAMA_KV_TURBO_BOUNDARY_LAYERS=2 \
+build-strix-rocmfp4/bin/llama-server \
+  -m /path/to/model.gguf \
+  -ctk turbo4 \
+  -ctv turbo4
+```
+
+With that flag, the first and last two model layers use `q8_0` for K cache
+while the middle layers use the requested TurboQuant type. V boundary protection
+is off by default; enable it only for experiments with
+`LLAMA_KV_TURBO_BOUNDARY_V=1`.
+
+Do not import the Python `turboquant_plus` research package into this C/C++ tree
+as-is. The low-risk production findings are the asymmetric K/V policy and
+documentation. QJL and turbo2 are intentionally not enabled here, and block-size
+128 would require a GGML block-layout change and compatibility work.
 
 ## Test Agent Behavior
 

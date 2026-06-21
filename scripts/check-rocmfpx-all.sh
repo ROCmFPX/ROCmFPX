@@ -10,6 +10,7 @@ SKIP_OPTIONAL="${SKIP_OPTIONAL:-1}"
 cd "$ROOT"
 
 scripts/check-rocmfpx-qwen-all.sh
+scripts/check-rocmfpx-model-capabilities.sh
 
 if [[ "$SKIP_OPTIONAL" != "1" ]]; then
     scripts/build-rocmfpx-agent-fixtures.sh

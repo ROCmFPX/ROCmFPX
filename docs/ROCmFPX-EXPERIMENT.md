@@ -103,6 +103,11 @@ scripts/check-rocmfpx-reference.sh
 This compiles `ggml/rocmfpx/rocmfpx.c` and runs the local reference test in
 `build-rocmfpx-reference/`.
 
+The reference test covers finite decode/roundtrip behavior plus weighted
+imatrix scale-search checks for ROCmFP3, ROCmFP6, and ROCmFP8. The imatrix
+checks verify that calibration weights actually affect scale search by
+requiring lower weighted reconstruction error than the plain unweighted path.
+
 The currently used tiny quantized test fixtures live in:
 
 ```text
