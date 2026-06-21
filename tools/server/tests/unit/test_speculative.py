@@ -12,8 +12,8 @@ def create_server():
     server = ServerPreset.stories15m_moe()
     # set default values
     server.model_draft = download_file(MODEL_DRAFT_FILE_URL)
-    server.draft_min = 4
-    server.draft_max = 8
+    server.spec_draft_n_min = 4
+    server.spec_draft_n_max = 8
     server.fa = "off"
 
 
@@ -63,8 +63,8 @@ def test_different_draft_min_draft_max():
     last_content = None
     for draft_min, draft_max in test_values:
         server.stop()
-        server.draft_min = draft_min
-        server.draft_max = draft_max
+        server.spec_draft_n_min = draft_min
+        server.spec_draft_n_max = draft_max
         server.start()
         res = server.make_request("POST", "/completion", data={
             "prompt": "I believe the meaning of life is",
@@ -76,6 +76,73 @@ def test_different_draft_min_draft_max():
         if last_content is not None:
             assert last_content == res.body["content"]
         last_content = res.body["content"]
+
+
+def test_request_level_speculative_params_are_reported_and_clamped():
+    global server
+    server.spec_draft_n_min = 1
+    server.spec_draft_n_max = 4
+    server.start()
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": 16,
+        "speculative.n_max": 2,
+        "speculative.n_min": 1,
+        "speculative.p_min": 0.25,
+    })
+    assert res.status_code == 200
+    settings = res.body["generation_settings"]
+    assert settings["speculative.n_max"] == 2
+    assert settings["speculative.n_min"] == 1
+    assert settings["speculative.p_min"] == pytest.approx(0.25)
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": 16,
+        "speculative.n_max": 100,
+        "speculative.n_min": 100,
+        "speculative.p_min": 2.0,
+    })
+    assert res.status_code == 200
+    settings = res.body["generation_settings"]
+    assert settings["speculative.n_max"] == 4
+    assert settings["speculative.n_min"] == 4
+    assert settings["speculative.p_min"] == pytest.approx(1.0)
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": 16,
+        "speculative.n_max": 0,
+        "speculative.n_min": 1,
+        "speculative.p_min": -1.0,
+    })
+    assert res.status_code == 200
+    settings = res.body["generation_settings"]
+    assert settings["speculative.n_max"] == 0
+    assert settings["speculative.n_min"] == 0
+    assert settings["speculative.p_min"] == pytest.approx(0.0)
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "temperature": 0.0,
+        "top_k": 1,
+        "n_predict": 16,
+        "speculative.n_max": -5,
+        "speculative.n_min": -5,
+        "speculative.p_min": -0.5,
+    })
+    assert res.status_code == 200
+    settings = res.body["generation_settings"]
+    assert settings["speculative.n_max"] == 0
+    assert settings["speculative.n_min"] == 0
+    assert settings["speculative.p_min"] == pytest.approx(0.0)
 
 
 def test_slot_ctx_not_exceeded():

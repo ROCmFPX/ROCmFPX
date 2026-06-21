@@ -35,6 +35,31 @@ const std::map<std::string, common_speculative_type> common_speculative_type_fro
     {"ngram-cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE}
 };
 
+static int32_t common_speculative_effective_n_max(
+        const common_params_speculative_draft & params,
+        const common_speculative_draft_params & dp) {
+    int32_t n_max = std::max(0, params.n_max);
+    if (dp.n_max >= 0) {
+        n_max = std::min(n_max, dp.n_max);
+    }
+    return n_max;
+}
+
+static int32_t common_speculative_effective_n_min(
+        const common_params_speculative_draft & params,
+        const common_speculative_draft_params & dp,
+        const int32_t n_max) {
+    const int32_t n_min = dp.n_min >= 0 ? dp.n_min : params.n_min;
+    return std::max(0, std::min(n_min, n_max));
+}
+
+static float common_speculative_effective_p_min(
+        const common_params_speculative_draft & params,
+        const common_speculative_draft_params & dp) {
+    const float p_min = dp.p_min >= 0.0f ? dp.p_min : params.p_min;
+    return std::max(0.0f, std::min(p_min, 1.0f));
+}
+
 struct common_speculative_config {
     common_speculative_type type;
     common_params_speculative params;
@@ -303,6 +328,15 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                     continue;
                 }
 
+                auto & dp = dparams[seq_id];
+                auto & result = *dp.result;
+                const int32_t n_max = common_speculative_effective_n_max(params, dp);
+                if (n_max <= (int) result.size()) {
+                    drafting[seq_id] = 0;
+                    n_drafting--;
+                    continue;
+                }
+
                 auto * smpl = smpls[seq_id].get();
 
                 common_sampler_sample(smpl, ctx_dft, i_batch, true);
@@ -322,7 +356,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                 const llama_token id = cur_p->data[0].id;
 
                 // only collect very high-confidence draft tokens
-                if (cur_p->data[0].p < params.p_min) {
+                if (cur_p->data[0].p < common_speculative_effective_p_min(params, dp)) {
                     drafting[seq_id] = 0;
                     n_drafting--;
 
@@ -331,13 +365,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 
                 common_sampler_accept(smpl, id, true);
 
-                auto & dp = dparams[seq_id];
-                auto & result = *dp.result;
-
                 result.push_back(id);
 
-                if ((params.n_max <= (int) result.size()) ||
-                    (dp.n_max > 0 && dp.n_max <= (int) result.size())) {
+                if (n_max <= (int) result.size()) {
                     drafting[seq_id] = 0;
                     n_drafting--;
                     continue;
@@ -365,7 +395,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                 continue;
             }
 
-            if (dp.result->size() < (size_t) params.n_min) {
+            const int32_t n_max = common_speculative_effective_n_max(params, dp);
+            const int32_t n_min = common_speculative_effective_n_min(params, dp, n_max);
+            if (dp.result->size() < (size_t) n_min) {
                 dp.result->clear();
             }
         }
@@ -759,6 +791,15 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
                     continue;
                 }
 
+                auto & dp = dparams[seq_id];
+                auto & result = *dp.result;
+                const int32_t n_max = common_speculative_effective_n_max(params, dp);
+                if (n_max <= (int) result.size()) {
+                    drafting[seq_id] = false;
+                    n_drafting--;
+                    continue;
+                }
+
                 auto * smpl = smpls[seq_id].get();
 
                 common_sampler_sample(smpl, ctx_dft, i_batch, true);
@@ -778,7 +819,7 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
 
                 // only collect very high-confidence draft tokens
                 // (configurable via --spec-draft-p-min, set to 0.0 to disable early-stop)
-                if (cur_p->data[0].p < params.p_min) {
+                if (cur_p->data[0].p < common_speculative_effective_p_min(params, dp)) {
                     drafting[seq_id] = false;
                     n_drafting--;
 
@@ -787,12 +828,9 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
 
                 common_sampler_accept(smpl, id, true);
 
-                auto & dp = dparams.at(seq_id);
-                auto & result = *dp.result;
-
                 result.push_back(id);
 
-                if (params.n_max <= (int) result.size()) {
+                if (n_max <= (int) result.size()) {
                     drafting[seq_id] = false;
                     n_drafting--;
                     continue;
@@ -821,7 +859,9 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
                 continue;
             }
 
-            if (dp.result->size() < (size_t) params.n_min) {
+            const int32_t n_max = common_speculative_effective_n_max(params, dp);
+            const int32_t n_min = common_speculative_effective_n_min(params, dp, n_max);
+            if (dp.result->size() < (size_t) n_min) {
                 dp.result->clear();
             }
         }
@@ -1162,6 +1202,15 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                     continue;
                 }
 
+                auto & dp = dparams[seq_id];
+                auto & result = *dp.result;
+                const int32_t n_max = common_speculative_effective_n_max(params, dp);
+                if (n_max <= (int) result.size()) {
+                    drafting[seq_id] = 0;
+                    n_drafting--;
+                    continue;
+                }
+
                 auto * smpl = smpls[seq_id].get();
 
                 const int i_batch_cur = i_batch++;
@@ -1178,7 +1227,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
 
-                if (cur_p->data[0].p < params.p_min) {
+                if (cur_p->data[0].p < common_speculative_effective_p_min(params, dp)) {
                     drafting[seq_id] = 0;
                     n_drafting--;
                     continue;
@@ -1186,12 +1235,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
                 common_sampler_accept(smpl, id, true);
 
-                auto & dp = dparams[seq_id];
-                auto & result = *dp.result;
-
                 result.push_back(id);
 
-                if (params.n_max <= (int) result.size()) {
+                if (n_max <= (int) result.size()) {
                     drafting[seq_id] = 0;
                     n_drafting--;
                     continue;
@@ -1223,7 +1269,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 continue;
             }
 
-            if (dp.result->size() < (size_t) params.n_min) {
+            const int32_t n_max = common_speculative_effective_n_max(params, dp);
+            const int32_t n_min = common_speculative_effective_n_min(params, dp, n_max);
+            if (dp.result->size() < (size_t) n_min) {
                 dp.result->clear();
             }
 
