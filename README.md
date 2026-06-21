@@ -53,6 +53,8 @@ or publishing derived builds.
 Additional ROCmFPX contributors:
 
 - `ciru-ai`: ROCmFPX FP3 Vulkan matvec/dequant speed path.
+- `PlunderStruck` / Aydan S.: TurboQuant `turbo3`/`turbo4` K/V-cache
+  quantization paths for ROCm/HIP and Vulkan.
 
 ## Why It Is Different From Regular Quants
 
