@@ -85,6 +85,87 @@ assert req["speculative.n_min"] == 0
 assert req["speculative.p_min"] == 0.0
 PY
 
+strip_json="$(python3 - <<'PY'
+import importlib.util
+import json
+import pathlib
+
+path = pathlib.Path("scripts/rocmfpx-dynamic-draft.py")
+spec = importlib.util.spec_from_file_location("dd", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+response = {
+    "choices": [
+        {
+            "message": {
+                "content": "<think>\nprivate\n</think>\n\n{\"ok\":true}",
+                "reasoning_content": "private",
+            }
+        }
+    ],
+    "timings": {
+        "draft_n": 10,
+        "draft_n_accepted": 8,
+        "predicted_per_second": 50.0,
+    },
+    "generation_settings": {
+        "speculative.n_max": 6,
+        "speculative.p_min": 0.0,
+    },
+}
+print(json.dumps(mod.strip_thinking_response(response), sort_keys=True))
+PY
+)"
+
+python3 - "$strip_json" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+msg = data["choices"][0]["message"]
+assert msg["content"] == '{"ok":true}'
+assert "reasoning_content" not in msg
+PY
+
+state_update_json="$(python3 - <<'PY'
+import importlib.util
+import json
+import pathlib
+
+path = pathlib.Path("scripts/rocmfpx-dynamic-draft.py")
+spec = importlib.util.spec_from_file_location("dd", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+state = {}
+response = {
+    "timings": {
+        "draft_n": 100,
+        "draft_n_accepted": 90,
+        "predicted_per_second": 42.0,
+    },
+    "generation_settings": {
+        "speculative.n_max": 6,
+        "speculative.p_min": 0.0,
+    },
+}
+print(json.dumps(mod.update_state_from_response(state, response, 0.35), sort_keys=True))
+PY
+)"
+
+python3 - "$state_update_json" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+assert data["acceptance_ema"] == 0.9
+assert data["throughput_ema"] == 42.0
+assert data["last_n_max"] == 6
+assert data["n_max_stats"]["6"]["acceptance_ema"] == 0.9
+assert data["n_max_stats"]["6"]["throughput_ema"] == 42.0
+PY
+
 python3 -m py_compile \
     "$SCRIPT_DIR/rocmfpx-draft-profile.py" \
     "$SCRIPT_DIR/rocmfpx-dynamic-draft.py"

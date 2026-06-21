@@ -205,6 +205,24 @@ byte 2: v2[5:4] | v3[5:0]<<2
 | Python/shell syntax checks | passed |
 | `scripts/build-strix-rocmfp4-mtp.sh llama-server` | passed |
 
+## Session 004 — 2026-06-21
+
+**Scope:** Improve ROCmFPX Dynamic Drafting for Qwable/Hermes-style agent use.
+
+| File | Detail |
+|------|--------|
+| `scripts/rocmfpx-dynamic-draft.py` | Added default response cleanup for literal `<think>...</think>` blocks and reasoning fields; added per-`n_max` throughput/acceptance stats so the wrapper can prefer the fastest nearby draft depth. |
+| `scripts/check-rocmfpx-dynamic-draft.sh` | Added smoke coverage for response cleanup and per-`n_max` state updates. |
+| `docs/ROCmFPX-SERVING.md` | Documented response cleanup and throughput-aware Dynamic Drafting behavior. |
+
+### Validation
+
+| Check | Result |
+|-------|--------|
+| `scripts/check-rocmfpx-dynamic-draft.sh` | passed |
+| Qwable Q6 ROCmFPX Agent ROCm dynamic drafting | best observed chat decode: `28.94 tok/s`, draft acceptance `112/125` |
+| Qwable Q6 ROCmFPX Agent Vulkan dynamic drafting | best observed chat decode: `20.12 tok/s`, draft acceptance `117/126` |
+
 <!-- TEMPLATE FOR FUTURE AI SESSIONS:
 
 ## Session NNN — YYYY-MM-DD

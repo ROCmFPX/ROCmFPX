@@ -364,6 +364,12 @@ acceptance falls below the low threshold, the wrapper lowers `n_max` and raises
 `--max-n-max`. Use `--dry-run --pretty` to inspect the exact request before it
 is sent.
 
+For Qwen/Qwable-style templates, the wrapper also strips literal
+`<think>...</think>` blocks and `reasoning_content` fields from returned JSON by
+default. Disable that only for debugging with `--no-strip-thinking`. The wrapper
+also tracks throughput per `n_max` in the state file and prefers the fastest
+nearby draft depth when enough feedback exists.
+
 ## Suggested Starting Points
 
 These are starting points for sweeps, not universal defaults:
