@@ -33,7 +33,7 @@ jobs:
           python-version: "3.11"
       - name: Install type checker
         run: |
-            python -m pip install ty==0.0.35
+            python -m pip install numpy ty==0.0.35
       # - name: Type-check with Pyright
       #   uses: jakebailey/pyright-action@v2
       #   with:
