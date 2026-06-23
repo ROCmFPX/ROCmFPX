@@ -101,6 +101,11 @@ LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool va
 LLAMA_API void llama_set_mtp_source(struct llama_context * ctx, struct llama_context * src);
 LLAMA_API int32_t llama_model_n_embd_pre_norm(const struct llama_model * model);
 
+// Select which appended NextN block the DECODER_MTP graph runs (offset past
+// the trunk: il = n_layer() + offset). Used by the speculative NextN driver to
+// chain multiple trained NextN heads. Default 0 (first head).
+LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t offset);
+
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_pre_norm    (struct llama_context * ctx);
