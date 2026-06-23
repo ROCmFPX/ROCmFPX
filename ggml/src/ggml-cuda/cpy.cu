@@ -235,7 +235,7 @@ static __global__ void cpy_rocmfpx_fp3_f32_contiguous(const block_rocmfp3 * cx, 
     const int64_t ib = i / QK_ROCMFP3;
     const int j = i % QK_ROCMFP3;
     const float d = rocmfpx_ue4m3_to_fp32_finite(cx[ib].e[j >= QK_ROCMFP3/2]);
-    cdst[i] = d * (float) rocmfpx_decode_fp3_code_cuda(rocmfpx_get_bits_cuda(cx[ib].qs, j*3, 3));
+    cdst[i] = d * (float) rocmfpx_decode_fp3_code_cuda(rocmfpx_get_fp3_code_cuda(cx[ib].qs, j));
 }
 
 static __global__ void cpy_rocmfpx_fp6_f32_contiguous(const block_rocmfp6 * cx, float * cdst, const int64_t ne) {
@@ -248,7 +248,7 @@ static __global__ void cpy_rocmfpx_fp6_f32_contiguous(const block_rocmfp6 * cx, 
     const int64_t ib = i / QK_ROCMFP6;
     const int j = i % QK_ROCMFP6;
     const float d = rocmfpx_ue4m3_to_fp32_finite(cx[ib].e[j >= QK_ROCMFP6/2]);
-    cdst[i] = d * (float) rocmfpx_decode_fp6_code_cuda(rocmfpx_get_bits_cuda(cx[ib].qs, j*6, 6));
+    cdst[i] = d * (float) rocmfpx_decode_fp6_code_cuda(rocmfpx_get_fp6_code_cuda(cx[ib].qs, j));
 }
 
 static __global__ void cpy_rocmfpx_fp8_f32_contiguous(const block_rocmfp8 * cx, float * cdst, const int64_t ne) {

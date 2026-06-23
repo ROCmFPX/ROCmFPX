@@ -95,6 +95,7 @@ static __device__ __forceinline__ int2 get_int_from_table_16(const int & q4, con
 }
 
 #include "../../rocmfp4/rocmfp4_hip_codebook.cuh"
+#include "../../rocmfpx/rocmfpx_hip_codebook.cuh"
 
 static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
     // v is a 7 bit int, with the 8th sign being encodable as popcnt
@@ -465,12 +466,7 @@ static __device__ __forceinline__ float vec_dot_rocmfpx_fp3_q8_1(
         const uint32_t val_high = qs[reg_idx + 1];
         const uint32_t bits12 = (reg_shift == 0) ? (val_low & 0xFFFu) : (((val_low >> reg_shift) | (val_high << (32 - reg_shift))) & 0xFFFu);
 
-        const char4 v = make_char4(
-            (int8_t) rocmfpx_decode_fp3_code_vec_cuda(bits12 & 7u),
-            (int8_t) rocmfpx_decode_fp3_code_vec_cuda((bits12 >> 3) & 7u),
-            (int8_t) rocmfpx_decode_fp3_code_vec_cuda((bits12 >> 6) & 7u),
-            (int8_t) rocmfpx_decode_fp3_code_vec_cuda((bits12 >> 9) & 7u));
-        const int val_packed = *((const int *) &v);
+        const int val_packed = rocmfpx_pack4_fp3_codes(bits12);
 
         const int u = get_int_b4(bq8_1->qs, iqs + i);
 
@@ -514,12 +510,7 @@ static __device__ __forceinline__ float vec_dot_rocmfpx_fp6_q8_1(
         const uint32_t bits24 = (reg_shift == 0) ? (val_low & 0xFFFFFFu) :
             (((val_low >> reg_shift) | (val_high << (32 - reg_shift))) & 0xFFFFFFu);
 
-        const char4 v = make_char4(
-            (int8_t) rocmfpx_decode_fp6_code_vec_cuda(bits24 & 63u),
-            (int8_t) rocmfpx_decode_fp6_code_vec_cuda((bits24 >>  6) & 63u),
-            (int8_t) rocmfpx_decode_fp6_code_vec_cuda((bits24 >> 12) & 63u),
-            (int8_t) rocmfpx_decode_fp6_code_vec_cuda((bits24 >> 18) & 63u));
-        const int val_packed = *((const int *) &v);
+        const int val_packed = rocmfpx_pack4_fp6_codes(bits24);
         const int u = get_int_b4(bq8_1->qs, iqs + i);
 
         if (base < QK_ROCMFP6/2) {
