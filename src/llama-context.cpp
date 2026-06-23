@@ -2898,6 +2898,15 @@ public:
     }
 
     ~llama_io_read_device() {
+        finalize();
+    }
+
+    bool finalize() {
+        if (finalized) {
+            return valid;
+        }
+        finalized = true;
+
         llama_memory_buffers mbufs_new;
 
         for (const auto & rinfo : rinfos) {
@@ -2932,10 +2941,27 @@ public:
         }
 
         for (auto & [buft, mbuf] : mbufs_new) {
-            const auto & mbuf_cur = mbufs.at(buft);
+            const auto it = mbufs.find(buft);
+            if (it == mbufs.end()) {
+                LLAMA_LOG_WARN("%s: device checkpoint restore missing buffer type '%s'; refusing restore\n",
+                        __func__, ggml_backend_buft_name(buft));
+                valid = false;
+                return false;
+            }
 
-            if (!mbuf_cur.buf || mbuf_cur.n_tensors != mbuf.n_tensors || mbuf_cur.total_size != mbuf.total_size) {
-                GGML_ABORT("%s: memory buffer mismatch\n", __func__);
+            const auto & mbuf_cur = it->second;
+
+            if (!mbuf_cur.buf ||
+                    mbuf_cur.n_tensors != mbuf.n_tensors ||
+                    mbuf_cur.total_size != mbuf.total_size ||
+                    mbuf_cur.cpy.size() != mbuf.org.size()) {
+                LLAMA_LOG_WARN("%s: device checkpoint restore buffer mismatch for '%s' "
+                        "(saved tensors=%d, current tensors=%d, saved size=%zu, current size=%zu); refusing restore\n",
+                        __func__, ggml_backend_buft_name(buft),
+                        mbuf_cur.n_tensors, mbuf.n_tensors,
+                        mbuf_cur.total_size, mbuf.total_size);
+                valid = false;
+                return false;
             }
 
             for (size_t i = 0; i < mbuf_cur.org.size(); ++i) {
@@ -2943,7 +2969,8 @@ public:
             }
         }
 
-        GGML_ASSERT(buf_size == 0);
+        valid = true;
+        return true;
     }
 
     void read(void * dst, size_t size) override {
@@ -2969,6 +2996,8 @@ private:
     const uint8_t * ptr;
     size_t buf_size = 0;
     size_t size_read = 0;
+    bool finalized = false;
+    bool valid = true;
 
     struct read_info {
         ggml_tensor * tensor;
@@ -3027,9 +3056,14 @@ size_t llama_context::state_seq_get_size(llama_seq_id seq_id, llama_state_seq_fl
 }
 
 size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, size_t size, llama_state_seq_flags flags) {
+    return state_seq_get_data(seq_id, dst, size, flags, nullptr);
+}
+
+size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, size_t size, llama_state_seq_flags flags, llama_memory_buffers * storage) {
     std::unique_ptr<llama_io_write_i> io;
     if (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) {
-        io = std::make_unique<llama_io_write_device>(dst, size, mem_storage[seq_id]);
+        auto & storage_cur = storage ? *storage : mem_storage[seq_id];
+        io = std::make_unique<llama_io_write_device>(dst, size, storage_cur);
     } else {
         io = std::make_unique<llama_io_write_host>(dst, size);
     }
@@ -3046,7 +3080,12 @@ size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, siz
 }
 
 size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * src, size_t size, llama_state_seq_flags flags) {
+    return state_seq_set_data(seq_id, src, size, flags, nullptr);
+}
+
+size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * src, size_t size, llama_state_seq_flags flags, const llama_memory_buffers * storage) {
     std::unique_ptr<llama_io_read_i> io;
+    llama_io_read_device * io_dev = nullptr;
     if (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) {
         // create a temporary io to read the magic and the src seq_id
         io = std::make_unique<llama_io_read_host>(src, size);
@@ -3060,9 +3099,15 @@ size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * sr
         llama_seq_id seq_id_read;
         io->read(&seq_id_read, sizeof(seq_id_read));
 
-        GGML_ASSERT(mem_storage.find(seq_id_read) != mem_storage.end());
+        const llama_memory_buffers * storage_cur = storage;
+        if (storage_cur == nullptr) {
+            GGML_ASSERT(mem_storage.find(seq_id_read) != mem_storage.end());
+            storage_cur = &mem_storage[seq_id_read];
+        }
 
-        io = std::make_unique<llama_io_read_device>(src, size, mem_storage[seq_id_read]);
+        auto io_device = std::make_unique<llama_io_read_device>(src, size, *storage_cur);
+        io_dev = io_device.get();
+        io = std::move(io_device);
     } else {
         io = std::make_unique<llama_io_read_host>(src, size);
     }
@@ -3077,7 +3122,11 @@ size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * sr
         llama_seq_id seq_id_read;
         io->read(&seq_id_read, sizeof(seq_id_read));
 
-        return state_seq_read_data(*io, seq_id, flags);
+        const size_t n = state_seq_read_data(*io, seq_id, flags);
+        if (io_dev && !io_dev->finalize()) {
+            return 0;
+        }
+        return n;
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error loading state: %s\n", __func__, err.what());
         return 0;
@@ -4126,6 +4175,78 @@ size_t llama_state_seq_set_data(llama_context * ctx, const uint8_t * src, size_t
     return llama_state_seq_set_data_ext(ctx, src, size, seq_id, 0);
 }
 
+struct llama_state_seq_storage {
+    llama_memory_buffers buffers;
+};
+
+static llama_memory_buffers llama_memory_buffers_clone(const llama_memory_buffers & src) {
+    llama_memory_buffers dst;
+
+    for (const auto & [buft, mbuf_src] : src) {
+        llama_memory_buffer mbuf_dst;
+
+        mbuf_dst.n_tensors  = mbuf_src.n_tensors;
+        mbuf_dst.total_size = mbuf_src.total_size;
+
+        ggml_init_params params = {
+            /*.mem_size   =*/ mbuf_src.cpy.size()*ggml_tensor_overhead(),
+            /*.mem_buffer =*/ NULL,
+            /*.no_alloc   =*/ true,
+        };
+
+        mbuf_dst.ctx.reset(ggml_init(params));
+        mbuf_dst.cpy.reserve(mbuf_src.cpy.size());
+
+        for (auto * tensor : mbuf_src.cpy) {
+            const int64_t n = ggml_nelements(tensor);
+            mbuf_dst.cpy.push_back(ggml_new_tensor_1d(mbuf_dst.ctx.get(), tensor->type, n));
+        }
+
+        if (!mbuf_dst.cpy.empty()) {
+            mbuf_dst.buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(mbuf_dst.ctx.get(), buft));
+        }
+
+        for (size_t i = 0; i < mbuf_src.cpy.size(); ++i) {
+            ggml_backend_tensor_copy(mbuf_src.cpy[i], mbuf_dst.cpy[i]);
+        }
+
+        dst[buft] = std::move(mbuf_dst);
+    }
+
+    return dst;
+}
+
+llama_state_seq_storage * llama_state_seq_storage_init(void) {
+    return new llama_state_seq_storage;
+}
+
+llama_state_seq_storage * llama_state_seq_storage_clone(const llama_state_seq_storage * storage) {
+    if (storage == nullptr) {
+        return nullptr;
+    }
+
+    auto * res = new llama_state_seq_storage;
+    res->buffers = llama_memory_buffers_clone(storage->buffers);
+    return res;
+}
+
+void llama_state_seq_storage_free(llama_state_seq_storage * storage) {
+    delete storage;
+}
+
+size_t llama_state_seq_storage_size(const llama_state_seq_storage * storage) {
+    if (storage == nullptr) {
+        return 0;
+    }
+
+    size_t res = 0;
+    for (const auto & [_, mbuf] : storage->buffers) {
+        res += mbuf.total_size;
+    }
+
+    return res;
+}
+
 size_t llama_state_seq_get_size_ext(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) {
     return ctx->state_seq_get_size(seq_id, flags);
 }
@@ -4135,10 +4256,35 @@ size_t llama_state_seq_get_data_ext(llama_context * ctx, uint8_t * dst, size_t s
 
     return ctx->state_seq_get_data(seq_id, dst, size, flags);
 }
+
+size_t llama_state_seq_get_data_ext_storage(
+        llama_context * ctx,
+              uint8_t * dst,
+               size_t   size,
+         llama_seq_id   seq_id,
+llama_state_seq_flags   flags,
+llama_state_seq_storage * storage) {
+    ctx->synchronize();
+
+    return ctx->state_seq_get_data(seq_id, dst, size, flags, storage ? &storage->buffers : nullptr);
+}
+
 size_t llama_state_seq_set_data_ext(llama_context * ctx, const uint8_t * src, size_t size, llama_seq_id seq_id, llama_state_seq_flags flags) {
     ctx->synchronize();
 
     return ctx->state_seq_set_data(seq_id, src, size, flags);
+}
+
+size_t llama_state_seq_set_data_ext_storage(
+        llama_context * ctx,
+        const uint8_t * src,
+               size_t   size,
+         llama_seq_id   seq_id,
+llama_state_seq_flags   flags,
+const llama_state_seq_storage * storage) {
+    ctx->synchronize();
+
+    return ctx->state_seq_set_data(seq_id, src, size, flags, storage ? &storage->buffers : nullptr);
 }
 
 size_t llama_state_seq_save_file(llama_context * ctx, const char * filepath, llama_seq_id seq_id, const llama_token * tokens, size_t n_token_count) {

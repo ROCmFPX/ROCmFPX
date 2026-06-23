@@ -2380,11 +2380,20 @@ private:
             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
             if (ctx_dft) {
+                bool restored_dft = true;
                 if (use_ckpt_dft) {
-                    ckpt.load_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+                    restored_dft = ckpt.load_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                 }
 
-                common_context_seq_rm(ctx_dft.get(), slot.id, ckpt.pos_max + 1, -1);
+                if (restored_dft) {
+                    common_context_seq_rm(ctx_dft.get(), slot.id, ckpt.pos_max + 1, -1);
+                } else {
+                    SLT_WRN(slot, "%s", "failed to restore draft speculative checkpoint; disabling speculation for this request\n");
+                    common_context_seq_rm(ctx_dft.get(), slot.id, -1, -1);
+                    slot.spec_draft.clear();
+                    slot.spec_i_batch.clear();
+                    draft.clear();
+                }
             }
 
             if (!draft.empty()) {
@@ -2692,12 +2701,21 @@ private:
                                     if (!do_reset) {
                                         // restore the context checkpoint
 
-                                        it->load_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
-                                        it->load_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+                                        const bool restored_tgt = it->load_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+                                        const bool restored_dft = it->load_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
 
-                                        pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
-                                        n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
-                                        SLT_WRN(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
+                                        if (!restored_tgt || !restored_dft) {
+                                            SLT_WRN(slot,
+                                                    "failed to restore context checkpoint (target=%d, draft=%d, pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB); forcing full prompt re-processing\n",
+                                                    (int) restored_tgt, (int) restored_dft,
+                                                    it->pos_min, it->pos_max, it->n_tokens,
+                                                    (float) it->size() / 1024 / 1024);
+                                            do_reset = true;
+                                        } else {
+                                            pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
+                                            n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
+                                            SLT_WRN(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
+                                        }
                                     }
 
                                     if (do_reset) {
@@ -3257,13 +3275,29 @@ private:
                             SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
 
                             {
-                                ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+                                const bool restored_tgt = ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+                                if (!restored_tgt) {
+                                    const std::string err = "Speculative checkpoint restore failed.";
+                                    SLT_WRN(slot, "%s\n", err.c_str());
+                                    send_error(slot, err);
+                                    slot.release();
+                                    slot.prompt_clear(false);
+                                    continue;
+                                }
 
                                 common_context_seq_rm(slot.ctx_tgt, slot.id, ckpt.pos_max + 1, -1);
                             }
 
                             if (slot.ctx_dft) {
-                                ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+                                const bool restored_dft = ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+                                if (!restored_dft) {
+                                    const std::string err = "Speculative checkpoint restore failed.";
+                                    SLT_WRN(slot, "%s\n", err.c_str());
+                                    send_error(slot, err);
+                                    slot.release();
+                                    slot.prompt_clear(false);
+                                    continue;
+                                }
 
                                 common_context_seq_rm(slot.ctx_dft, slot.id, ckpt.pos_max + 1, -1);
                             }

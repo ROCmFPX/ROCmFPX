@@ -1059,13 +1059,25 @@ enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
 //
 
 struct common_prompt_checkpoint {
-    int64_t n_tokens;
+    int64_t n_tokens = 0;
 
-    llama_pos pos_min;
-    llama_pos pos_max;
+    llama_pos pos_min = 0;
+    llama_pos pos_max = 0;
 
     std::vector<uint8_t> data_tgt;
     std::vector<uint8_t> data_dft;
+
+    llama_state_seq_storage * storage_tgt = nullptr;
+    llama_state_seq_storage * storage_dft = nullptr;
+
+    common_prompt_checkpoint() = default;
+    ~common_prompt_checkpoint();
+
+    common_prompt_checkpoint(const common_prompt_checkpoint & other);
+    common_prompt_checkpoint & operator=(const common_prompt_checkpoint & other);
+
+    common_prompt_checkpoint(common_prompt_checkpoint && other) noexcept;
+    common_prompt_checkpoint & operator=(common_prompt_checkpoint && other) noexcept;
 
     size_t size() const;
 
@@ -1087,12 +1099,12 @@ struct common_prompt_checkpoint {
             llama_seq_id seq_id,
             llama_state_seq_flags flags);
 
-    void load_tgt(
+    bool load_tgt(
             llama_context * ctx,
             llama_seq_id seq_id,
             llama_state_seq_flags flags) const;
 
-    void load_dft(
+    bool load_dft(
             llama_context * ctx,
             llama_seq_id seq_id,
             llama_state_seq_flags flags) const;

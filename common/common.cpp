@@ -2039,8 +2039,82 @@ bool common_prompt_batch_decode(
     return true;
 }
 
+common_prompt_checkpoint::~common_prompt_checkpoint() {
+    llama_state_seq_storage_free(storage_tgt);
+    llama_state_seq_storage_free(storage_dft);
+}
+
+common_prompt_checkpoint::common_prompt_checkpoint(const common_prompt_checkpoint & other) :
+    n_tokens(other.n_tokens),
+    pos_min(other.pos_min),
+    pos_max(other.pos_max),
+    data_tgt(other.data_tgt),
+    data_dft(other.data_dft),
+    storage_tgt(llama_state_seq_storage_clone(other.storage_tgt)),
+    storage_dft(llama_state_seq_storage_clone(other.storage_dft)) {
+}
+
+common_prompt_checkpoint & common_prompt_checkpoint::operator=(const common_prompt_checkpoint & other) {
+    if (this == &other) {
+        return *this;
+    }
+
+    n_tokens = other.n_tokens;
+    pos_min  = other.pos_min;
+    pos_max  = other.pos_max;
+
+    data_tgt = other.data_tgt;
+    data_dft = other.data_dft;
+
+    llama_state_seq_storage_free(storage_tgt);
+    llama_state_seq_storage_free(storage_dft);
+    storage_tgt = llama_state_seq_storage_clone(other.storage_tgt);
+    storage_dft = llama_state_seq_storage_clone(other.storage_dft);
+
+    return *this;
+}
+
+common_prompt_checkpoint::common_prompt_checkpoint(common_prompt_checkpoint && other) noexcept :
+    n_tokens(other.n_tokens),
+    pos_min(other.pos_min),
+    pos_max(other.pos_max),
+    data_tgt(std::move(other.data_tgt)),
+    data_dft(std::move(other.data_dft)),
+    storage_tgt(other.storage_tgt),
+    storage_dft(other.storage_dft) {
+    other.storage_tgt = nullptr;
+    other.storage_dft = nullptr;
+}
+
+common_prompt_checkpoint & common_prompt_checkpoint::operator=(common_prompt_checkpoint && other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+
+    llama_state_seq_storage_free(storage_tgt);
+    llama_state_seq_storage_free(storage_dft);
+
+    n_tokens = other.n_tokens;
+    pos_min  = other.pos_min;
+    pos_max  = other.pos_max;
+
+    data_tgt = std::move(other.data_tgt);
+    data_dft = std::move(other.data_dft);
+
+    storage_tgt = other.storage_tgt;
+    storage_dft = other.storage_dft;
+
+    other.storage_tgt = nullptr;
+    other.storage_dft = nullptr;
+
+    return *this;
+}
+
 size_t common_prompt_checkpoint::size() const {
-    return data_tgt.size() + data_dft.size();
+    return data_tgt.size() +
+           data_dft.size() +
+           llama_state_seq_storage_size(storage_tgt) +
+           llama_state_seq_storage_size(storage_dft);
 }
 
 bool common_prompt_checkpoint::empty() const {
@@ -2055,6 +2129,11 @@ void common_prompt_checkpoint::clear() {
 
     data_tgt.clear();
     data_dft.clear();
+
+    llama_state_seq_storage_free(storage_tgt);
+    llama_state_seq_storage_free(storage_dft);
+    storage_tgt = nullptr;
+    storage_dft = nullptr;
 }
 
 void common_prompt_checkpoint::update_pos(
@@ -2078,7 +2157,16 @@ void common_prompt_checkpoint::update_tgt(
 
     data_tgt.resize(ckpt_size);
 
-    const size_t n = llama_state_seq_get_data_ext(ctx, data_tgt.data(), ckpt_size, seq_id, flags);
+    if (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) {
+        if (storage_tgt == nullptr) {
+            storage_tgt = llama_state_seq_storage_init();
+        }
+    } else {
+        llama_state_seq_storage_free(storage_tgt);
+        storage_tgt = nullptr;
+    }
+
+    const size_t n = llama_state_seq_get_data_ext_storage(ctx, data_tgt.data(), ckpt_size, seq_id, flags, storage_tgt);
     if (n != ckpt_size) {
         GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", ckpt_size, n);
     }
@@ -2096,52 +2184,73 @@ void common_prompt_checkpoint::update_dft(
 
     data_dft.resize(ckpt_size);
 
-    const size_t n = llama_state_seq_get_data_ext(ctx, data_dft.data(), ckpt_size, seq_id, flags);
+    if (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) {
+        if (storage_dft == nullptr) {
+            storage_dft = llama_state_seq_storage_init();
+        }
+    } else {
+        llama_state_seq_storage_free(storage_dft);
+        storage_dft = nullptr;
+    }
+
+    const size_t n = llama_state_seq_get_data_ext_storage(ctx, data_dft.data(), ckpt_size, seq_id, flags, storage_dft);
     if (n != ckpt_size) {
         GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", ckpt_size, n);
     }
 }
 
-void common_prompt_checkpoint::load_tgt(
+bool common_prompt_checkpoint::load_tgt(
         llama_context * ctx,
         llama_seq_id seq_id,
         llama_state_seq_flags flags) const {
     if (ctx == nullptr) {
-        return;
+        return true;
     }
 
     if (data_tgt.empty()) {
-        return;
+        return true;
     }
 
-    const size_t n = llama_state_seq_set_data_ext(ctx, data_tgt.data(), data_tgt.size(), seq_id, flags);
+    const size_t n = llama_state_seq_set_data_ext_storage(ctx, data_tgt.data(), data_tgt.size(), seq_id, flags, storage_tgt);
     if (n != data_tgt.size()) {
-        GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", data_tgt.size(), n);
+        LOG_WRN("%s: target checkpoint restore failed: expected=%zu, restored=%zu\n",
+                __func__, data_tgt.size(), n);
+        return false;
     }
+
+    return true;
 }
 
-void common_prompt_checkpoint::load_dft(
+bool common_prompt_checkpoint::load_dft(
         llama_context * ctx,
         llama_seq_id seq_id,
         llama_state_seq_flags flags) const {
     if (ctx == nullptr) {
-        return;
+        return true;
     }
 
     if (data_dft.empty()) {
-        return;
+        return true;
     }
 
-    const size_t n = llama_state_seq_set_data_ext(ctx, data_dft.data(), data_dft.size(), seq_id, flags);
+    const size_t n = llama_state_seq_set_data_ext_storage(ctx, data_dft.data(), data_dft.size(), seq_id, flags, storage_dft);
     if (n != data_dft.size()) {
-        GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", data_dft.size(), n);
+        LOG_WRN("%s: draft checkpoint restore failed: expected=%zu, restored=%zu\n",
+                __func__, data_dft.size(), n);
+        return false;
     }
+
+    return true;
 }
 
 void common_prompt_checkpoint::clear_tgt() {
     data_tgt.clear();
+    llama_state_seq_storage_free(storage_tgt);
+    storage_tgt = nullptr;
 }
 
 void common_prompt_checkpoint::clear_dft() {
     data_dft.clear();
+    llama_state_seq_storage_free(storage_dft);
+    storage_dft = nullptr;
 }
