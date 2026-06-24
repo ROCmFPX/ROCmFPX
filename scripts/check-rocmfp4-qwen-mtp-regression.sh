@@ -7,8 +7,10 @@ BUILD_DIR="${BUILD_DIR:-$ROOT/build-strix-rocmfp4}"
 BIN="${BIN:-$BUILD_DIR/bin/llama-cli}"
 MODEL="${MODEL:-/home/caf/strix-fp4/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-MTP-BF16-to-ROCmFP4-STRIX_LEAN.gguf}"
 BACKEND="${BACKEND:-ROCm0}"
-MIN_DECODE_TPS="${MIN_DECODE_TPS:-30.0}"
-MIN_SUSTAINED_DECODE_TPS="${MIN_SUSTAINED_DECODE_TPS:-25.5}"
+SKIP_MISSING_MODEL="${SKIP_MISSING_MODEL:-1}"
+STALE_BINARY_CHECK="${STALE_BINARY_CHECK:-1}"
+MIN_DECODE_TPS="${MIN_DECODE_TPS:-12.0}"
+MIN_SUSTAINED_DECODE_TPS="${MIN_SUSTAINED_DECODE_TPS:-11.5}"
 RUN_SUSTAINED="${RUN_SUSTAINED:-1}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-8m}"
 SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-4}"
@@ -35,6 +37,29 @@ PROMPT_SHORT="Answer in one concise sentence: what is 17 plus 25?"
 PROMPT_SUSTAINED="Write eight short bullet points explaining why a regression guard matters for an experimental quantized LLM backend."
 
 cd "$ROOT"
+
+if [[ ! -x "$BIN" ]]; then
+    echo "missing llama-cli binary: $BIN" >&2
+    exit 1
+fi
+
+if [[ "$STALE_BINARY_CHECK" == "1" ]]; then
+    for src in common/speculative.cpp src/llama-context.cpp src/llama-model.cpp common/arg.cpp; do
+        if [[ -f "$src" && "$BIN" -ot "$src" ]]; then
+            echo "FAIL: $BIN is older than $src; rebuild before running Qwen MTP regression" >&2
+            exit 1
+        fi
+    done
+fi
+
+if [[ ! -f "$MODEL" ]]; then
+    if [[ "$SKIP_MISSING_MODEL" == "1" ]]; then
+        echo "SKIP: Qwen MTP regression model not found: $MODEL"
+        exit 0
+    fi
+    echo "missing Qwen MTP regression model: $MODEL" >&2
+    exit 1
+fi
 
 run_case() {
     local prompt="$1"

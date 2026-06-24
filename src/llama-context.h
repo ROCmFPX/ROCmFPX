@@ -117,6 +117,7 @@ struct llama_context {
     void set_embeddings_pre_norm(bool value, bool masked = false);
     void set_mtp_source(llama_context * src);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
+    void set_nextn_layer_offset(int32_t offset);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -155,7 +156,9 @@ struct llama_context {
     size_t state_seq_get_size(llama_seq_id seq_id, llama_state_seq_flags flags);
 
     size_t state_seq_get_data(llama_seq_id seq_id,       uint8_t * dst, size_t size, llama_state_seq_flags flags);
+    size_t state_seq_get_data(llama_seq_id seq_id,       uint8_t * dst, size_t size, llama_state_seq_flags flags,       llama_memory_buffers * storage);
     size_t state_seq_set_data(llama_seq_id seq_id, const uint8_t * src, size_t size, llama_state_seq_flags flags);
+    size_t state_seq_set_data(llama_seq_id seq_id, const uint8_t * src, size_t size, llama_state_seq_flags flags, const llama_memory_buffers * storage);
 
     bool state_load_file(
             const char * filepath,
