@@ -59,8 +59,10 @@ SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-4}"
 SPEC_DRAFT_N_MIN="${SPEC_DRAFT_N_MIN:-0}"
 SPEC_DRAFT_P_MIN="${SPEC_DRAFT_P_MIN:-0.0}"
 SPEC_DRAFT_P_SPLIT="${SPEC_DRAFT_P_SPLIT:-0.10}"
-CACHE_RAM="${CACHE_RAM:-0}"
-STRICT_BENCH="${STRICT_BENCH:-1}"
+CACHE_RAM="${CACHE_RAM:-8192}"
+STRICT_BENCH="${STRICT_BENCH:-0}"
+CTXCP="${CTXCP:-0}"
+CPENT="${CPENT:--1}"
 NO_MMPROJ="${NO_MMPROJ:-1}"
 AUTO_DETECT_MTP="${AUTO_DETECT_MTP:-1}"
 REQUIRE_MTP="${REQUIRE_MTP:-0}"
@@ -217,6 +219,8 @@ exec "$BIN" \
     --reasoning-format none \
     --reasoning-budget -1 \
     --no-context-shift \
+    --ctx-checkpoints "$CTXCP" \
+    --checkpoint-every-n-tokens "$CPENT" \
     -dev "$DEVICE" \
     -ngl "$N_GPU_LAYERS" \
     -fa "$FLASH_ATTN" \
