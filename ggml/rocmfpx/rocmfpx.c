@@ -637,6 +637,102 @@ static int8_t rocmfpx_quantize_fp8_code(float x, float inv_scale) {
     return (int8_t) q;
 }
 
+static float rocmfpx_fp8_block_mse_for_scale(const float * x, int n, uint8_t e, float best_err) {
+    const float scale = rocmfpx_scale_lookup(e);
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        if (!isfinite(x[i])) {
+            continue;
+        }
+
+        const int8_t code = rocmfpx_quantize_fp8_code(x[i], inv_scale);
+        const float y = (float) code * scale;
+        const float d = x[i] - y;
+
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+// Fast path: caller guarantees all x[i] are finite.
+static float rocmfpx_fp8_block_mse_for_scale_finite(const float * x, int n, uint8_t e, float best_err) {
+    const float scale = rocmfpx_scale_lookup(e);
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+    float err = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        const int8_t code = rocmfpx_quantize_fp8_code(x[i], inv_scale);
+        const float y = (float) code * scale;
+        const float d = x[i] - y;
+
+        err += d*d;
+        if (err > best_err) {
+            return err;
+        }
+    }
+
+    return err;
+}
+
+static uint8_t rocmfpx_choose_scale_fp8_mse(const float * x, int n) {
+    const float max_abs = rocmfpx_max_abs(x, n);
+    if (!(max_abs > 0.0f) || !isfinite(max_abs)) {
+        return 0;
+    }
+
+    bool all_finite = true;
+    for (int i = 0; i < n; ++i) {
+        all_finite = all_finite && isfinite(x[i]);
+    }
+
+    const uint8_t start_e = rocmfpx_nearest_scale_ue4m3(max_abs / 127.0f);
+    uint8_t best_e = start_e;
+    float best_err = INFINITY;
+    bool lower_done = false;
+
+    for (int delta = 0; delta <= 125; ++delta) {
+        const int e0 = (int) start_e - delta;
+        if (!lower_done && e0 >= 1 && e0 <= 126) {
+            const float scale = rocmfpx_scale_lookup((uint8_t) e0);
+            const float clip_delta = max_abs - 127.0f*scale;
+            if (clip_delta > 0.0f && clip_delta*clip_delta > best_err) {
+                lower_done = true;
+            } else {
+                const float err = all_finite ?
+                    rocmfpx_fp8_block_mse_for_scale_finite(x, n, (uint8_t) e0, best_err) :
+                    rocmfpx_fp8_block_mse_for_scale(x, n, (uint8_t) e0, best_err);
+                if (err < best_err || (err == best_err && e0 < best_e)) {
+                    best_err = err;
+                    best_e = (uint8_t) e0;
+                }
+            }
+        }
+
+        const int e1 = (int) start_e + delta;
+        if (delta != 0 && e1 >= 1 && e1 <= 126) {
+            const float err = all_finite ?
+                rocmfpx_fp8_block_mse_for_scale_finite(x, n, (uint8_t) e1, best_err) :
+                rocmfpx_fp8_block_mse_for_scale(x, n, (uint8_t) e1, best_err);
+            if (err < best_err || (err == best_err && e1 < best_e)) {
+                best_err = err;
+                best_e = (uint8_t) e1;
+            }
+        }
+
+        if ((lower_done || e0 <= 1) && e1 >= 126) {
+            break;
+        }
+    }
+
+    return best_e;
+}
+
 static float rocmfpx_fp8_block_weighted_mse_for_scale(const float * x, int n, const float * mse_weights, uint8_t e, float best_err) {
     const float scale = rocmfpx_scale_lookup(e);
     const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
@@ -978,7 +1074,7 @@ static void rocmfpx_quantize_row_fp8_weighted(
         block_rocmfp8 * yb = y + ib;
 
         yb->e = qw ? rocmfpx_choose_scale_fp8_weighted_mse(xb, QK_ROCMFP8, qw, sigma2) :
-                     rocmfpx_nearest_scale_ue4m3(rocmfpx_max_abs(xb, QK_ROCMFP8) / 127.0f);
+                     rocmfpx_choose_scale_fp8_mse(xb, QK_ROCMFP8);
 
         const float scale = rocmfpx_scale_lookup(yb->e);
         const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
@@ -997,8 +1093,7 @@ void rocmfpx_quantize_row_fp8_ref(const float * GGML_RESTRICT x, block_rocmfp8 *
         const float * xb = x + ib*QK_ROCMFP8;
         block_rocmfp8 * yb = y + ib;
 
-        const float max_abs = rocmfpx_max_abs(xb, QK_ROCMFP8);
-        yb->e = rocmfpx_nearest_scale_ue4m3(max_abs / 127.0f);
+        yb->e = rocmfpx_choose_scale_fp8_mse(xb, QK_ROCMFP8);
 
         const float scale = rocmfpx_scale_lookup(yb->e);
         const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
