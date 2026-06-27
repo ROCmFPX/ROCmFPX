@@ -349,10 +349,40 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
 #define VDR_ROCMFP4_Q8_1_MMQ  GGML_ROCMFP4_Q8_1_MMQ_VDR
 #define VDR_ROCMFP4_FAST_Q8_1_MMVQ GGML_ROCMFP4_FAST_Q8_1_MMVQ_VDR
 #define VDR_ROCMFP4_FAST_Q8_1_MMQ  GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR
-#define VDR_ROCMFP3_Q8_1_MMVQ 2
-#ifndef VDR_ROCMFP6_Q8_1_MMVQ
-#define VDR_ROCMFP6_Q8_1_MMVQ 4
+#ifndef GGML_ROCMFP3_Q8_1_MMVQ_VDR
+#define GGML_ROCMFP3_Q8_1_MMVQ_VDR 2
 #endif
+
+#ifndef GGML_ROCMFP6_Q8_1_MMVQ_VDR
+#define GGML_ROCMFP6_Q8_1_MMVQ_VDR 4
+#endif
+
+#ifndef GGML_ROCMFP8_Q8_1_MMVQ_VDR
+#define GGML_ROCMFP8_Q8_1_MMVQ_VDR 2
+#endif
+
+#if GGML_ROCMFP3_Q8_1_MMVQ_VDR != 1 && \
+    GGML_ROCMFP3_Q8_1_MMVQ_VDR != 2 && \
+    GGML_ROCMFP3_Q8_1_MMVQ_VDR != 4 && \
+    GGML_ROCMFP3_Q8_1_MMVQ_VDR != 8
+#error "GGML_ROCMFP3_Q8_1_MMVQ_VDR must be 1, 2, 4, or 8"
+#endif
+
+#if GGML_ROCMFP6_Q8_1_MMVQ_VDR != 1 && \
+    GGML_ROCMFP6_Q8_1_MMVQ_VDR != 2 && \
+    GGML_ROCMFP6_Q8_1_MMVQ_VDR != 4 && \
+    GGML_ROCMFP6_Q8_1_MMVQ_VDR != 8
+#error "GGML_ROCMFP6_Q8_1_MMVQ_VDR must be 1, 2, 4, or 8"
+#endif
+
+#if GGML_ROCMFP8_Q8_1_MMVQ_VDR != 1 && \
+    GGML_ROCMFP8_Q8_1_MMVQ_VDR != 2 && \
+    GGML_ROCMFP8_Q8_1_MMVQ_VDR != 4 && \
+    GGML_ROCMFP8_Q8_1_MMVQ_VDR != 8
+#error "GGML_ROCMFP8_Q8_1_MMVQ_VDR must be 1, 2, 4, or 8"
+#endif
+
+// Preserved from experimental branch: our FP6 MMVQ optimizations.
 #ifndef GGML_ROCMFP6_FAST_SIGNMAG_PACK
 #define GGML_ROCMFP6_FAST_SIGNMAG_PACK 0
 #endif
@@ -363,7 +393,10 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
 // per-element branch.
 #define GGML_ROCMFP6_MMVQ_HALF_BLOCK_SPLIT 1
 #endif
-#define VDR_ROCMFP8_Q8_1_MMVQ 2
+
+#define VDR_ROCMFP3_Q8_1_MMVQ GGML_ROCMFP3_Q8_1_MMVQ_VDR
+#define VDR_ROCMFP6_Q8_1_MMVQ GGML_ROCMFP6_Q8_1_MMVQ_VDR
+#define VDR_ROCMFP8_Q8_1_MMVQ GGML_ROCMFP8_Q8_1_MMVQ_VDR
 
 #define VDR_ROCMFP3_Q8_1_MMQ 4
 #ifndef VDR_ROCMFP6_Q8_1_MMQ
