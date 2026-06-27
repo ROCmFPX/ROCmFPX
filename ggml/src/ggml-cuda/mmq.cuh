@@ -1086,7 +1086,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         const block_rocmfp3 * bxi = (const block_rocmfp3 *) x + kbx0 + i*stride + kbx;
 
         const int v0 = rocmfpx_pack4_fp3_vec_cuda(bxi[0].qs, kqsx * 4);
-        const int v1 = rocmfpx_pack4_fp3_vec_cuda(bxi[MMQ_TILE_NE_K/QK_ROCMFP3].qs, kqsx * 4);
+        const int v1 = rocmfpx_pack4_fp3_vec_cuda(bxi[MMQ_TILE_NE_K/QI_ROCMFP3].qs, kqsx * 4);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_qs[i*MMQ_MMA_TILE_X_K_Q3_K + 0             + txi] = v0;
@@ -1097,7 +1097,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 
-    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QK_ROCMFP3;
+    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI_ROCMFP3;
     constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
     const int kbxd = threadIdx.x % blocks_per_tile_x_row;
 
@@ -1153,7 +1153,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         const block_rocmfp6 * bxi = (const block_rocmfp6 *) x + kbx0 + i*stride + kbx;
 
         const int v0 = rocmfpx_pack4_fp6_vec_cuda(bxi[0].qs, kqsx * 4);
-        const int v1 = rocmfpx_pack4_fp6_vec_cuda(bxi[MMQ_TILE_NE_K/QK_ROCMFP6].qs, kqsx * 4);
+        const int v1 = rocmfpx_pack4_fp6_vec_cuda(bxi[MMQ_TILE_NE_K/QI_ROCMFP6].qs, kqsx * 4);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_qs[i*MMQ_MMA_TILE_X_K_Q3_K + 0             + txi] = v0;
@@ -1164,7 +1164,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 
-    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QK_ROCMFP6;
+    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI_ROCMFP6;
     constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
     const int kbxd = threadIdx.x % blocks_per_tile_x_row;
 
@@ -1223,14 +1223,14 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + 0             + txi] = qs0;
-        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + MMQ_TILE_NE_K + txi] = get_int_b2((const void *) (bxi + MMQ_TILE_NE_K/QK_ROCMFP8)->qs, kqsx);
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + MMQ_TILE_NE_K + txi] = get_int_b2((const void *) (bxi + MMQ_TILE_NE_K/QI_ROCMFP8)->qs, kqsx);
 #else
         x_qs[i*(2*MMQ_TILE_NE_K + 1) + 0             + txi] = qs0;
-        x_qs[i*(2*MMQ_TILE_NE_K + 1) + MMQ_TILE_NE_K + txi] = get_int_b2((const void *) (bxi + MMQ_TILE_NE_K/QK_ROCMFP8)->qs, kqsx);
+        x_qs[i*(2*MMQ_TILE_NE_K + 1) + MMQ_TILE_NE_K + txi] = get_int_b2((const void *) (bxi + MMQ_TILE_NE_K/QI_ROCMFP8)->qs, kqsx);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 
-    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QK_ROCMFP8;
+    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI_ROCMFP8;
     constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
     const int kbxd = threadIdx.x % blocks_per_tile_x_row;
 
