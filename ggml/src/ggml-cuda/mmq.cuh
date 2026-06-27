@@ -74,6 +74,9 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_Q4_0_ROCMFP4:
         case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+        case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q8_0_ROCMFPX:
             return MMQ_Q8_1_DS_LAYOUT_D4;
         case GGML_TYPE_NVFP4:
             return MMQ_Q8_1_DS_LAYOUT_D4;
@@ -4550,6 +4553,9 @@ extern DECL_MMQ_CASE(GGML_TYPE_Q8_0);
 extern DECL_MMQ_CASE(GGML_TYPE_MXFP4);
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_0_ROCMFP4);
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_0_ROCMFP4_FAST);
+extern DECL_MMQ_CASE(GGML_TYPE_Q3_0_ROCMFPX);
+extern DECL_MMQ_CASE(GGML_TYPE_Q6_0_ROCMFPX);
+extern DECL_MMQ_CASE(GGML_TYPE_Q8_0_ROCMFPX);
 extern DECL_MMQ_CASE(GGML_TYPE_NVFP4);
 extern DECL_MMQ_CASE(GGML_TYPE_Q2_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q3_K);
