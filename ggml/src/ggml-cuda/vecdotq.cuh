@@ -527,7 +527,7 @@ static __device__ __forceinline__ float vec_dot_rocmfpx_fp6_q8_1(
     memcpy(&qs4, bq6->qs + 16, 4);
     memcpy(&qs5, bq6->qs + 20, 4);
 
-    const uint32_t qs[6] = { qs0, qs1, qs2, qs3, qs4, qs5 };
+    const uint32_t qs[7] = { qs0, qs1, qs2, qs3, qs4, qs5, 0 };
 
     int sumi0 = 0;
     int sumi1 = 0;
