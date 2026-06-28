@@ -383,7 +383,8 @@ SRC=model-BF16.gguf OUT=model-rankleave32.gguf scripts/quantize-rocmfpx-agent.sh
 ```
 
 The policy is explicit rather than a new ftype because the ranking CSV is
-model/evaluation specific.
+model/evaluation specific. `--leave-count` must be positive; use separate
+tensor-type rules if an all-restored policy is needed.
 
 For local served-inference experiments, `scripts/run-rocmfpx-fp3-mtp-server-speed-profile.sh`
 starts a `llama-server` FP3 MTP profile with the observed Strix/Vulkan settings:
