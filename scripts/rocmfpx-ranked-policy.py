@@ -65,8 +65,8 @@ def main() -> None:
     parser.add_argument("--restore-type", default="q6_k")
     args = parser.parse_args()
 
-    if args.leave_count < 0:
-        raise ValueError("--leave-count must be non-negative")
+    if args.leave_count <= 0:
+        parser.error("--leave-count must be positive")
 
     text = "\n".join(build_policy_lines(
         args.rank_csv,

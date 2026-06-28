@@ -23,4 +23,18 @@ mkdir -p "$TMP_DIR"
 
 diff -u "$FIXTURE_DIR/leave2.tensor-type.expected.txt" "$TMP_DIR/leave2.tensor-type.txt"
 
+if (
+    cd "$ROOT"
+    python3 scripts/rocmfpx-ranked-policy.py \
+        --rank-csv tests/fixtures/rocmfpx-ranked-policy/attention-rank.sample.csv \
+        --leave-count 0 \
+        --output "$TMP_DIR/leave0.tensor-type.txt" \
+        >"$TMP_DIR/leave0.stdout" 2>"$TMP_DIR/leave0.stderr"
+); then
+    echo "expected --leave-count 0 to fail" >&2
+    exit 1
+fi
+
+grep -F -- "--leave-count must be positive" "$TMP_DIR/leave0.stderr" >/dev/null
+
 echo "ROCmFPX ranked policy check passed"
