@@ -7841,12 +7841,15 @@ static constexpr size_t ggml_vk_rocmfpx_fp6_expanded_block_size = 34;
 
 static int8_t ggml_vk_rocmfpx_fp6_decode_code(uint8_t code) {
     const int8_t mag = code & 31;
-    return (code & 32) != 0 ? -mag : mag;
+    return (code & 32) != 0 ? -(mag == 0 ? 32 : mag) : mag;
 }
 
 static uint8_t ggml_vk_rocmfpx_fp6_encode_code(int8_t value) {
     if (value == 0) {
         return 0;
+    }
+    if (value == -32) {
+        return 32;
     }
     const uint8_t mag = (uint8_t) std::min<int>(std::abs((int) value), 31);
     return (value < 0 ? 32 : 0) | mag;

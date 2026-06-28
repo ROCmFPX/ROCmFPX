@@ -264,7 +264,7 @@ static void ggml_vec_dot_rocmfpx_fp2_q8_0(int n, float * GGML_RESTRICT s, size_t
 
 static inline int ggml_rocmfpx_decode_fp6_cpu(uint32_t code) {
     const int mag = (int) (code & 31u);
-    return (code & 32u) ? -mag : mag;
+    return (code & 32u) ? -(mag == 0 ? 32 : mag) : mag;
 }
 
 static void ggml_vec_dot_rocmfpx_fp3_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {

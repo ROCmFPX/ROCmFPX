@@ -463,11 +463,10 @@ static __device__ __forceinline__ int rocmfpx_pack4_fp2_vec_cuda(const uint8_t p
 static __device__ __forceinline__ int rocmfpx_decode_fp6_code_vec_cuda(const uint32_t code) {
 #if GGML_ROCMFP6_FAST_SIGNMAG_PACK
     const int mag = (int) (code & 31u);
-    const int sign = -((int) ((code >> 5) & 1u));
-    return (mag ^ sign) - sign;
+    return (code & 32u) ? -(mag == 0 ? 32 : mag) : mag;
 #else
     const int mag = (int) (code & 31u);
-    return (code & 32u) ? -mag : mag;
+    return (code & 32u) ? -(mag == 0 ? 32 : mag) : mag;
 #endif
 }
 
