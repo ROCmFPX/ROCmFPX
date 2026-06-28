@@ -365,6 +365,26 @@ rocmfpx-strix-moe-rpb1, rocmfpx-strix-moe-rpb2, rocmfpx-strix-moe-rpb3, rocmfpx-
 These profiles only alter MMVQ launch geometry. They do not change block
 layouts, quantized values, FP3/FP6 MSE scale selection, or Q3 LEAN routing.
 
+## Ranked Attention Tensor Policies
+
+`scripts/rocmfpx-ranked-policy.py` generates deterministic
+`llama-quantize --tensor-type-file` inputs for ranked ROCmFPX experiments. It
+keeps the lowest-error attention tensors in ROCmFPX and restores the remaining
+attention plus FFN up/gate/down tensors to `Q6_K`:
+
+```bash
+scripts/rocmfpx-ranked-policy.py \
+  --rank-csv attention-fp6-residual-rank.csv \
+  --leave-count 32 \
+  --output rankleave32.tensor-type.txt
+
+FORMAT=rocmfp6 PROFILE=straight TENSOR_TYPE_FILE=rankleave32.tensor-type.txt \
+SRC=model-BF16.gguf OUT=model-rankleave32.gguf scripts/quantize-rocmfpx-agent.sh
+```
+
+The policy is explicit rather than a new ftype because the ranking CSV is
+model/evaluation specific.
+
 For local served-inference experiments, `scripts/run-rocmfpx-fp3-mtp-server-speed-profile.sh`
 starts a `llama-server` FP3 MTP profile with the observed Strix/Vulkan settings:
 `draft-mtp`, `n_max=4`, `p_min=0.75`, F16 target/draft KV, and draft backend
