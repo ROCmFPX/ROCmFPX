@@ -365,6 +365,91 @@ rocmfpx-strix-moe-rpb1, rocmfpx-strix-moe-rpb2, rocmfpx-strix-moe-rpb3, rocmfpx-
 These profiles only alter MMVQ launch geometry. They do not change block
 layouts, quantized values, FP3/FP6 MSE scale selection, or Q3 LEAN routing.
 
+## Ranked Attention Tensor Policies
+
+`scripts/rocmfpx-ranked-policy.py` generates deterministic
+`llama-quantize --tensor-type-file` inputs for ranked ROCmFPX experiments. It
+keeps the lowest-error attention tensors in ROCmFPX and restores the remaining
+attention plus FFN up/gate/down tensors to `Q6_K`:
+
+```bash
+scripts/rocmfpx-ranked-policy.py \
+  --rank-csv attention-fp6-residual-rank.csv \
+  --leave-count 32 \
+  --output rankleave32.tensor-type.txt
+
+FORMAT=rocmfp6 PROFILE=straight TENSOR_TYPE_FILE=rankleave32.tensor-type.txt \
+SRC=model-BF16.gguf OUT=model-rankleave32.gguf scripts/quantize-rocmfpx-agent.sh
+```
+
+The policy is explicit rather than a new ftype because the ranking CSV is
+model/evaluation specific.
+
+For local served-inference experiments, `scripts/run-rocmfpx-fp3-mtp-server-speed-profile.sh`
+starts a `llama-server` FP3 MTP profile with the observed Strix/Vulkan settings:
+`draft-mtp`, `n_max=4`, `p_min=0.75`, F16 target/draft KV, and draft backend
+sampling disabled. This is an opt-in speed reproduction helper, not a validation
+gate or a universal default.
+
+The helper intentionally accepts environment overrides so the same launch shape
+can reproduce the FP4 cap4 rows with a local FP4 MTP GGUF:
+
+```bash
+# Baseline FP4 35B cap4 short-prompt run shape.
+MODEL=/path/to/Qwen3.6-35B-A3B-MTP-ROCmFP4.gguf \
+SPEC_DRAFT_P_MIN=0.0 \
+scripts/run-rocmfpx-fp3-mtp-server-speed-profile.sh
+
+# ACE/SABER FP4 cap4 short/text winner.
+MODEL=/path/to/Qwen3.6-35B-A3B-NSC-ACE-SABER-MTP-ROCmFP4.gguf \
+SPEC_DRAFT_P_MIN=0.25 \
+scripts/run-rocmfpx-fp3-mtp-server-speed-profile.sh
+```
+
+Keep the rest of the served profile fixed for comparable rows unless testing a
+specific arm: `Vulkan0`, `--parallel 1`, `-b 2048`, `-ub 512`, F16 target and
+draft KV, prompt cache disabled, metrics enabled, and
+`--no-spec-draft-backend-sampling`.
+
+Local Strix Halo evidence on a Qwen3.6 35B FP3+MTP GGUF showed strong decode
+wins when the prompt/generation shape had high MTP acceptance:
+
+| Shape | Profile | Decode tok/s | Draft accepted | Total time vs no MTP |
+|---|---:|---:|---:|---:|
+| 4.35k prompt / gen512 | no MTP | 77.80 | n/a | baseline |
+| 4.35k prompt / gen512 | n4 pmin0.75 | 134.25 | 403 / 408 | 20.9% faster |
+| 4.35k prompt / gen1024 | no MTP | 77.53 | n/a | baseline |
+| 4.35k prompt / gen1024 | n4 pmin0.75 | 137.00 | 813 / 818 | 30.3% faster |
+| 24.0k prompt / gen256 | n4 pmin0.75 | 118.84 | 202 / 202 | 4.9% slower |
+
+The 24k decode row is useful as an acceptance-rate signal, but it was not a full
+latency win at only 256 generated tokens because prefill dominated the request.
+
+Longer context ladder, same FP3+MTP served profile, `gen512`, prompt cache
+disabled:
+
+| Prompt tokens | Decode tok/s | Prompt tok/s | TTFP s | Draft accepted |
+|---:|---:|---:|---:|---:|
+| 2361 | 93.81 | 936.37 | 2.53 | 268 / 286 |
+| 4708 | 117.96 | 993.96 | 4.74 | 362 / 362 |
+| 9392 | 107.06 | 1024.00 | 9.18 | 341 / 349 |
+| 18766 | 100.94 | 964.59 | 19.48 | 347 / 351 |
+| 37521 | 99.66 | 819.11 | 45.84 | 405 / 405 |
+| 75023 | 53.67 | 628.07 | 119.52 | 196 / 220 |
+| 128278 | 46.08 | 472.47 | 271.62 | 245 / 287 |
+
+The same `n_max=4`, `p_min=0.75` request profile stays strong through roughly
+32k measured prompt tokens, then both prompt processing and draft acceptance
+taper sharply. That is a signal to test a separate long-context request policy,
+such as lower `n_max` or lower `p_min`, rather than treating the 4k winner as a
+universal default.
+
+The request-level speculative controls are above the quant kernels and can be
+applied to ROCmFP4 serving as well, but the FP3 bit-packing and shader work
+should not be copied to FP4 without separate FP4 evidence. Existing FP4 notes
+show model-specific MTP preferences, so FP4 should test these knobs as sweep
+arms instead of inheriting the FP3 `p_min=0.75` default.
+
 Historical decode speeds on earlier coherent Qwen3-0.6B presets (ROCm0 / Vulkan0):
 
 ```text

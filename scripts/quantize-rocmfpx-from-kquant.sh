@@ -32,6 +32,7 @@ SRC="${SRC:-}"
 OUT="${OUT:-}"
 PRESET="${PRESET:-Q3_0_ROCMFPX}"
 IMATRIX="${IMATRIX:-}"
+TENSOR_TYPE_FILE="${TENSOR_TYPE_FILE:-}"
 ALLOW_REQUANTIZE="${ALLOW_REQUANTIZE:-1}"
 RUN_COHERENCY="${RUN_COHERENCY:-0}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -47,6 +48,8 @@ Required:
 Optional:
   PRESET=Q3_0_ROCMFPX | Q6_0_ROCMFPX | Q8_0_ROCMFPX | *_AGENT variants
   IMATRIX=path         Importance matrix for better Q3/Q6 from Q8 sources
+  TENSOR_TYPE_FILE=path
+                       Tensor override file for experimental policies
   RUN_COHERENCY=1      Run check-rocmfpx-qwen-coherency.sh after quantize
   DRY_RUN=1            Print planned command only
 
@@ -68,6 +71,10 @@ fi
 
 if [[ ! -f "$SRC" ]]; then
     echo "missing source: $SRC" >&2
+    exit 1
+fi
+if [[ -n "$TENSOR_TYPE_FILE" && ! -f "$TENSOR_TYPE_FILE" ]]; then
+    echo "missing tensor type file: $TENSOR_TYPE_FILE" >&2
     exit 1
 fi
 
@@ -110,6 +117,9 @@ if [[ -n "$IMATRIX" ]]; then
     fi
     quant_args+=(--imatrix "$IMATRIX")
 fi
+if [[ -n "$TENSOR_TYPE_FILE" ]]; then
+    quant_args+=(--tensor-type-file "$TENSOR_TYPE_FILE")
+fi
 
 mkdir -p "$(dirname "$OUT")"
 
@@ -118,6 +128,7 @@ echo "Output:  $OUT"
 echo "Preset:  $PRESET"
 [[ -n "$warn" ]] && echo "WARN:    $warn"
 [[ -n "$IMATRIX" ]] && echo "Imatrix: $IMATRIX"
+[[ -n "$TENSOR_TYPE_FILE" ]] && echo "Tensor type file: $TENSOR_TYPE_FILE"
 
 if [[ "$DRY_RUN" == "1" ]]; then
     echo "DRY RUN: $QUANTIZE_BIN ${quant_args[*]} \"$SRC\" \"$OUT\" $PRESET"
@@ -137,6 +148,7 @@ print(json.dumps({
     "warn": warn or None,
     "allow_requantize": os.environ.get("ALLOW_REQUANTIZE", "1") == "1",
     "imatrix": os.environ.get("IMATRIX") or None,
+    "tensor_type_file": os.environ.get("TENSOR_TYPE_FILE") or None,
 }, indent=2))
 PY
 
