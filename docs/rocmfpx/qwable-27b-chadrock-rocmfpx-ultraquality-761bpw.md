@@ -1,4 +1,4 @@
-# Qwable 27B Chadrock-ROCmFPX-ULTRAQUALITY-7.63BPW
+# Qwable 27B Chadrock-ROCmFPX-ULTRAQUALITY-7.61BPW
 
 This lane identifies the Qwable 27B Chadrock ROCmFPX high-quality restore profile
 validated as the leave-16 ranked-attention policy with the Strix `mmid5`
@@ -6,7 +6,7 @@ runtime profile.
 
 ## Lane
 
-- Public name: `Qwable 27B Chadrock-ROCmFPX-ULTRAQUALITY-7.63BPW`
+- Public name: `Qwable 27B Chadrock-ROCmFPX-ULTRAQUALITY-7.61BPW`
 - Policy: ranked attention leave-16
 - Runtime profile: `rocmfpx-strix-mmid5`
 - GGUF artifact basename:
@@ -14,7 +14,7 @@ runtime profile.
 - Measured tensor BPW: `7.613087`
 - Measured file BPW: `7.616306`
 
-The `7.63BPW` suffix is the release-lane class name. The exact measured BPW
+The `7.61BPW` suffix is the release-lane class name. The exact measured BPW
 values above are from the GGUF tensor inventory.
 
 ## Reproduction Mapping
