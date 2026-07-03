@@ -194,6 +194,7 @@ Pick the build script for your machine:
 | RDNA2 / RX 6000 (`gfx1030` class) | `env JOBS=16 scripts/build-rdna2.sh` | `build-rdna2/` |
 | RDNA3 / RX 7000 (`gfx1100` class) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
 | RDNA4 / RX 9000 (`gfx1200` class) | `env JOBS=16 scripts/build-rdna4.sh` | `build-rdna4/` |
+| RDNA4 / RX 9000 — self-contained (no system ROCm) | `env JOBS=16 scripts/build-rocmfp4-rocm714-local.sh` | `build-rdna4-rocm714/` |
 | Vulkan fallback | use the Vulkan CMake path in `docs/BUILD-AMD-ARCHITECTURES.md` | custom |
 
 For Strix Halo, the common runtime environment is:
@@ -215,6 +216,12 @@ build-strix-rocmfp4/bin/test-backend-ops
 
 For RDNA2/RDNA3/RDNA4 builds, use the same binary names under that build
 folder, for example `build-rdna3/bin/llama-quantize`.
+
+The `build-rocmfp4-rocm714-local.sh` script (RDNA4 / RX 9000) downloads the
+ROCm 7.14.0a20260624 toolchain automatically and bundles the required
+runtime libraries alongside the binaries. The resulting build is
+self-contained — no system-wide ROCm install or `LD_LIBRARY_PATH` needed
+at runtime.
 
 ## Quantize Straight ROCmFPX Models
 
