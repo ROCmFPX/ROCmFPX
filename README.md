@@ -18,6 +18,29 @@ instructions by default.
 > and ROCmFPX tuning choices may change quickly. Results are hardware-, driver-,
 > model-, and prompt-sensitive, so use BF16/F16 sources for real quality tests.
 
+## Update — 2026-07-03
+
+Latest changes on this branch (measured on `gfx1151` / Strix Halo):
+
+- **MTP speculative decoding is now arch-aware and correctly tuned.** The MTP
+  server script (`scripts/run-rocmfpx-mtp-server.sh`) auto-picks the fastest
+  config per model: **dense** models use MTP (`n_max 6, p_min 0.6`); **MoE**
+  models run **no-spec** (set `FORCE_MTP_MOE=1` to override). The old
+  `--spec-draft-p-min 0.0` default made MTP a net *loss* — that is fixed.
+  Measured: dense Qwen3.6-27B **14 → 22 t/s** with MTP; MoE Qwen3.6-35B-A3B
+  **79 t/s** no-spec. On this hardware **`Vulkan0` decodes faster than `ROCm0`**
+  and is the server default.
+- **Why MoE skips MTP:** at batch=1 the batched verify pass loads the *union* of
+  the experts every drafted token routes to, and that overhead cancels the
+  speculative savings — this matches stock upstream `llama.cpp` behavior, so
+  no-spec is genuinely the fast path for MoE.
+- **QAT models (Gemma) default to full GPU offload + FlashAttention** so the
+  Google QAT speed/quality shows on AMD out of the box.
+- **`strix-rocmfpx` CMake preset** captures the known-good gfx1151 build
+  (HIP + Vulkan + native CPU).
+- **Correctness:** EAGLE3 concat axis fix; DFlash encoder input width now reads
+  `target_hidden_size` (the converter emits it).
+
 ## Quick Start (Strix Halo / `gfx1151`)
 
 Four commands from clone to a running model. For other AMD GPUs, swap the build
@@ -338,20 +361,32 @@ draft model needed. This is the most effective way to push decode throughput pas
 what the weight format alone can do, because accepted draft tokens produce several
 tokens per weight read.
 
+MTP helps **dense** models a lot; on **MoE** models it does not (see below), so
+pick the config by architecture. On `gfx1151`, `-dev Vulkan0` decodes faster than
+`-dev ROCm0` for both.
+
 ```bash
+# Dense model (e.g. Qwen3.6-27B): MTP is a big win
 build-strix-rocmfp4/bin/llama-cli \
-  -m model-ROCMFP4_FAST.gguf -dev ROCm0 -ngl 999 -fa on --jinja \
-  --spec-type draft-mtp --spec-draft-n-max 4
+  -m model-ROCMFP4_FAST.gguf -dev Vulkan0 -ngl 999 -fa on --jinja \
+  --spec-type draft-mtp --spec-draft-n-max 6 --spec-draft-p-min 0.6
 ```
 
-- **`--spec-draft-n-max 4`** is a good starting depth. Deeper is not always better —
-  with a single-layer MTP head, acceptance falls off past a few tokens.
+- **`--spec-draft-p-min` matters most.** At `0.0` the draft proposes
+  low-probability tokens that get rejected, making MTP a net *loss*; `0.6`–`0.75`
+  only drafts high-confidence tokens. Dense sweet spot here: `n_max 6, p_min 0.6`.
 - The speedup is **content-dependent**: structured / predictable output (code, lists,
   JSON) accepts more drafts and gains most; free-form creative text gains less.
 - It is **lossless**: at greedy (`--temp 0`) the output matches non-speculative
   decoding token-for-token (the target model verifies every drafted token).
-- Example measured on a 9B model (`gfx1151`): roughly **+14% to +36% tokens/sec**
-  depending on content, on top of the plain decode rate.
+- Measured on `gfx1151`: dense Qwen3.6-27B **14 → 22 t/s** (Vulkan0, `n6/p0.6`).
+
+**MoE models: run without MTP.** On mixture-of-experts models (e.g.
+Qwen3.6-35B-A3B) speculative decoding cannot beat no-spec — the batched verify
+pass loads the union of the experts each drafted token routes to, and that
+overhead cancels the savings (Qwen3.6-35B-A3B: **79 t/s** no-spec on Vulkan0 vs
+≤78.5 with MTP). Just drop the `--spec-*` flags. The server script detects MoE
+and disables MTP automatically.
 
 ## What The Agent Preset Protects
 
