@@ -5708,6 +5708,19 @@ class DFlashModel(Qwen3Model):
             extract_layer_ids = [i + 1 for i in target_layer_ids]
             self.gguf_writer.add_target_layers(extract_layer_ids)
 
+        # Emit the target model's hidden size so the loader sizes the encoder fc input as
+        # n_target_layers * target_hidden_size instead of assuming it equals the draft n_embd.
+        # Harmless when they already match; corrects the fc width when the draft is narrower.
+        if self.target_model_dir is not None:
+            try:
+                target_hparams = ModelBase.load_hparams(self.target_model_dir, self.is_mistral_format)
+                target_hidden = target_hparams.get("hidden_size", target_hparams.get("n_embd"))
+                if target_hidden:
+                    self.gguf_writer.add_target_hidden_size(int(target_hidden))
+                    logger.info(f"DFlash: target_hidden_size = {int(target_hidden)}")
+            except Exception as e:
+                logger.warning(f"DFlash: could not read target hidden size ({e}); loader will fall back to draft n_embd")
+
         use_sliding_window = self.hparams.get("use_sliding_window", False)
         sliding_window = self.hparams.get("sliding_window")
         layer_types = self.hparams.get("layer_types")
