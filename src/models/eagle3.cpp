@@ -213,8 +213,9 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
         // inpL is the concatenated input (normalized inp_embd + normalized inp_g)
         ggml_tensor * inpSA = hparams.norm_before_residual ? g_norm : inpL;
 
-        // Concatenate normalized inp_embd and normalized inp_g
-        cur = ggml_concat(ctx0, embd_norm, g_norm, il);
+        // Concatenate normalized inp_embd and normalized inp_g along the feature dim.
+        // (Must be dim 0, not il: it only happened to work because eagle3 has n_layer==1.)
+        cur = ggml_concat(ctx0, embd_norm, g_norm, 0);
         cb(cur, "concat_embd", il);
 
         // Self-attention with concatenated input

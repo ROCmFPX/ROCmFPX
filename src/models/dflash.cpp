@@ -11,7 +11,14 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
         throw std::runtime_error("DFlash model requires 'target_layers' or 'dflash.target_layer_ids' in GGUF metadata");
     }
 
-    hparams.n_embd_inp_enc_impl = (uint32_t) target_layer_ids.size() * hparams.n_embd;
+    // The encoder fc fuses the extracted target hidden states, so its input width is
+    // n_target_layers * target_hidden_size. Fall back to the draft n_embd when the key is
+    // absent (draft==target, the common case) so existing GGUFs load unchanged; only when a
+    // GGUF carries a differing target_hidden_size does this diverge from the old behavior.
+    uint32_t n_embd_tgt = hparams.n_embd;
+    ml.get_key(LLM_KV_TARGET_HIDDEN_SIZE, n_embd_tgt, false);
+    hparams.n_embd_inp_enc_impl = (uint32_t) target_layer_ids.size() * n_embd_tgt;
+    LLAMA_LOG_INFO("%s: DFlash n_embd_tgt = %u (draft n_embd = %u)\n", __func__, n_embd_tgt, hparams.n_embd);
 
     LLAMA_LOG_INFO("%s: DFlash extract_layers = [", __func__);
     for (size_t i = 0; i < target_layer_ids.size(); ++i) {
