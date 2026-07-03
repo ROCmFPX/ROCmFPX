@@ -55,9 +55,13 @@ CACHE_TYPE_K="${CACHE_TYPE_K:-f16}"
 CACHE_TYPE_V="${CACHE_TYPE_V:-$CACHE_TYPE_K}"
 CACHE_TYPE_K_DRAFT="${CACHE_TYPE_K_DRAFT:-$CACHE_TYPE_K}"
 CACHE_TYPE_V_DRAFT="${CACHE_TYPE_V_DRAFT:-$CACHE_TYPE_V}"
-SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-4}"
+# Dense MTP sweet spot (measured, Qwen3.6-27B/Vulkan0): n_max 6 + p_min 0.6 = 22.1 t/s,
+# beating n4/p0.75 (20.3) and no-spec (14.0). MoE gets spec disabled below regardless.
+SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-6}"
 SPEC_DRAFT_N_MIN="${SPEC_DRAFT_N_MIN:-0}"
-SPEC_DRAFT_P_MIN="${SPEC_DRAFT_P_MIN:-0.0}"
+# p-min 0.0 drafts low-probability tokens that get rejected, making MTP a net loss
+# (dense 27B: 13.5 no-spec -> 11.3 at p-min 0). 0.6 pairs with n_max 6 for the dense peak.
+SPEC_DRAFT_P_MIN="${SPEC_DRAFT_P_MIN:-0.6}"
 SPEC_DRAFT_P_SPLIT="${SPEC_DRAFT_P_SPLIT:-0.10}"
 CACHE_RAM="${CACHE_RAM:-8192}"
 STRICT_BENCH="${STRICT_BENCH:-0}"
@@ -107,9 +111,9 @@ case "$PERF_PRESET" in
         if [[ -z "$CACHE_TYPE_K_DRAFT_USER_SET" ]]; then CACHE_TYPE_K_DRAFT=q4_0; fi
         if [[ -z "$CACHE_TYPE_V_DRAFT_USER_SET" ]]; then CACHE_TYPE_V_DRAFT=q4_0; fi
         if [[ -z "$FLASH_ATTN_USER_SET" ]]; then FLASH_ATTN=on; fi
-        if [[ -z "$SPEC_DRAFT_N_MAX_USER_SET" ]]; then SPEC_DRAFT_N_MAX=4; fi
+        if [[ -z "$SPEC_DRAFT_N_MAX_USER_SET" ]]; then SPEC_DRAFT_N_MAX=6; fi
         if [[ -z "$SPEC_DRAFT_N_MIN_USER_SET" ]]; then SPEC_DRAFT_N_MIN=0; fi
-        if [[ -z "$SPEC_DRAFT_P_MIN_USER_SET" ]]; then SPEC_DRAFT_P_MIN=0.75; fi
+        if [[ -z "$SPEC_DRAFT_P_MIN_USER_SET" ]]; then SPEC_DRAFT_P_MIN=0.6; fi
         if [[ -z "$SPEC_DRAFT_P_SPLIT_USER_SET" ]]; then SPEC_DRAFT_P_SPLIT=0.10; fi
         SPEC_DRAFT_DEVICE="${SPEC_DRAFT_DEVICE:-$DEVICE}"
         ;;
@@ -151,6 +155,17 @@ if [[ "$AUTO_DETECT_MTP" == "1" ]]; then
             exit 3
         fi
         echo "warning: MODEL does not expose MTP metadata/tensors; starting without draft-mtp" >&2
+        spec_args=()
+    fi
+fi
+
+# MoE models: draft-mtp cannot beat no-spec here. The batched verify pass loads the
+# union of the experts every drafted token routes to, and that overhead cancels the
+# speculative savings (measured on 35B-A3B, Vulkan0: no-spec 79 t/s vs best MTP 78.5;
+# ROCm0: 69.5 vs 69.6). Dense models keep MTP (27B: 14 -> 22 t/s). Auto-drop spec for MoE.
+if [[ ${#spec_args[@]} -gt 0 && "$AUTO_DETECT_MTP" == "1" && "${FORCE_MTP_MOE:-0}" != "1" ]]; then
+    if "$SCRIPT_DIR/rocmfpx-model-capabilities.py" "$MODEL" --is-moe --quiet; then
+        echo "info: MoE model detected; disabling draft-mtp (no-spec is faster for MoE on this hardware; set FORCE_MTP_MOE=1 to override)" >&2
         spec_args=()
     fi
 fi

@@ -17,6 +17,13 @@ MTP_MARKERS = (
     b"nextn.",
 )
 
+# GGUF metadata keys emitted only by MoE architectures (e.g. "<arch>.expert_count").
+# Dense models don't write these, so their presence reliably flags a MoE model.
+MOE_MARKERS = (
+    b"expert_count",
+    b"expert_used_count",
+)
+
 DIFFUSION_MARKERS = (
     b"diffusion_gemma",
     b"diffusion-gemma",
@@ -311,7 +318,9 @@ def detect_capabilities(path: Path, probe_bytes: int) -> dict[str, object]:
     qat_markers = marker_hits(lower_data, QAT_MARKERS) + filename_hits(path, QAT_NAME_MARKERS)
     dflash_markers = marker_hits(lower_data, DFLASH_MARKERS) + filename_hits(path, DFLASH_NAME_MARKERS)
     agent_markers = marker_hits(lower_data, AGENT_MARKERS) + filename_hits(path, AGENT_NAME_MARKERS)
+    moe_markers = marker_hits(lower_data, MOE_MARKERS)
     supports_mtp = bool(markers)
+    is_moe = bool(moe_markers)
     supports_diffusion = bool(diffusion_markers)
     supports_dflash = bool(dflash_markers)
     is_qat = bool(qat_markers)
@@ -322,6 +331,8 @@ def detect_capabilities(path: Path, probe_bytes: int) -> dict[str, object]:
         "model_kind": model_kind,
         "probe_bytes": len(data),
         "supports_mtp": supports_mtp,
+        "is_moe": is_moe,
+        "moe_markers": moe_markers,
         "supports_diffusion": supports_diffusion,
         "supports_dflash": supports_dflash,
         "is_qat": is_qat,
@@ -340,6 +351,7 @@ def main() -> int:
     parser.add_argument("model", help="GGUF model path, usually the first split for split GGUFs")
     parser.add_argument("--probe-mib", type=int, default=64, help="MiB to scan from the start of the GGUF")
     parser.add_argument("--has-mtp", action="store_true", help="Exit 0 only when MTP markers are present")
+    parser.add_argument("--is-moe", action="store_true", help="Exit 0 only when the model is a MoE (has expert_count metadata)")
     parser.add_argument("--server-args", action="store_true", help="Print recommended server args, one shell-quoted line")
     parser.add_argument("--quiet", action="store_true", help="Suppress JSON output")
     args = parser.parse_args()
@@ -357,6 +369,8 @@ def main() -> int:
 
     if args.has_mtp:
         return 0 if caps["supports_mtp"] else 1
+    if args.is_moe:
+        return 0 if caps["is_moe"] else 1
     return 0
 
 
