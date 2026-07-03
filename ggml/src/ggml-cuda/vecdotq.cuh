@@ -357,7 +357,11 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
 #define GGML_ROCMFP6_FAST_SIGNMAG_PACK 0
 #endif
 #ifndef GGML_ROCMFP6_MMVQ_HALF_BLOCK_SPLIT
-#define GGML_ROCMFP6_MMVQ_HALF_BLOCK_SPLIT 0
+// Enabled by default: hoisting the half-block scale selection out of the FP6
+// MMVQ dot loop measured ~1.8% faster tg on gfx1151 (Qwen3-0.6B Q6_0_ROCMFPX,
+// 211.8 -> 215.7 t/s) with bit-identical results. Set to 0 to restore the
+// per-element branch.
+#define GGML_ROCMFP6_MMVQ_HALF_BLOCK_SPLIT 1
 #endif
 #define VDR_ROCMFP8_Q8_1_MMVQ 2
 
@@ -514,6 +518,15 @@ static __device__ __forceinline__ float vec_dot_rocmfpx_fp3_q8_1(
     int sumi0 = 0;
     int sumi1 = 0;
 
+    // The two half-block scales (e[0]/e[1]) split at element QK_ROCMFP3/2. base
+    // < QK_ROCMFP3/2 is equivalent to (iqs+i) < QK_ROCMFP3/8, so for a VDR
+    // window that lies entirely in one half the accumulator choice is loop
+    // invariant and can be hoisted out of the unrolled loop. A straddling window
+    // (only possible for VDRs that cross the midpoint) still uses the exact
+    // per-element branch, so results are bit-identical either way.
+    const bool fp3_first_half  = iqs + VDR_ROCMFP3_Q8_1_MMVQ <= QK_ROCMFP3/8;
+    const bool fp3_second_half = iqs >= QK_ROCMFP3/8;
+
 #pragma unroll
     for (int i = 0; i < VDR_ROCMFP3_Q8_1_MMVQ; ++i) {
         const int base = 4 * (iqs + i);
@@ -533,7 +546,11 @@ static __device__ __forceinline__ float vec_dot_rocmfpx_fp3_q8_1(
 
         const int u = get_int_b4(bq8_1->qs, iqs + i);
 
-        if (base < QK_ROCMFP3/2) {
+        if (fp3_first_half) {
+            sumi0 = ggml_cuda_dp4a(val_packed, u, sumi0);
+        } else if (fp3_second_half) {
+            sumi1 = ggml_cuda_dp4a(val_packed, u, sumi1);
+        } else if (base < QK_ROCMFP3/2) {
             sumi0 = ggml_cuda_dp4a(val_packed, u, sumi0);
         } else {
             sumi1 = ggml_cuda_dp4a(val_packed, u, sumi1);

@@ -7,6 +7,15 @@
 #include <float.h>
 #include <math.h>
 
+// ggml-base is compiled architecture-neutral (no -mavx2), so SIMD for the hot
+// CPU dot product is enabled per-function via a target attribute plus a runtime
+// CPU check. This keeps the AVX2 path in one translation unit without exporting
+// internals to ggml-cpu. Non-GNU/non-x86 builds fall back to the scalar loop.
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)) && !defined(ROCMFP4_NO_AVX2)
+#include <immintrin.h>
+#define ROCMFP4_X86_AVX2_DISPATCH 1
+#endif
+
 // ROCmFP4 stores a signed integer FP4-like codebook at half-scale. It is
 // E2M1-derived, but the largest magnitude is retuned from 12 to 10 after
 // sampling Qwen3 dense tensors; this reduces outlier pull without changing the
@@ -144,6 +153,45 @@ static inline uint8_t rocmfp4_best_index_scaled(float x, float inv_scale_half) {
     return rocmfp4_best_index_scaled_finite(x, inv_scale_half);
 }
 
+// Fused best-index + decode used only inside the exhaustive scale search. The
+// scale search re-scans every block element for every candidate scale byte, so
+// avoiding the code -> decode round-trip on the hottest quantize path matters.
+// Returns the same signed Codebook10 magnitude that
+// rocmfp4_decode(rocmfp4_best_index_scaled_finite(x, inv_scale_half)) produces,
+// so quantized output is bit-identical to the previous path.
+static inline float rocmfp4_decoded_mag_scaled_finite(float x, float inv_scale_half) {
+    const float a = fabsf(x * inv_scale_half);
+
+    float mag;
+    if (a <= 0.5f) {
+        mag = 0.0f;
+    } else if (a <= 1.5f) {
+        mag = 1.0f;
+    } else if (a <= 2.5f) {
+        mag = 2.0f;
+    } else if (a <= 3.5f) {
+        mag = 3.0f;
+    } else if (a <= 5.0f) {
+        mag = 4.0f;
+    } else if (a <= 7.0f) {
+        mag = 6.0f;
+    } else if (a <= 9.0f) {
+        mag = 8.0f;
+    } else {
+        mag = 10.0f;
+    }
+
+    return x < 0.0f ? -mag : mag;
+}
+
+static inline float rocmfp4_decoded_mag_scaled(float x, float inv_scale_half) {
+    if (!isfinite(x)) {
+        return 0.0f;
+    }
+
+    return rocmfp4_decoded_mag_scaled_finite(x, inv_scale_half);
+}
+
 static inline bool rocmfp4_scale_is_valid(uint8_t e) {
     // ROCmFP4 scale bytes are unsigned finite E4M3 values. 0x7f is NaN in the
     // unsigned encoding and values with the sign bit set are not valid scales.
@@ -157,8 +205,7 @@ static float rocmfp4_block_mse_for_scale_unweighted(
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t q = rocmfp4_best_index_scaled(x[i], inv_scale_half);
-        const float y = (float) rocmfp4_decode(q) * scale_half;
+        const float y = rocmfp4_decoded_mag_scaled(x[i], inv_scale_half) * scale_half;
         const float d = x[i] - y;
 
         err += d*d;
@@ -177,8 +224,7 @@ static float rocmfp4_block_mse_for_scale_unweighted_finite(
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t q = rocmfp4_best_index_scaled_finite(x[i], inv_scale_half);
-        const float y = (float) rocmfp4_decode(q) * scale_half;
+        const float y = rocmfp4_decoded_mag_scaled_finite(x[i], inv_scale_half) * scale_half;
         const float d = x[i] - y;
 
         err += d*d;
@@ -197,8 +243,7 @@ static float rocmfp4_block_mse_for_scale_weighted(
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t q = rocmfp4_best_index_scaled(x[i], inv_scale_half);
-        const float y = (float) rocmfp4_decode(q) * scale_half;
+        const float y = rocmfp4_decoded_mag_scaled(x[i], inv_scale_half) * scale_half;
         const float d = x[i] - y;
 
         err += mse_weights[i]*d*d;
@@ -217,8 +262,7 @@ static float rocmfp4_block_mse_for_scale_weighted_finite(
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t q = rocmfp4_best_index_scaled_finite(x[i], inv_scale_half);
-        const float y = (float) rocmfp4_decode(q) * scale_half;
+        const float y = rocmfp4_decoded_mag_scaled_finite(x[i], inv_scale_half) * scale_half;
         const float d = x[i] - y;
 
         err += mse_weights[i]*d*d;
@@ -614,6 +658,64 @@ bool rocmfp4_validate_row_data_fast(const void * data, size_t nbytes) {
     return true;
 }
 
+#ifdef ROCMFP4_X86_AVX2_DISPATCH
+__attribute__((target("avx2")))
+static inline int rocmfp4_hsum_i32_8_avx2(__m256i v) {
+    __m128i s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(1, 0, 3, 2)));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(2, 3, 0, 1)));
+    return _mm_cvtsi128_si32(s);
+}
+
+// Decode one 32-weight block's low and high nibble streams through the
+// Codebook10 table with a single PSHUFB, then integer-dot each against its half
+// of the q8_0 block. Integer sums are order-independent, so sumi0/sumi1 match
+// the scalar reference exactly and the float result is bit-identical.
+__attribute__((target("avx2")))
+static inline void rocmfp4_block_isums_avx2(
+        const uint8_t * qs, const int8_t * q8, int * sumi0, int * sumi1) {
+    const __m128i tbl = _mm_loadu_si128((const __m128i *) rocmfp4_codebook);
+    const __m128i q   = _mm_loadu_si128((const __m128i *) qs);
+    const __m128i lo  = _mm_and_si128(q, _mm_set1_epi8(0x0F));
+    const __m128i hi  = _mm_and_si128(_mm_srli_epi16(q, 4), _mm_set1_epi8(0x0F));
+    const __m128i dlo = _mm_shuffle_epi8(tbl, lo);
+    const __m128i dhi = _mm_shuffle_epi8(tbl, hi);
+    const __m128i ylo = _mm_loadu_si128((const __m128i *) q8);
+    const __m128i yhi = _mm_loadu_si128((const __m128i *) (q8 + QK_ROCMFP4/2));
+    const __m256i pl  = _mm256_madd_epi16(_mm256_cvtepi8_epi16(dlo), _mm256_cvtepi8_epi16(ylo));
+    const __m256i ph  = _mm256_madd_epi16(_mm256_cvtepi8_epi16(dhi), _mm256_cvtepi8_epi16(yhi));
+    *sumi0 = rocmfp4_hsum_i32_8_avx2(pl);
+    *sumi1 = rocmfp4_hsum_i32_8_avx2(ph);
+}
+
+__attribute__((target("avx2")))
+static void rocmfp4_vec_dot_q4_0_q8_0_avx2(
+        int nb, float * GGML_RESTRICT s, const block_rocmfp4 * GGML_RESTRICT x, const block_q8_0 * GGML_RESTRICT y) {
+    float sumf = 0.0f;
+    for (int ib = 0; ib < nb; ++ib) {
+        const float d0 = rocmfp4_ue4m3_to_fp32_half(x[ib].e[0]) * ggml_fp16_to_fp32(y[ib].d);
+        const float d1 = rocmfp4_ue4m3_to_fp32_half(x[ib].e[1]) * ggml_fp16_to_fp32(y[ib].d);
+        int sumi0, sumi1;
+        rocmfp4_block_isums_avx2(x[ib].qs, y[ib].qs, &sumi0, &sumi1);
+        sumf += d0 * (float) sumi0 + d1 * (float) sumi1;
+    }
+    *s = sumf;
+}
+
+__attribute__((target("avx2")))
+static void rocmfp4_vec_dot_q4_0_fast_q8_0_avx2(
+        int nb, float * GGML_RESTRICT s, const block_rocmfp4_fast * GGML_RESTRICT x, const block_q8_0 * GGML_RESTRICT y) {
+    float sumf = 0.0f;
+    for (int ib = 0; ib < nb; ++ib) {
+        const float d = rocmfp4_ue4m3_to_fp32_half(x[ib].e) * ggml_fp16_to_fp32(y[ib].d);
+        int sumi0, sumi1;
+        rocmfp4_block_isums_avx2(x[ib].qs, y[ib].qs, &sumi0, &sumi1);
+        sumf += d * (float) (sumi0 + sumi1);
+    }
+    *s = sumf;
+}
+#endif // ROCMFP4_X86_AVX2_DISPATCH
+
 void rocmfp4_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     GGML_UNUSED(bs);
     GGML_UNUSED(bx);
@@ -627,6 +729,14 @@ void rocmfp4_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const 
     const block_q8_0    * GGML_RESTRICT y = (const block_q8_0 *) vy;
 
     const int nb = n / QK_ROCMFP4;
+
+#ifdef ROCMFP4_X86_AVX2_DISPATCH
+    if (__builtin_cpu_supports("avx2")) {
+        rocmfp4_vec_dot_q4_0_q8_0_avx2(nb, s, x, y);
+        return;
+    }
+#endif
+
     float sumf = 0.0f;
 
     for (int ib = 0; ib < nb; ++ib) {
@@ -660,6 +770,14 @@ void rocmfp4_vec_dot_q4_0_fast_q8_0(int n, float * GGML_RESTRICT s, size_t bs, c
     const block_q8_0         * GGML_RESTRICT y = (const block_q8_0 *) vy;
 
     const int nb = n / QK_ROCMFP4;
+
+#ifdef ROCMFP4_X86_AVX2_DISPATCH
+    if (__builtin_cpu_supports("avx2")) {
+        rocmfp4_vec_dot_q4_0_fast_q8_0_avx2(nb, s, x, y);
+        return;
+    }
+#endif
+
     float sumf = 0.0f;
 
     for (int ib = 0; ib < nb; ++ib) {

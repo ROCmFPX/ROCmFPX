@@ -18,6 +18,47 @@ instructions by default.
 > and ROCmFPX tuning choices may change quickly. Results are hardware-, driver-,
 > model-, and prompt-sensitive, so use BF16/F16 sources for real quality tests.
 
+## Quick Start (Strix Halo / `gfx1151`)
+
+Four commands from clone to a running model. For other AMD GPUs, swap the build
+script using the [Clone And Build](#clone-and-build) table.
+
+```bash
+# 1. Get the code (experimental branch)
+git clone https://github.com/charlie12345/ROCmFPX.git
+cd ROCmFPX && git checkout experimental-rocmfpx-branch
+
+# 2. Build for Strix Halo
+env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh          # -> build-strix-rocmfp4/
+
+# 3. Quantize a BF16/F16 GGUF to ROCmFP4 (4.25 bpw, fastest decode)
+build-strix-rocmfp4/bin/llama-quantize model-BF16.gguf model-ROCMFP4_FAST.gguf Q4_0_ROCMFP4_FAST
+
+# 4. Run it (ROCm)
+export HSA_OVERRIDE_GFX_VERSION=11.5.1
+export GGML_HIP_ENABLE_UNIFIED_MEMORY=1
+build-strix-rocmfp4/bin/llama-cli -m model-ROCMFP4_FAST.gguf -dev ROCm0 -ngl 999 -fa on --jinja
+```
+
+That is the whole loop: **build → quantize → run.** The sections below explain
+each format, how to convert an existing NVFP4 model, and how to squeeze more
+decode speed with speculative decoding.
+
+## Which Format Should I Pick?
+
+| Goal | Use | Why |
+|---|---|---|
+| **Smallest + fastest decode** | `Q4_0_ROCMFP4_FAST` | 4.25 bpw, single scale/block — the speed default |
+| **Balanced 4-bit** | `Q4_0_ROCMFP4` | 4.50 bpw, dual per-16 scale — a touch more precision |
+| **Agents / tools / JSON / code** | `Q4_0_ROCMFP4_COHERENT` (or any `*_AGENT`) | protects the tensors that keep structured output correct |
+| **Strix Halo tuned recipe** | `Q4_0_ROCMFP4_STRIX_LEAN` | attn-K/V quality recipe tuned on `gfx1151` |
+| **Higher quality reference** | `Q6_0_ROCMFPX` / `Q8_0_ROCMFPX` | 6.5 / 8.25 bpw ROCmFPX references |
+| **Smallest experimental** | `Q3_0_ROCMFPX` | 3.5 bpw — smallest, most lossy; test coherency first |
+
+Rule of thumb: start with **`Q4_0_ROCMFP4_FAST`** for speed, or a **`*_COHERENT` /
+`*_AGENT`** preset if the model does tool-calling, JSON, or coding. Always compare
+against your BF16/F16 source for real quality checks.
+
 ## What Is ROCmFPX?
 
 ROCmFPX is a family of GGUF model-weight quants:
@@ -261,6 +302,56 @@ The wrapper maps `FORMAT` and `PROFILE` like this:
 | `rocmfp6` | `agent` | `Q6_0_ROCMFPX_AGENT` |
 | `rocmfp8` | `straight` | `Q8_0_ROCMFPX` |
 | `rocmfp8` | `agent` | `Q8_0_ROCMFPX_AGENT` |
+
+## Convert An Existing NVFP4 Model To ROCmFP4
+
+If you already have an **NVFP4** GGUF, you can re-map it onto the ROCmFP4 kernel
+path without re-quantizing from BF16. This is the closest-matching conversion
+ROCmFPX supports: NVFP4 and ROCmFP4 use the **same UE4M3 scale** and share **7 of
+8 codebook levels** — only the top magnitude level differs (NVFP4 `12` vs ROCmFP4
+`10`), so almost every weight maps over cleanly.
+
+```bash
+# Same 4.50 bpw as NVFP4 (closest quality match):
+build-strix-rocmfp4/bin/llama-quantize --allow-requantize \
+  model-NVFP4.gguf model-ROCMFP4.gguf Q4_0_ROCMFP4
+
+# Smaller 4.25 bpw (fastest decode, a little more loss):
+build-strix-rocmfp4/bin/llama-quantize --allow-requantize \
+  model-NVFP4.gguf model-ROCMFP4_FAST.gguf Q4_0_ROCMFP4_FAST
+```
+
+- `--allow-requantize` is **required**: NVFP4 GGUFs usually keep `output.weight` at
+  a higher-precision type (e.g. `q6_K`), so the file has mixed source types.
+- Example measured on a 9B NVFP4 model (wikitext-2, `gfx1151`): the 4.50 bpw target
+  landed within noise of the NVFP4 source perplexity; the 4.25 bpw `FAST` target was
+  ~5% higher perplexity for a ~10% smaller file. Numbers are model-dependent — always
+  A/B against the NVFP4 source on your own prompts.
+- To make *every* tensor ROCmFP4 (a uniform "even" file), use the `Q4_0_ROCMFP4_EVEN`
+  / `Q4_0_ROCMFP4_FAST_EVEN` presets, which imply `--pure`.
+
+## Faster Decode: MTP Speculative Decoding
+
+If your model ships with an **MTP / NextN** draft head (many recent models do),
+you can turn on self-speculative decoding for a real decode speedup — no separate
+draft model needed. This is the most effective way to push decode throughput past
+what the weight format alone can do, because accepted draft tokens produce several
+tokens per weight read.
+
+```bash
+build-strix-rocmfp4/bin/llama-cli \
+  -m model-ROCMFP4_FAST.gguf -dev ROCm0 -ngl 999 -fa on --jinja \
+  --spec-type draft-mtp --spec-draft-n-max 4
+```
+
+- **`--spec-draft-n-max 4`** is a good starting depth. Deeper is not always better —
+  with a single-layer MTP head, acceptance falls off past a few tokens.
+- The speedup is **content-dependent**: structured / predictable output (code, lists,
+  JSON) accepts more drafts and gains most; free-form creative text gains less.
+- It is **lossless**: at greedy (`--temp 0`) the output matches non-speculative
+  decoding token-for-token (the target model verifies every drafted token).
+- Example measured on a 9B model (`gfx1151`): roughly **+14% to +36% tokens/sec**
+  depending on content, on top of the plain decode rate.
 
 ## What The Agent Preset Protects
 

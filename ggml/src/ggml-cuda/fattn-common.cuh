@@ -1447,8 +1447,56 @@ void launch_fattn(
     const int cc  = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
 
+#ifdef GGML_USE_HIP
+    // HIP/ROCm: f16 dequant temp buffers for quantized KV need different
+    // allocation behavior depending on HIP graph capture state.
+    //
+    // Large prefill batches normally run eagerly and can allocate/free raw HIP
+    // memory so multi-GB f16 temp buffers do not stay retained in the legacy pool.
+    // Captured decode/speculative batches cannot call cudaMalloc/cudaFree or
+    // cudaStreamSynchronize during capture, so they must reuse the ggml pool.
+    //
+    // Small Q batches are also forced through the pool so the graph warmup path
+    // populates the allocation before capture starts.
+    hipStreamCaptureStatus fa_capture_status = hipStreamCaptureStatusNone;
+    CUDA_CHECK(hipStreamIsCapturing(main_stream, &fa_capture_status));
+    const bool fa_use_pool = (fa_capture_status != hipStreamCaptureStatusNone) || (Q->ne[1] <= 8);
+
+    struct hip_f16_alloc {
+        half           * ptr       = nullptr;
+        ggml_cuda_pool * mem_pool  = nullptr;
+        size_t           pool_size = 0;
+        cudaStream_t     stream;
+
+        hip_f16_alloc(cudaStream_t s, ggml_cuda_pool * p) : mem_pool(p), stream(s) {}
+
+        ~hip_f16_alloc() {
+            if (!ptr) {
+                return;
+            }
+            if (mem_pool) {
+                mem_pool->free(ptr, pool_size);
+            } else {
+                (void) cudaStreamSynchronize(stream);
+                (void) cudaFree(ptr);
+            }
+        }
+
+        void alloc(size_t nelements) {
+            if (mem_pool) {
+                ptr = (half *) mem_pool->alloc(nelements * sizeof(half), &pool_size);
+            } else {
+                CUDA_CHECK(cudaMalloc(&ptr, nelements * sizeof(half)));
+            }
+        }
+    };
+
+    hip_f16_alloc K_f16(main_stream, fa_use_pool ? &pool : nullptr);
+    hip_f16_alloc V_f16(main_stream, fa_use_pool ? &pool : nullptr);
+#else
     ggml_cuda_pool_alloc<half>   K_f16(pool);
     ggml_cuda_pool_alloc<half>   V_f16(pool);
+#endif
     ggml_cuda_pool_alloc<int>    KV_max(pool);
     ggml_cuda_pool_alloc<float>  dst_tmp(pool);
     ggml_cuda_pool_alloc<float2> dst_tmp_meta(pool);

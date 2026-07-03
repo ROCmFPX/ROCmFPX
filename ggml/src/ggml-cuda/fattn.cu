@@ -496,6 +496,16 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return BEST_FATTN_KERNEL_NONE;
     }
 
+#ifdef GGML_USE_HIP
+    // HIP graph capture cannot tolerate cudaMalloc/cudaFree in the TILE/MMA
+    // quantized-KV f16 temp path. Route small decode/speculative batches through
+    // VEC, which dequantizes inline and avoids capture-unsafe allocation calls.
+    // Large prefill batches still fall through to the faster TILE/MMA path.
+    if ((ggml_is_quantized(K->type) || ggml_is_quantized(V->type)) && can_use_vector_kernel && Q->ne[1] <= 8) {
+        return BEST_FATTN_KERNEL_VEC;
+    }
+#endif // GGML_USE_HIP
+
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
         if (can_use_vector_kernel) {
