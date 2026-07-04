@@ -1252,7 +1252,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
     // backend sampler chain per seq, attached to ctx_dft
     std::vector<llama_sampler *> backend_chains;
 
-    int32_t n_batch_alloc = 0;
     int32_t n_embd = 0;
 
     // One MTP draft driver, three modes (set once in the ctor):
@@ -1290,26 +1289,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
     {
         auto * ctx_tgt = this->params.ctx_tgt;
         auto * ctx_dft = this->params.ctx_dft;
-        if (ctx_tgt == nullptr || ctx_dft == nullptr) {
-            throw std::runtime_error("MTP requires target and draft contexts");
-        }
+        GGML_ASSERT(ctx_tgt && ctx_dft && "MTP requires ctx_tgt and ctx_dft to be set");
 
-        char arch_dft[64] = {};
-        llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_dft, sizeof(arch_dft));
-        const bool is_gemma4_assistant =
-            std::strcmp(arch_dft, "gemma4_assistant") == 0 ||
-            std::strcmp(arch_dft, "gemma4-assistant") == 0;
-
-        n_embd = is_gemma4_assistant
-            ? llama_model_n_embd_pre_norm(llama_get_model(ctx_tgt))
-            : llama_model_n_embd_pre_norm(llama_get_model(ctx_dft));
+        n_embd = llama_model_n_embd_pre_norm(llama_get_model(ctx_dft));
         n_mtp_layers = std::max(1, (int) llama_model_n_layer_nextn(llama_get_model(ctx_dft)));
-        if (n_embd <= 0) {
-            throw std::runtime_error("MTP requires a model with pre-norm hidden state support");
-        }
-        if (is_gemma4_assistant && n_embd != llama_model_n_embd_inp(llama_get_model(ctx_dft))) {
-            throw std::runtime_error("Gemma4 assistant MTP hidden width does not match target pre-norm width");
-        }
 
         LOG_INF("%s: adding speculative implementation 'draft-mtp'\n", __func__);
         LOG_INF("%s: - n_max=%d, n_min=%d, p_min=%.2f, n_embd=%d, backend_sampling=%d\n", __func__, this->params.n_max, this->params.n_min, this->params.p_min, n_embd, (int) this->params.backend_sampling);
@@ -1320,18 +1303,11 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 ctx_tgt ? "yes" : "no",
                 ctx_dft ? "yes" : "no");
 
-        const int32_t n_b = std::max((int32_t) llama_n_batch(ctx_tgt), (int32_t) llama_n_batch(ctx_dft));
-        if (n_b <= 0) {
-            throw std::runtime_error("MTP draft context has invalid batch size");
-        }
-        n_batch_alloc = n_b;
+        const int32_t n_b = (int32_t) llama_n_batch(ctx_dft);
         batch = llama_batch_init(/*n_tokens=*/ n_b, /*embd=*/ n_embd, /*n_seq_max=*/ 1);
         // llama_batch_init allocates only one of token/embd; MTP needs both.
         // TODO: fix, how to call without malloc
         batch.token = (llama_token *) malloc(sizeof(llama_token) * n_b);
-        if (batch.embd == nullptr || batch.token == nullptr) {
-            throw std::runtime_error("failed to allocate MTP draft batch");
-        }
 
         smpls.resize(n_seq);
         for (auto & s : smpls) {
@@ -1361,14 +1337,17 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
         }
 
+        char arch_dft[64] = {};
+        llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_dft, sizeof(arch_dft));
+        const bool full_hidden_rows =
+            std::strcmp(arch_dft, "gemma4_assistant") == 0 ||
+            std::strcmp(arch_dft, "gemma4-assistant") == 0;
+
         llama_set_embeddings_pre_norm(ctx_tgt, true, /*masked*/ false);
-        llama_set_embeddings_pre_norm(ctx_dft, true, /*masked*/ true);
+        llama_set_embeddings_pre_norm(ctx_dft, true, full_hidden_rows ? /*masked*/ false : /*masked*/ true);
 
-        is_mem_shared = is_gemma4_assistant || llama_get_ctx_other(ctx_dft) == ctx_tgt;
+        is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
-
-        LOG_INF("%s: - arch=%s, n_mtp_layers=%d, mem_shared=%d, chain_heads=%d\n", __func__,
-                arch_dft[0] ? arch_dft : "unknown", n_mtp_layers, (int) is_mem_shared, (int) chain_heads);
 
         if (chain_heads) {
             this->params.n_max = std::min(this->params.n_max, n_mtp_layers);
@@ -1422,7 +1401,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         }
         auto * ctx_dft = this->params.ctx_dft;
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_dft), seq_id);
-        if (pos_max < N - 1 && !is_mem_shared) {
+        if (pos_max < N - 1) {
             LOG_WRN("%s: ctx_dft pos_max=%d < N-1=%d — "
                     "process() hook may not have run on every prefill ubatch "
                     "(need_embd / logits=1 on every prompt position?). "
@@ -1440,17 +1419,8 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         if (batch_in.token == nullptr || batch_in.embd != nullptr) {
             return true;
         }
-        if (batch_in.pos == nullptr || batch_in.n_seq_id == nullptr || batch_in.seq_id == nullptr) {
-            LOG_ERR("%s: malformed token batch for MTP hidden-state hook\n", __func__);
-            return false;
-        }
 
         const int32_t n_tokens = batch_in.n_tokens;
-        if (n_tokens > n_batch_alloc) {
-            LOG_ERR("%s: MTP process batch too large: n_tokens=%d, capacity=%d\n",
-                    __func__, n_tokens, n_batch_alloc);
-            return false;
-        }
 
         // remember the first and last batch index for each sequence
         std::fill(i_batch_beg.begin(), i_batch_beg.end(), -1);
@@ -1458,11 +1428,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         std::fill(verify_h_rows.begin(), verify_h_rows.end(), 0);
 
         for (int k = 0; k < n_tokens; ++k) {
-            if (batch_in.n_seq_id[k] != 1 || batch_in.seq_id[k] == nullptr) {
-                LOG_ERR("%s: MTP requires exactly one sequence per token (idx=%d, n_seq_id=%d)\n",
-                        __func__, k, (int) batch_in.n_seq_id[k]);
-                return false;
-            }
+            GGML_ASSERT(batch_in.n_seq_id[k] == 1);
 
             const llama_seq_id seq_id = batch_in.seq_id[k][0];
             if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
@@ -1480,89 +1446,78 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
-        // Shared-memory MTP assistants such as Gemma4 read the target KV directly.
-        // Vanilla llama.cpp skips this catch-up decode for that path; decoding an
-        // embedding batch here can corrupt the draft graph inputs under high parallelism.
-        if (!is_mem_shared) {
-            common_batch_clear(batch);
+        common_batch_clear(batch);
 
-            for (int k = 0; k < n_tokens; ++k) {
-                common_speculative_batch_add_one_seq(batch, batch_in.token[k], batch_in.pos[k], batch_in.seq_id[k][0], false);
+        for (int k = 0; k < n_tokens; ++k) {
+            common_speculative_batch_add_one_seq(batch, batch_in.token[k], batch_in.pos[k], batch_in.seq_id[k][0], false);
+        }
+
+        // shift the tgt embeddings to the right by one position
+        // assumes that the tokens in the batch are sequential for each sequence
+        // i.e. we cannot have seq_id like this: [0, 0, 0, 1, 1, 0, 1, 1]
+        //                                                       ^--- this is a problem
+        // TODO:this is generally true, but would be nice to assert it
+        {
+            const float * h_tgt = llama_get_embeddings_pre_norm(ctx_tgt);
+            std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, row_bytes * (n_tokens-1));
+
+            //{
+            //    // string with seq_ids in the batch
+            //    std::stringstream ss;
+            //    for (int i = 0; i < n_tokens; ++i) {
+            //        ss << batch_in.seq_id[i][0] << ",";
+            //    }
+            //    LOG_WRN("%s: batch_in.seq_id = %s\n", __func__, ss.str().c_str());
+            //}
+        }
+
+        // fill the pending embeddings from a previous run
+        auto set_h = [&](int idx, const float * h_row) {
+            std::memcpy(batch.embd + (size_t) idx * n_embd, h_row, row_bytes);
+        };
+
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            if (i_batch_beg[seq_id] < 0) {
+                continue;
             }
 
-            // shift the tgt embeddings to the right by one position
-            // assumes that the tokens in the batch are sequential for each sequence
-            // i.e. we cannot have seq_id like this: [0, 0, 0, 1, 1, 0, 1, 1]
-            //                                                       ^--- this is a problem
-            // TODO:this is generally true, but would be nice to assert it
-            {
-                const float * h_tgt = llama_get_embeddings_pre_norm(ctx_tgt);
-                if (h_tgt == nullptr) {
-                    LOG_ERR("%s: missing target pre-norm hidden states for MTP\n", __func__);
-                    return false;
-                }
-                if (n_tokens > 1) {
-                    std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, row_bytes * (n_tokens-1));
-                }
-            }
+            set_h(i_batch_beg[seq_id], pending_h[seq_id].data());
+        }
 
-            // fill the pending embeddings from a previous run
-            auto set_h = [&](int idx, const float * h_row) {
-                std::memcpy(batch.embd + (size_t) idx * n_embd, h_row, row_bytes);
-            };
+        auto * mem_dft = llama_get_memory(ctx_dft);
 
-            for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
-                if (i_batch_beg[seq_id] < 0) {
-                    continue;
-                }
-
-                set_h(i_batch_beg[seq_id], pending_h[seq_id].data());
-            }
-
-            auto * mem_dft = llama_get_memory(ctx_dft);
-            if (mem_dft == nullptr) {
-                LOG_ERR("%s: missing MTP draft memory\n", __func__);
-                return false;
-            }
-
-            bool ok = true;
-            const int n_process_heads = chain_heads ? n_mtp_layers : 1;
-            for (int head = 0; head < n_process_heads; ++head) {
-                if (chain_heads) {
-                    // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
-                    for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
-                        if (i_batch_beg[seq_id] < 0) {
-                            continue;
-                        }
-                        llama_memory_seq_rm(mem_dft, seq_id, batch_in.pos[i_batch_beg[seq_id]], -1);
-                    }
-                    llama_set_nextn_layer_offset(ctx_dft, head);
-                    llm_graph_set_mtp_speculative_step(head);
-                }
-
-                const int32_t rc = llama_decode(ctx_dft, batch);
-                if (rc != 0) {
-                    LOG_ERR("%s: llama_decode(ctx_dft) head=%d failed rc=%d (pos=%d)\n",
-                            __func__, head, (int) rc, (int) batch_in.pos[0]);
-                    ok = false;
-                    break;
-                }
-            }
-
+        bool ok = true;
+        for (int head = 0; head < n_mtp_layers; ++head) {
             if (chain_heads) {
-                llama_set_nextn_layer_offset(ctx_dft, 0); // restore default for non-draft decodes
-                llm_graph_set_mtp_speculative_step(0);
+                // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
+                for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                    if (i_batch_beg[seq_id] < 0) {
+                        continue;
+                    }
+                    llama_memory_seq_rm(mem_dft, seq_id, batch_in.pos[i_batch_beg[seq_id]], -1);
+                }
+                llama_set_nextn_layer_offset(ctx_dft, head);
+                llm_graph_set_mtp_speculative_step(head);
             }
-            if (!ok) {
-                return false;
+
+            const int32_t rc = llama_decode(ctx_dft, batch);
+            if (rc != 0) {
+                LOG_ERR("%s: llama_decode(ctx_dft) head=%d failed rc=%d (pos=%d)\n",
+                        __func__, head, (int) rc, (int) batch_in.pos[0]);
+                ok = false;
+                break;
             }
+        }
+
+        if (chain_heads) {
+            llama_set_nextn_layer_offset(ctx_dft, 0); // restore default for non-draft decodes
+            llm_graph_set_mtp_speculative_step(0);
+        }
+        if (!ok) {
+            return false;
         }
 
         const float * h_tgt = llama_get_embeddings_pre_norm(ctx_tgt);
-        if (h_tgt == nullptr) {
-            LOG_ERR("%s: missing target pre-norm hidden states after MTP decode\n", __func__);
-            return false;
-        }
 
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             if (i_batch_end[seq_id] < 0) {
@@ -1610,17 +1565,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             if (!dp.drafting) {
                 continue;
             }
-            if (dp.result == nullptr) {
-                LOG_WRN("%s: seq_id=%d has no draft result buffer\n", __func__, (int) seq_id);
-                dp.drafting = false;
-                continue;
-            }
-            if (batch.n_tokens >= n_batch_alloc) {
-                LOG_WRN("%s: MTP draft batch full before seq_id=%d, capacity=%d\n",
-                        __func__, (int) seq_id, n_batch_alloc);
-                dp.drafting = false;
-                continue;
-            }
 
             last_n_drafted[seq_id] = 0;
 
@@ -1654,28 +1598,12 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             // latest token would leave its attention reading cells only another head wrote.
             if (chain_heads) {
                 auto * mem_dft = llama_get_memory(ctx_dft);
-                if (mem_dft == nullptr) {
-                    LOG_WRN("%s: missing MTP draft memory\n", __func__);
-                    break;
-                }
                 for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
                     if (drafting[seq_id]) {
                         llama_memory_seq_rm(mem_dft, seq_id, dparams[seq_id].n_past, -1);
                     }
                 }
                 llama_set_nextn_layer_offset(ctx_dft, i);
-            }
-            if (is_mem_shared) {
-                auto * mem_dft = llama_get_memory(ctx_dft);
-                if (mem_dft == nullptr) {
-                    LOG_WRN("%s: missing MTP draft memory\n", __func__);
-                    break;
-                }
-                for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
-                    if (drafting[seq_id]) {
-                        llama_memory_seq_rm(mem_dft, seq_id, dparams[seq_id].n_past, -1);
-                    }
-                }
             }
             llm_graph_set_mtp_speculative_step(i);
 
@@ -1705,43 +1633,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 }
 
                 auto * smpl = smpls[seq_id].get();
-                if (smpl == nullptr) {
-                    drafting[seq_id] = 0;
-                    n_drafting--;
-                    continue;
-                }
 
-                const llama_token id = common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
+                const auto * cur_p = common_sampler_sample_top_k_probs(smpl, ctx_dft, i_last[seq_id], MTP_DRAFT_TOP_K);
                 const float * h_row = llama_get_embeddings_pre_norm_ith(ctx_dft, i_last[seq_id]);
-                const auto * cur_p = common_sampler_get_candidates(smpl, true);
-                if (cur_p == nullptr || cur_p->size == 0 || h_row == nullptr) {
-                    LOG_WRN("%s: seq_id=%d stopped MTP draft because sampler or hidden row is unavailable\n",
-                            __func__, (int) seq_id);
-                    drafting[seq_id] = 0;
-                    n_drafting--;
-                    continue;
-                }
-
-                const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx_dft)));
-                if (id < 0 || id >= n_vocab) {
-                    LOG_WRN("%s: seq_id=%d stopped MTP draft because sampled token is invalid: %d (n_vocab=%d)\n",
-                            __func__, (int) seq_id, id, n_vocab);
-                    drafting[seq_id] = 0;
-                    n_drafting--;
-                    continue;
-                }
-
-                int i_selected = -1;
-                if (cur_p->selected >= 0 && cur_p->selected < (int64_t) cur_p->size && cur_p->data[cur_p->selected].id == id) {
-                    i_selected = cur_p->selected;
-                } else {
-                    for (int k = 0; k < (int) cur_p->size; ++k) {
-                        if (cur_p->data[k].id == id) {
-                            i_selected = k;
-                            break;
-                        }
-                    }
-                }
 
                 if (log_debug) {
                     for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
@@ -1751,8 +1645,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                     }
                 }
 
-                const float p = i_selected >= 0 ? cur_p->data[i_selected].p : 1.0f;
-                if (p < common_speculative_effective_p_min(params, dp)) {
+                // add drafted token for each sequence
+                const llama_token id = cur_p->data[0].id;
+
+                if (cur_p->data[0].p < common_speculative_effective_p_min(params, dp)) {
                     drafting[seq_id] = 0;
                     n_drafting--;
                     continue;
@@ -1773,11 +1669,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                     chain_h[seq_id].insert(chain_h[seq_id].end(), h_row, h_row + n_embd);
 
                     const int n_rows = (int) result.size() + 1; // id_last + tokens drafted so far
-                    if (batch.n_tokens + n_rows > n_batch_alloc) {
-                        drafting[seq_id] = 0;
-                        n_drafting--;
-                        continue;
-                    }
                     for (int t = 0; t < n_rows; ++t) {
                         const llama_token tok = (t == 0) ? dp.id_last : result[t - 1];
                         common_speculative_batch_add_one_seq(batch, tok, dp.n_past + t, seq_id, t == n_rows - 1);
@@ -1787,19 +1678,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 } else if (is_mem_shared) {
                     // note: with shared memory (e.g. Gemma4 assistants) we use the same position for all draft tokens
                     // ref: https://github.com/huggingface/transformers/blob/effde20942e3f82a1b97449f60b3a48c5ff96145/docs/source/en/model_doc/gemma4_assistant.md?plain=1#L36-L37
-                    if (batch.n_tokens >= n_batch_alloc) {
-                        drafting[seq_id] = 0;
-                        n_drafting--;
-                        continue;
-                    }
                     common_speculative_batch_add_one_seq(batch, id, dp.n_past, seq_id, true);
                     std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, h_row, row_bytes);
                 } else {
-                    if (batch.n_tokens >= n_batch_alloc) {
-                        drafting[seq_id] = 0;
-                        n_drafting--;
-                        continue;
-                    }
                     common_speculative_batch_add_one_seq(batch, id, dp.n_past + i + 1, seq_id, true);
                     std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, h_row, row_bytes);
                 }
@@ -1817,7 +1698,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         if (chain_heads) {
             llama_set_nextn_layer_offset(ctx_dft, 0); // restore default for non-draft decodes
         }
-        llm_graph_set_mtp_speculative_step(0);
 
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             auto & dp = dparams[seq_id];
@@ -1830,6 +1710,8 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             if (dp.result->size() < (size_t) n_min) {
                 dp.result->clear();
             }
+
+            last_n_drafted[seq_id] = (uint16_t) dp.result->size();
         }
     }
 
@@ -1847,12 +1729,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         const int32_t i_h = std::min<int32_t>(n_accepted, n_rows - 1);
         if (i_h != n_rows - 1) {
             const size_t row_bytes = (size_t) n_embd * sizeof(float);
-            if (verify_h[seq_id].size() < (size_t) (i_h + 1) * n_embd) {
-                LOG_WRN("%s: seq_id=%d missing verify hidden row %d/%d\n",
-                        __func__, (int) seq_id, (int) i_h, (int) n_rows);
-                last_n_drafted[seq_id] = 0;
-                return;
-            }
             std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
         }
         last_n_drafted[seq_id] = 0;
