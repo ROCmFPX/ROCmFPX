@@ -159,16 +159,10 @@ if [[ "$AUTO_DETECT_MTP" == "1" ]]; then
     fi
 fi
 
-# MoE models: draft-mtp cannot beat no-spec here. The batched verify pass loads the
-# union of the experts every drafted token routes to, and that overhead cancels the
-# speculative savings (measured on 35B-A3B, Vulkan0: no-spec 79 t/s vs best MTP 78.5;
-# ROCm0: 69.5 vs 69.6). Dense models keep MTP (27B: 14 -> 22 t/s). Auto-drop spec for MoE.
-if [[ ${#spec_args[@]} -gt 0 && "$AUTO_DETECT_MTP" == "1" && "${FORCE_MTP_MOE:-0}" != "1" ]]; then
-    if "$SCRIPT_DIR/rocmfpx-model-capabilities.py" "$MODEL" --is-moe --quiet; then
-        echo "info: MoE model detected; disabling draft-mtp (no-spec is faster for MoE on this hardware; set FORCE_MTP_MOE=1 to override)" >&2
-        spec_args=()
-    fi
-fi
+# NOTE: MoE models DO benefit from draft-mtp with the lean draft_mtp (main lineage) —
+# measured +20% on Qwen3.6-35B-A3B ROCmFP4/Vulkan0 (no-spec 77.6 -> MTP 93.4 t/s). The
+# earlier MoE auto-disable was an artifact of the db247885a draft_mtp throttling MTP;
+# it has been removed. Both dense and MoE keep draft-mtp (n_max 6, p_min 0.6).
 
 cache_args=(--cache-ram "$CACHE_RAM")
 if [[ "$STRICT_BENCH" == "1" ]]; then
