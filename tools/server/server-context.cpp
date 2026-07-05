@@ -818,8 +818,12 @@ private:
                                                params_base.speculative.types.end(),
                                                COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params_base.speculative.types.end();
             if (spec_mtp) {
+                // NOTE: do NOT set ctx_other = ctx_tgt for a separate-model MTP draft.
+                // MTP reads the target's pre-norm hidden states via ctx_tgt directly
+                // (see speculative.cpp). Setting ctx_other here would make the draft
+                // ctor mis-detect is_mem_shared (gemma4-style shared KV) and disable
+                // chain_heads for multi-head Step MTP3 drafts, breaking draft KV resets.
                 cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
-                cparams.ctx_other = ctx_tgt;
             } else if (spec_eagle3 || spec_dflash) {
                 cparams.ctx_other = ctx_tgt;
             }
