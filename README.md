@@ -18,22 +18,29 @@ instructions by default.
 > and ROCmFPX tuning choices may change quickly. Results are hardware-, driver-,
 > model-, and prompt-sensitive, so use BF16/F16 sources for real quality tests.
 
-## Update — 2026-07-03
+## Update — 2026-07-04
 
 Latest changes on this branch (measured on `gfx1151` / Strix Halo):
 
-- **MTP speculative decoding is now arch-aware and correctly tuned.** The MTP
-  server script (`scripts/run-rocmfpx-mtp-server.sh`) auto-picks the fastest
-  config per model: **dense** models use MTP (`n_max 6, p_min 0.6`); **MoE**
-  models run **no-spec** (set `FORCE_MTP_MOE=1` to override). The old
-  `--spec-draft-p-min 0.0` default made MTP a net *loss* — that is fixed.
-  Measured: dense Qwen3.6-27B **14 → 22 t/s** with MTP; MoE Qwen3.6-35B-A3B
-  **79 t/s** no-spec. On this hardware **`Vulkan0` decodes faster than `ROCm0`**
-  and is the server default.
-- **Why MoE skips MTP:** at batch=1 the batched verify pass loads the *union* of
-  the experts every drafted token routes to, and that overhead cancels the
-  speculative savings — this matches stock upstream `llama.cpp` behavior, so
-  no-spec is genuinely the fast path for MoE.
+- **M-RoPE MTP fix — speculative decoding now actually runs on `qwen35` /
+  `qwen35moe` (and every other M-RoPE arch).** These architectures use IMROPE
+  (`n_pos_per_embd = 4`), and the batch position check in `src/llama-batch.cpp`
+  was rejecting the MTP draft/verify batch on *every* step (`for M-RoPE, it is
+  required that the position satisfies: X < Y`). MTP was silently falling back
+  to plain decode. The MTP hook batch is a *hybrid*: it carries a token id (for
+  the embedding lookup) **and** an injected hidden-state row, so it must use the
+  same lenient position rule as an embedding batch (`X <= Y`). Fixed by gating
+  the strict check on `batch.token && !batch.embd`. Measured (Vulkan0, `n_max 6,
+  p_min 0.6`):
+  - Dense Qwen3.5-27B coder (`qwen35`): **14 → 48 t/s** (3.4×).
+  - MoE Qwen3.6-35B-A3B (`qwen35moe`): **76 → 115 t/s** (1.5×).
+- **MTP is now used for both dense and MoE.** The server script
+  (`scripts/run-rocmfpx-mtp-server.sh`) applies `n_max 6, p_min 0.6` to both;
+  MoE gains from MTP once the position check lets it run (the earlier "MoE runs
+  no-spec / expert-union ceiling" guidance was an artifact of MTP never actually
+  engaging on these M-RoPE models). NEOX-RoPE MTP (e.g. Gemma4 assistants) was
+  never affected. On this hardware **`Vulkan0` decodes faster than `ROCm0`** and
+  is the server default.
 - **QAT models (Gemma) default to full GPU offload + FlashAttention** so the
   Google QAT speed/quality shows on AMD out of the box.
 - **`strix-rocmfpx` CMake preset** captures the known-good gfx1151 build
@@ -368,12 +375,11 @@ draft model needed. This is the most effective way to push decode throughput pas
 what the weight format alone can do, because accepted draft tokens produce several
 tokens per weight read.
 
-MTP helps **dense** models a lot; on **MoE** models it does not (see below), so
-pick the config by architecture. On `gfx1151`, `-dev Vulkan0` decodes faster than
-`-dev ROCm0` for both.
+MTP helps **both dense and MoE** models here. On `gfx1151`, `-dev Vulkan0`
+decodes faster than `-dev ROCm0` for both.
 
 ```bash
-# Dense model (e.g. Qwen3.6-27B): MTP is a big win
+# Any MTP model (dense or MoE): same flags
 build-strix-rocmfp4/bin/llama-cli \
   -m model-ROCMFP4_FAST.gguf -dev Vulkan0 -ngl 999 -fa on --jinja \
   --spec-type draft-mtp --spec-draft-n-max 6 --spec-draft-p-min 0.6
@@ -386,14 +392,19 @@ build-strix-rocmfp4/bin/llama-cli \
   JSON) accepts more drafts and gains most; free-form creative text gains less.
 - It is **lossless**: at greedy (`--temp 0`) the output matches non-speculative
   decoding token-for-token (the target model verifies every drafted token).
-- Measured on `gfx1151`: dense Qwen3.6-27B **14 → 22 t/s** (Vulkan0, `n6/p0.6`).
+- Measured on `gfx1151` (Vulkan0, `n6/p0.6`): dense Qwen3.5-27B coder
+  **14 → 48 t/s**; MoE Qwen3.6-35B-A3B **76 → 115 t/s**.
 
-**MoE models: run without MTP.** On mixture-of-experts models (e.g.
-Qwen3.6-35B-A3B) speculative decoding cannot beat no-spec — the batched verify
-pass loads the union of the experts each drafted token routes to, and that
-overhead cancels the savings (Qwen3.6-35B-A3B: **79 t/s** no-spec on Vulkan0 vs
-≤78.5 with MTP). Just drop the `--spec-*` flags. The server script detects MoE
-and disables MTP automatically.
+**M-RoPE models (`qwen35` / `qwen35moe`, and any IMROPE/MROPE arch):** MTP now
+works on these. They use 4-D M-RoPE positions, and the batch position check
+previously rejected the MTP draft/verify batch every step (`for M-RoPE, it is
+required that the position satisfies: X < Y`), so MTP silently fell back to
+plain decode. The MTP hook batch is a hybrid (token id **plus** an injected
+hidden-state row) and is allowed to reuse positions like an embedding batch, so
+the strict check is now gated on `batch.token && !batch.embd`
+(`src/llama-batch.cpp`). If you are on an older build and see that `X < Y` error
+spamming during MTP, this is the fix. NEOX-RoPE MTP (e.g. Gemma4 assistants) was
+never affected.
 
 ## What The Agent Preset Protects
 
