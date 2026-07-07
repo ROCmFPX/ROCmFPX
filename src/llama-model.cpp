@@ -2116,6 +2116,14 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         };
                     }
 
+                    if (arch == LLM_ARCH_HY_V3 && hparams.n_layer_nextn > 0) {
+                        if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
+                            filter = [&](int32_t il) { return (uint32_t) il >= hparams.n_layer(); };
+                        } else {
+                            filter = [&](int32_t il) { return (uint32_t) il < hparams.n_layer(); };
+                        }
+                    }
+
                     if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
                         GGML_ASSERT(hparams.is_swa_any());
 
