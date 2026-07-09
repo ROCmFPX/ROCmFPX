@@ -1406,6 +1406,8 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             if (dp.result->size() < (size_t) n_min) {
                 dp.result->clear();
             }
+
+            last_n_drafted[seq_id] = (uint16_t) dp.result->size();
         }
     }
 
