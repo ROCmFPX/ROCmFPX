@@ -56,10 +56,5 @@ export const VARIABLE_PREFIX_MODIFIER_REGEX = /:[\d]+$/;
 /** Regex to strip one or more leading slashes */
 export const LEADING_SLASHES_REGEX = /^\/+/;
 
-/** Regex to match a base64 data URI for an image and capture its MIME subtype.
- *  Used by cap-img-size.ts to extract the MIME type from a data URL like
- *  "data:image/png;base64,iVBOR...". Group 1 contains the subtype (e.g. "png",
- *  "jpeg", "svg+xml", "vnd.microsoft.icon"), which is then validated against
- *  MimeTypeImage. Matches case-insensitively because MIME types are RFC-defined
- *  as case-insensitive but the MimeTypeImage enum is lowercase. */
-export const BASE64_IMAGE_URI_REGEX = /^data:image\/([a-zA-Z0-9.+-]+);base64,/i;
+/** Regex to capture the complete MIME type from a base64 image data URI. */
+export const BASE64_IMAGE_URI_REGEX = /^data:(image\/[a-z0-9.\-+]+);base64/;

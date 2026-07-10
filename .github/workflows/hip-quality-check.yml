@@ -63,6 +63,7 @@ jobs:
             -DGGML_HIP=ON \
             -DGGML_HIP_EXPORT_METRICS=Off \
             -DCMAKE_HIP_FLAGS="-Werror -Wno-tautological-compare" \
+            -DLLAMA_BUILD_WEBUI=OFF \
             -DCMAKE_BUILD_TYPE=Release
           cd build
           make -j $(nproc)
@@ -76,6 +77,7 @@ jobs:
             -DGGML_HIP=ON \
             -DGGML_HIP_EXPORT_METRICS=On \
             -DCMAKE_HIP_FLAGS="" \
+            -DLLAMA_BUILD_WEBUI=OFF \
             -DCMAKE_BUILD_TYPE=Release
           cd build
           make -j $(nproc) 2>&1 | tee metrics.log | grep -v 'Rpass-analysis=kernel-resource-usage\|remark:\|^$'

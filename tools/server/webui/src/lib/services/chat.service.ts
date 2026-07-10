@@ -135,26 +135,28 @@ export class ChatService {
 			continueFinalMessage
 		} = options;
 
-		const normalizedMessages: ApiChatMessageData[] = (await Promise.all(messages
-			.map(async (msg) => {
-				if ('id' in msg && 'convId' in msg && 'timestamp' in msg) {
-					const dbMsg = msg as DatabaseMessage & { extra?: DatabaseMessageExtra[] };
+		const normalizedMessages: ApiChatMessageData[] = (
+			await Promise.all(
+				messages.map((msg) => {
+					if ('id' in msg && 'convId' in msg && 'timestamp' in msg) {
+						const dbMsg = msg as DatabaseMessage & { extra?: DatabaseMessageExtra[] };
 
-					return ChatService.convertDbMessageToApiChatMessageData(dbMsg);
-				} else {
-					return msg as ApiChatMessageData;
-				}
-			})
-			.then((arr) => arr.filter((msg) => {
-				// Filter out empty system messages
-				if (msg.role === MessageRole.SYSTEM) {
-					const content = typeof msg.content === 'string' ? msg.content : '';
+						return ChatService.convertDbMessageToApiChatMessageData(dbMsg);
+					} else {
+						return msg as ApiChatMessageData;
+					}
+				})
+			)
+		).filter((msg) => {
+			// Filter out empty system messages
+			if (msg.role === MessageRole.SYSTEM) {
+				const content = typeof msg.content === 'string' ? msg.content : '';
 
-					return content.trim().length > 0;
-				}
+				return content.trim().length > 0;
+			}
 
-				return true;
-			}))));
+			return true;
+		});
 
 		// Filter out image attachments if the model doesn't support vision
 		if (options.model && !modelsStore.modelSupportsVision(options.model)) {
@@ -383,25 +385,27 @@ export class ChatService {
 		excludeReasoning?: boolean,
 		signal?: AbortSignal
 	): Promise<void> {
-		const normalizedMessages: ApiChatMessageData[] = (await Promise.all(messages
-			.map(async (msg) => {
-				if ('id' in msg && 'convId' in msg && 'timestamp' in msg) {
-					return ChatService.convertDbMessageToApiChatMessageData(
-						msg as DatabaseMessage & { extra?: DatabaseMessageExtra[] }
-					);
-				}
+		const normalizedMessages: ApiChatMessageData[] = (
+			await Promise.all(
+				messages.map((msg) => {
+					if ('id' in msg && 'convId' in msg && 'timestamp' in msg) {
+						return ChatService.convertDbMessageToApiChatMessageData(
+							msg as DatabaseMessage & { extra?: DatabaseMessageExtra[] }
+						);
+					}
 
-				return msg as ApiChatMessageData;
-			})
-			.then((arr) => arr.filter((msg) => {
-				if (msg.role === MessageRole.SYSTEM) {
-					const content = typeof msg.content === 'string' ? msg.content : '';
+					return msg as ApiChatMessageData;
+				})
+			)
+		).filter((msg) => {
+			if (msg.role === MessageRole.SYSTEM) {
+				const content = typeof msg.content === 'string' ? msg.content : '';
 
-					return content.trim().length > 0;
-				}
+				return content.trim().length > 0;
+			}
 
-				return true;
-			}))));
+			return true;
+		});
 
 		const requestBody: Record<string, unknown> = {
 			messages: normalizedMessages.map((msg: ApiChatMessageData) => {
@@ -786,7 +790,7 @@ export class ChatService {
 	 */
 	static async convertDbMessageToApiChatMessageData(
 		message: DatabaseMessage & { extra?: DatabaseMessageExtra[] }
-	): ApiChatMessageData {
+	): Promise<ApiChatMessageData> {
 		// Handle tool result messages (role: 'tool')
 		if (message.role === MessageRole.TOOL && message.toolCallId) {
 			return {
