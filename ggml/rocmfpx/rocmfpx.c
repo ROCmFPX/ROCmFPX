@@ -274,6 +274,24 @@ static uint8_t rocmfpx_quantize_fp3_code(float x, float inv_scale) {
     return mag == 0 ? 0 : (uint8_t) ((x < 0.0f ? 4u : 0u) | mag);
 }
 
+// Fused threshold + decode for finite values in the exhaustive scale search.
+// The result exactly matches quantize_fp3_code followed by decode_fp3_code.
+static inline float rocmfpx_fp3_decoded_mag(float x, float inv_scale) {
+    const float a = fabsf(x * inv_scale);
+    float mag;
+    if (a <= 0.5f) {
+        return 0.0f;
+    } else if (a <= 1.5f) {
+        mag = 1.0f;
+    } else if (a <= 3.0f) {
+        mag = 2.0f;
+    } else {
+        mag = 4.0f;
+    }
+
+    return x < 0.0f ? -mag : mag;
+}
+
 static float rocmfpx_fp3_block_mse_for_scale(const float * x, int n, uint8_t e, float best_err) {
     const float scale = rocmfpx_scale_lookup(e);
     const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
@@ -284,8 +302,7 @@ static float rocmfpx_fp3_block_mse_for_scale(const float * x, int n, uint8_t e, 
             continue;
         }
 
-        const uint8_t code = rocmfpx_quantize_fp3_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp3_code(code) * scale;
+        const float y = rocmfpx_fp3_decoded_mag(x[i], inv_scale) * scale;
         const float d = x[i] - y;
 
         err += d*d;
@@ -304,8 +321,7 @@ static float rocmfpx_fp3_block_mse_for_scale_finite(const float * x, int n, uint
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t code = rocmfpx_quantize_fp3_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp3_code(code) * scale;
+        const float y = rocmfpx_fp3_decoded_mag(x[i], inv_scale) * scale;
         const float d = x[i] - y;
 
         err += d*d;
@@ -327,8 +343,7 @@ static float rocmfpx_fp3_block_weighted_mse_for_scale(const float * x, int n, co
             continue;
         }
 
-        const uint8_t code = rocmfpx_quantize_fp3_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp3_code(code) * scale;
+        const float y = rocmfpx_fp3_decoded_mag(x[i], inv_scale) * scale;
         const float d = x[i] - y;
 
         err += mse_weights[i]*d*d;
@@ -347,8 +362,7 @@ static float rocmfpx_fp3_block_weighted_mse_for_scale_finite(const float * x, in
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t code = rocmfpx_quantize_fp3_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp3_code(code) * scale;
+        const float y = rocmfpx_fp3_decoded_mag(x[i], inv_scale) * scale;
         const float d = x[i] - y;
 
         err += mse_weights[i]*d*d;
@@ -463,6 +477,20 @@ static uint8_t rocmfpx_quantize_fp6_code(float x, float inv_scale) {
     return q == 0 ? 0 : (uint8_t) (q < 0 ? (32u | ((uint8_t) -q & 31u)) : (uint8_t) q);
 }
 
+// Fused round, clamp, and decode for finite values in the scale search. Keep
+// current main's asymmetric signed range [-32, 31], including the encoded -32
+// endpoint, rather than the older experimental branch's [-31, 31] behavior.
+static inline float rocmfpx_fp6_decoded_value(float x, float inv_scale) {
+    int q = (int) lroundf(x * inv_scale);
+    if (q > 31) {
+        q = 31;
+    } else if (q < -32) {
+        q = -32;
+    }
+
+    return (float) q;
+}
+
 static float rocmfpx_fp6_block_mse_for_scale(const float * x, int n, uint8_t e, float best_err) {
     const float scale = rocmfpx_scale_lookup(e);
     const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
@@ -472,8 +500,7 @@ static float rocmfpx_fp6_block_mse_for_scale(const float * x, int n, uint8_t e, 
         if (!isfinite(x[i])) {
             continue;
         }
-        const uint8_t code = rocmfpx_quantize_fp6_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp6_code(code) * scale;
+        const float y = rocmfpx_fp6_decoded_value(x[i], inv_scale) * scale;
         const float d = x[i] - y;
         err += d*d;
         if (err > best_err) {
@@ -491,8 +518,7 @@ static float rocmfpx_fp6_block_mse_for_scale_finite(const float * x, int n, uint
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t code = rocmfpx_quantize_fp6_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp6_code(code) * scale;
+        const float y = rocmfpx_fp6_decoded_value(x[i], inv_scale) * scale;
         const float d = x[i] - y;
         err += d*d;
         if (err > best_err) {
@@ -512,8 +538,7 @@ static float rocmfpx_fp6_block_weighted_mse_for_scale(const float * x, int n, co
         if (!isfinite(x[i])) {
             continue;
         }
-        const uint8_t code = rocmfpx_quantize_fp6_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp6_code(code) * scale;
+        const float y = rocmfpx_fp6_decoded_value(x[i], inv_scale) * scale;
         const float d = x[i] - y;
         err += mse_weights[i]*d*d;
         if (err > best_err) {
@@ -531,8 +556,7 @@ static float rocmfpx_fp6_block_weighted_mse_for_scale_finite(const float * x, in
     float err = 0.0f;
 
     for (int i = 0; i < n; ++i) {
-        const uint8_t code = rocmfpx_quantize_fp6_code(x[i], inv_scale);
-        const float y = (float) rocmfpx_decode_fp6_code(code) * scale;
+        const float y = rocmfpx_fp6_decoded_value(x[i], inv_scale) * scale;
         const float d = x[i] - y;
         err += mse_weights[i]*d*d;
         if (err > best_err) {
