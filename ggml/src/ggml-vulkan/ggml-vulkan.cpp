@@ -8058,6 +8058,58 @@ static void ggml_vk_buffer_read(vk_buffer& src, size_t offset, void * dst, size_
     ggml_vk_buffer_read_2d(src, offset, dst, size, size, size, 1);
 }
 
+static void ggml_vk_rocmfpx_fp6_write_packed_range(vk_buffer& dst, size_t tensor_offset,
+                                                    const void * src, size_t offset, size_t size) {
+    GGML_ASSERT(size > 0);
+
+    const size_t first_block = offset / ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t end_offset = offset + size;
+    const size_t end_block = (end_offset + ggml_vk_rocmfpx_fp6_disk_block_size - 1) /
+                             ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t nblocks = end_block - first_block;
+    const size_t packed_offset = first_block * ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t packed_size = nblocks * ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t expanded_offset = first_block * ggml_vk_rocmfpx_fp6_expanded_block_size;
+    const size_t expanded_size = nblocks * ggml_vk_rocmfpx_fp6_expanded_block_size;
+
+    std::vector<uint8_t> expanded(expanded_size);
+
+    if (offset == packed_offset && size == packed_size) {
+        ggml_vk_rocmfpx_fp6_expand_blocks(expanded.data(), (const uint8_t *) src, nblocks);
+    } else {
+        // Preserve the bytes outside an unaligned update.  Async model loading
+        // commonly splits a packed FP6 block at its 1 MiB staging boundary.
+        std::vector<uint8_t> packed(packed_size);
+        ggml_vk_buffer_read(dst, tensor_offset + expanded_offset, expanded.data(), expanded_size);
+        ggml_vk_rocmfpx_fp6_pack_blocks(packed.data(), expanded.data(), nblocks);
+        memcpy(packed.data() + offset - packed_offset, src, size);
+        ggml_vk_rocmfpx_fp6_expand_blocks(expanded.data(), packed.data(), nblocks);
+    }
+
+    ggml_vk_buffer_write(dst, tensor_offset + expanded_offset, expanded.data(), expanded_size);
+}
+
+static void ggml_vk_rocmfpx_fp6_read_packed_range(vk_buffer& src, size_t tensor_offset,
+                                                   void * dst, size_t offset, size_t size) {
+    GGML_ASSERT(size > 0);
+
+    const size_t first_block = offset / ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t end_offset = offset + size;
+    const size_t end_block = (end_offset + ggml_vk_rocmfpx_fp6_disk_block_size - 1) /
+                             ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t nblocks = end_block - first_block;
+    const size_t packed_offset = first_block * ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t packed_size = nblocks * ggml_vk_rocmfpx_fp6_disk_block_size;
+    const size_t expanded_offset = first_block * ggml_vk_rocmfpx_fp6_expanded_block_size;
+    const size_t expanded_size = nblocks * ggml_vk_rocmfpx_fp6_expanded_block_size;
+
+    std::vector<uint8_t> expanded(expanded_size);
+    std::vector<uint8_t> packed(packed_size);
+    ggml_vk_buffer_read(src, tensor_offset + expanded_offset, expanded.data(), expanded_size);
+    ggml_vk_rocmfpx_fp6_pack_blocks(packed.data(), expanded.data(), nblocks);
+    memcpy(dst, packed.data() + offset - packed_offset, size);
+}
+
 static void ggml_vk_buffer_copy_async(vk_context& ctx, vk_buffer& dst, size_t dst_offset, vk_buffer& src, size_t src_offset, size_t size) {
     VK_LOG_DEBUG("ggml_vk_buffer_copy_async(" << size << ")");
     // Make sure both buffers are on same device
@@ -15034,13 +15086,9 @@ static void ggml_backend_vk_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml
         return;
     }
 
-    if (tensor->type == GGML_TYPE_Q6_0_ROCMFPX && ggml_vk_rocmfpx_fp6_range_aligned(offset, size)) {
-        const size_t nblocks = size / ggml_vk_rocmfpx_fp6_disk_block_size;
-        const size_t expanded_size = nblocks * ggml_vk_rocmfpx_fp6_expanded_block_size;
-        const size_t expanded_offset = (offset / ggml_vk_rocmfpx_fp6_disk_block_size) * ggml_vk_rocmfpx_fp6_expanded_block_size;
-        std::vector<uint8_t> expanded(expanded_size);
-        ggml_vk_rocmfpx_fp6_expand_blocks(expanded.data(), (const uint8_t *) data, nblocks);
-        ggml_vk_buffer_write(buf, vk_tensor_offset(tensor) + tensor->view_offs + expanded_offset, expanded.data(), expanded_size);
+    if (tensor->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_vk_rocmfpx_fp6_write_packed_range(buf, vk_tensor_offset(tensor) + tensor->view_offs,
+                                               data, offset, size);
         return;
     }
 
@@ -15079,6 +15127,15 @@ static void ggml_backend_vk_buffer_set_tensor_2d(ggml_backend_buffer_t buffer, g
         return;
     }
 
+    if (tensor->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        for (size_t i = 0; i < n_copies; ++i) {
+            ggml_vk_rocmfpx_fp6_write_packed_range(buf, vk_tensor_offset(tensor) + tensor->view_offs,
+                                                   (const uint8_t *) data + i * stride_data,
+                                                   offset + i * stride_tensor, size);
+        }
+        return;
+    }
+
     ggml_vk_buffer_write_2d(buf, vk_tensor_offset(tensor) + tensor->view_offs + offset, data, stride_data, stride_tensor, size, n_copies);
 }
 
@@ -15092,13 +15149,9 @@ static void ggml_backend_vk_buffer_get_tensor(ggml_backend_buffer_t buffer, cons
 
     vk_buffer buf = buf_ctx->dev_buffer;
 
-    if (tensor->type == GGML_TYPE_Q6_0_ROCMFPX && ggml_vk_rocmfpx_fp6_range_aligned(offset, size)) {
-        const size_t nblocks = size / ggml_vk_rocmfpx_fp6_disk_block_size;
-        const size_t expanded_size = nblocks * ggml_vk_rocmfpx_fp6_expanded_block_size;
-        const size_t expanded_offset = (offset / ggml_vk_rocmfpx_fp6_disk_block_size) * ggml_vk_rocmfpx_fp6_expanded_block_size;
-        std::vector<uint8_t> expanded(expanded_size);
-        ggml_vk_buffer_read(buf, vk_tensor_offset(tensor) + tensor->view_offs + expanded_offset, expanded.data(), expanded_size);
-        ggml_vk_rocmfpx_fp6_pack_blocks((uint8_t *) data, expanded.data(), nblocks);
+    if (tensor->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_vk_rocmfpx_fp6_read_packed_range(buf, vk_tensor_offset(tensor) + tensor->view_offs,
+                                              data, offset, size);
         return;
     }
 
@@ -15134,6 +15187,15 @@ static void ggml_backend_vk_buffer_get_tensor_2d(ggml_backend_buffer_t buffer, c
             ggml_vk_rocmfpx_fp6_pack_blocks((uint8_t *) data + i * stride_data,
                                             expanded.data() + i * expanded_stride_data,
                                             nblocks);
+        }
+        return;
+    }
+
+    if (tensor->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        for (size_t i = 0; i < n_copies; ++i) {
+            ggml_vk_rocmfpx_fp6_read_packed_range(buf, vk_tensor_offset(tensor) + tensor->view_offs,
+                                                  (uint8_t *) data + i * stride_data,
+                                                  offset + i * stride_tensor, size);
         }
         return;
     }
@@ -15342,6 +15404,17 @@ static void ggml_backend_vk_set_tensor_2d_async(ggml_backend_t backend, ggml_ten
         return;
     }
 
+    // ROCmFPX FP6 is stored packed on the host but expanded in Vulkan device
+    // buffers.  The transformed data must remain alive until the transfer has
+    // completed, so use the blocking conversion path for these uploads.
+    if (tensor->buffer->buft == ggml_backend_vk_get_default_buffer_type(backend) &&
+        tensor->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_vk_synchronize(ctx);
+        ggml_backend_vk_buffer_set_tensor_2d(tensor->buffer, tensor, data, offset, size,
+                                             n_copies, stride_tensor, stride_data);
+        return;
+    }
+
     ggml_backend_vk_buffer_context * buf_ctx = (ggml_backend_vk_buffer_context *)tensor->buffer->context;
 
     vk_context cpy_ctx;
@@ -15408,6 +15481,15 @@ static void ggml_backend_vk_get_tensor_2d_async(ggml_backend_t backend, const gg
     GGML_ASSERT((tensor->buffer->buft == ggml_backend_vk_get_default_buffer_type(backend) || tensor->buffer->buft == ggml_backend_vk_host_buffer_type()) && "unsupported buffer type");
 
     if (size == 0) {
+        return;
+    }
+
+    // Match the packed host representation expected by the backend API.
+    if (tensor->buffer->buft == ggml_backend_vk_get_default_buffer_type(backend) &&
+        tensor->type == GGML_TYPE_Q6_0_ROCMFPX) {
+        ggml_vk_synchronize(ctx);
+        ggml_backend_vk_buffer_get_tensor_2d(tensor->buffer, tensor, data, offset, size,
+                                             n_copies, stride_tensor, stride_data);
         return;
     }
 
@@ -15485,11 +15567,18 @@ static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
 
         ggml_vk_buffer_copy_async(compute_ctx, dst_buf, vk_tensor_offset(dst) + dst->view_offs,
                                    src_buf_ctx->dev_buffer, vk_tensor_offset(src) + src->view_offs,
-                                   ggml_nbytes(src));
+                                   ggml_vk_tensor_nbytes(src));
         return true;
     }
 
     if (ggml_backend_buffer_is_host(src->buffer)) {
+        // A host tensor contains packed FP6 blocks while the Vulkan destination
+        // uses the expanded representation.  Let the generic fallback perform
+        // the conversion through the buffer set/get interfaces.
+        if (dst->type == GGML_TYPE_Q6_0_ROCMFPX) {
+            return false;
+        }
+
         vk_buffer pinned_buf = nullptr;
         size_t pinned_offset = 0;
         ggml_vk_host_get(ctx->device, src->data, pinned_buf, pinned_offset);

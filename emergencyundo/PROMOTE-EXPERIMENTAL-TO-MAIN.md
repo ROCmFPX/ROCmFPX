@@ -11,6 +11,25 @@
 - Local complete-history bundle:
   `/home/caf/ROCmFPXMAIN/ROCmFPX-main-2026-07-11.bundle`
 
+## Pre-promotion regression fixes and validation
+
+The first promotion candidate was withheld after the Qwen coherency fixture
+exposed GPU corruption. The candidate was repaired before publication:
+
+- ROCm restores the missing `mmq.cuh` tile-stride portion of ciru-ai's
+  `ac9cdf3ba` fix.
+- Vulkan converts packed ROCmFPX Q6 data during asynchronous uploads,
+  including 1 MiB loader chunks that split a 26-byte quantization block.
+
+The repaired tree was then rebuilt from an empty build directory and passed:
+
+- Qwen coding, summary, and strict-JSON coherency probes on ROCm and Vulkan.
+- Focused ROCmFPX matrix suites: ROCm 82/82 and Vulkan 52/52.
+- CPU release suite: 2,156/2,156.
+- ROCmFPX reference, ranked-policy, and model-architecture checks.
+- ROCm and Vulkan copy gates, plus ROCm FlashAttention performance gates.
+- Real-model Q6 Vulkan, ROCm MoE, and MTP smoke tests.
+
 ## Important rule
 
 Do not reset or force-push the shared `main` branch. Undo the promotion with a
