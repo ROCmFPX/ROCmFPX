@@ -7,20 +7,21 @@ This repository is for people who want to download, compile, quantize, and test
 the ROCmFPX family directly from:
 
 ```text
-https://github.com/charlie12345/ROCmFPX/tree/experimental-rocmfpx-branch
+https://github.com/charlie12345/ROCmFPX
 ```
 
-The same source is intended to live on `main` so GitHub shows the ROCmFPX
-instructions by default.
+The tested ROCmFPX source now lives on `main` so GitHub shows these instructions
+by default. The former experimental branch remains available for comparison and
+rollback during the promotion window.
 
-> Status: experimental branch. This branch is for community testing before
-> changes are promoted to `main`. APIs, serving defaults, benchmark thresholds,
-> and ROCmFPX tuning choices may change quickly. Results are hardware-, driver-,
-> model-, and prompt-sensitive, so use BF16/F16 sources for real quality tests.
+> Status: experimental feature family on the canonical `main` branch. APIs,
+> serving defaults, benchmark thresholds, and ROCmFPX tuning choices may change
+> quickly. Results are hardware-, driver-, model-, and prompt-sensitive, so use
+> BF16/F16 sources for real quality tests.
 
 ## Update — 2026-07-04
 
-Latest changes on this branch (measured on `gfx1151` / Strix Halo):
+Latest changes in this repository (measured on `gfx1151` / Strix Halo):
 
 - **M-RoPE MTP fix — speculative decoding now actually runs on `qwen35` /
   `qwen35moe` (and every other M-RoPE arch).** These architectures use IMROPE
@@ -54,9 +55,9 @@ Four commands from clone to a running model. For other AMD GPUs, swap the build
 script using the [Clone And Build](#clone-and-build) table.
 
 ```bash
-# 1. Get the code (experimental branch)
+# 1. Get the code (canonical main branch)
 git clone https://github.com/charlie12345/ROCmFPX.git
-cd ROCmFPX && git checkout experimental-rocmfpx-branch
+cd ROCmFPX && git checkout main
 
 # 2. Build for Strix Halo
 env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh          # -> build-strix-rocmfp4/
@@ -210,7 +211,7 @@ git clone https://github.com/charlie12345/ROCmFPX.git
 cd ROCmFPX
 ```
 
-If you specifically want the experimental branch name:
+The pre-promotion experimental branch remains available for comparison:
 
 ```bash
 git checkout experimental-rocmfpx-branch
