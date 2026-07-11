@@ -585,6 +585,10 @@ struct block_reduce_policy;
 template <typename T, typename... Ts>
 inline constexpr bool is_any = (std::is_same_v<T, Ts> || ...);
 
+static __device__ __forceinline__ float ggml_cuda_negative_infinity() {
+    return __int_as_float(0xff800000);
+}
+
 template<typename...>
 inline constexpr bool ggml_cuda_dependent_false_v = false;
 
@@ -623,9 +627,9 @@ template <typename T> struct block_reduce_policy<block_reduce_method::MAX, T> {
 
     static __device__ T sentinel() {
         if constexpr (std::is_same_v<T, float>) {
-            return -FLT_MAX;
+            return ggml_cuda_negative_infinity();
         } else if constexpr (std::is_same_v<T, half2>) {
-            return make_half2(-65504.0f, -65504.0f);
+            return make_half2(ggml_cuda_negative_infinity(), ggml_cuda_negative_infinity());
         } else {
             static_assert(ggml_cuda_dependent_false_v<T>, "Unsupported type for block reduce max");
         }
