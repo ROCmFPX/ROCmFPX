@@ -1761,8 +1761,14 @@ struct block_rocmfpx_fp3
 
 struct block_rocmfpx_fp6
 {
-    uint8_t qs[24];
+    int8_t qs[32];
     uint8_t e[2];
+};
+
+struct block_rocmfpx_fp6_packed16
+{
+    int16_t qs[16];
+    uint16_t e;
 };
 
 struct block_rocmfpx_fp8
@@ -1783,6 +1789,7 @@ struct block_rocmfpx_fp8
 #define QUANT_R QUANT_R_ROCMFPX_FP8
 #define QUANT_AUXF 1
 #define A_TYPE block_rocmfpx_fp6
+#define A_TYPE_PACKED16 block_rocmfpx_fp6_packed16
 #endif
 
 #if defined(DATA_A_ROCMFPX_FP8)
@@ -2019,7 +2026,7 @@ const int8_t kvalues_rocmfpx_fp6_const[64] = {
     int8_t(8), int8_t(9), int8_t(10), int8_t(11), int8_t(12), int8_t(13), int8_t(14), int8_t(15),
     int8_t(16), int8_t(17), int8_t(18), int8_t(19), int8_t(20), int8_t(21), int8_t(22), int8_t(23),
     int8_t(24), int8_t(25), int8_t(26), int8_t(27), int8_t(28), int8_t(29), int8_t(30), int8_t(31),
-    int8_t(-32), int8_t(-1), int8_t(-2), int8_t(-3), int8_t(-4), int8_t(-5), int8_t(-6), int8_t(-7),
+    int8_t(0), int8_t(-1), int8_t(-2), int8_t(-3), int8_t(-4), int8_t(-5), int8_t(-6), int8_t(-7),
     int8_t(-8), int8_t(-9), int8_t(-10), int8_t(-11), int8_t(-12), int8_t(-13), int8_t(-14), int8_t(-15),
     int8_t(-16), int8_t(-17), int8_t(-18), int8_t(-19), int8_t(-20), int8_t(-21), int8_t(-22), int8_t(-23),
     int8_t(-24), int8_t(-25), int8_t(-26), int8_t(-27), int8_t(-28), int8_t(-29), int8_t(-30), int8_t(-31)

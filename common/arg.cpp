@@ -4009,6 +4009,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_ctx = 2048*params.n_parallel;
             params.verbose_prompt = true;
             params.embedding = true;
+            params.n_gpu_layers = -2; // offload all layers so the QAT model runs on the GPU by default
         }
     ).set_examples({LLAMA_EXAMPLE_EMBEDDING, LLAMA_EXAMPLE_SERVER}));
 
@@ -4147,6 +4148,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.port = 8014;
             params.n_ctx = 0;
             params.use_jinja = true;
+            params.n_gpu_layers = -2; // offload all layers by default
+            params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
@@ -4158,6 +4161,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.port = 8014;
             params.n_ctx = 0;
             params.use_jinja = true;
+            params.n_gpu_layers = -2; // offload all layers by default
+            params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 

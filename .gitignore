@@ -160,3 +160,11 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+# Local benchmark plot artifacts (not part of the source tree)
+/gen_rate.png
+/prompt_time.png
+
+# Internal AI/reviewer handoff + one-off conversion helper — kept local, not published
+/ROCMFPX-SPEEDUP-HANDOFF.md
+/scripts/convert-step37-nvfp4-to-rocmfp4.sh

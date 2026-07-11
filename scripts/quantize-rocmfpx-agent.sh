@@ -8,11 +8,9 @@
 #   SRC=model-BF16.gguf OUT=model-ROCmFP8-AGENT.gguf scripts/quantize-rocmfpx-agent.sh
 #   PROFILE=straight FORMAT=rocmfp8 SRC=model-BF16.gguf OUT=model-ROCmFP8.gguf scripts/quantize-rocmfpx-agent.sh
 #   FORMAT=rocmfp4 PROFILE=agent SRC=model-BF16.gguf OUT=model-ROCmFP4-AGENT.gguf scripts/quantize-rocmfpx-agent.sh
+#   FORMAT=rocmfp4 PROFILE=strix-lean SRC=model-BF16.gguf OUT=model-ROCmFP4-STRIX_LEAN.gguf scripts/quantize-rocmfpx-agent.sh
 #   FORMAT=rocmfp6 PROFILE=agent SRC=model-BF16.gguf OUT=model-ROCmFP6-AGENT.gguf scripts/quantize-rocmfpx-agent.sh
 #   FORMAT=rocmfp3 PROFILE=agent IMATRIX=imatrix.gguf SRC=model-BF16.gguf OUT=model-ROCmFP3-AGENT.gguf scripts/quantize-rocmfpx-agent.sh
-#   FORMAT=rocmfp6 PROFILE=strix-lean SRC=model-BF16.gguf OUT=model-ROCmFP6-STRIX_LEAN.gguf scripts/quantize-rocmfpx-agent.sh
-#   FORMAT=rocmfp6 PROFILE=strix-speed SRC=model-BF16.gguf OUT=model-ROCmFP6-STRIX_SPEED.gguf scripts/quantize-rocmfpx-agent.sh
-#   FORMAT=rocmfp6 PROFILE=strix-quality SRC=model-BF16.gguf OUT=model-ROCmFP6-STRIX_QUALITY.gguf scripts/quantize-rocmfpx-agent.sh
 
 set -euo pipefail
 
@@ -41,7 +39,7 @@ Required:
 
 Optional:
   FORMAT=rocmfp8      rocmfp3 | rocmfp4 | rocmfp6 | rocmfp8
-  PROFILE=agent       agent | straight | strix-lean | strix-speed | strix-quality
+  PROFILE=agent       agent | straight | fast | fast-coherent | strix | strix-lean
   KEEP_SPLIT=1        Preserve input shard count when source is split
   DRY_RUN=1           Ask llama-quantize for the estimated output size only
   NTHREADS=N          Optional llama-quantize nthreads argument
@@ -54,11 +52,14 @@ Preset mapping:
   rocmfp3 agent    -> Q3_0_ROCMFPX_AGENT
   rocmfp4 straight -> Q4_0_ROCMFP4
   rocmfp4 agent    -> Q4_0_ROCMFP4_COHERENT
+  rocmfp4 fast     -> Q4_0_ROCMFP4_FAST
+  rocmfp4 fast-coherent -> Q4_0_ROCMFP4_FAST_COHERENT
+  rocmfp4 strix    -> Q4_0_ROCMFP4_STRIX
+  rocmfp4 strix-lean -> Q4_0_ROCMFP4_STRIX_LEAN
   rocmfp6 straight -> Q6_0_ROCMFPX
   rocmfp6 agent    -> Q6_0_ROCMFPX_AGENT
-  rocmfp6 strix-lean  -> Q6_0_ROCMFPX_STRIX_LEAN
-  rocmfp6 strix-speed -> Q6_0_ROCMFPX_STRIX_SPEED
-  rocmfp6 strix-quality -> Q6_0_ROCMFPX_STRIX_QUALITY
+  rocmfp6 lean     -> Q6_0_ROCMFPX_LEAN
+  rocmfp6 agent-lean -> Q6_0_ROCMFPX_AGENT_LEAN
   rocmfp8 straight -> Q8_0_ROCMFPX
   rocmfp8 agent    -> Q8_0_ROCMFPX_AGENT
 EOF
@@ -90,11 +91,17 @@ case "$FORMAT:$PROFILE" in
     rocmfp3:agent)    PRESET="Q3_0_ROCMFPX_AGENT" ;;
     rocmfp4:straight) PRESET="Q4_0_ROCMFP4" ;;
     rocmfp4:agent)    PRESET="Q4_0_ROCMFP4_COHERENT" ;;
+    rocmfp4:fast)     PRESET="Q4_0_ROCMFP4_FAST" ;;
+    rocmfp4:fast-coherent) PRESET="Q4_0_ROCMFP4_FAST_COHERENT" ;;
+    rocmfp4:fast_coherent) PRESET="Q4_0_ROCMFP4_FAST_COHERENT" ;;
+    rocmfp4:strix)    PRESET="Q4_0_ROCMFP4_STRIX" ;;
+    rocmfp4:strix-lean) PRESET="Q4_0_ROCMFP4_STRIX_LEAN" ;;
+    rocmfp4:strix_lean) PRESET="Q4_0_ROCMFP4_STRIX_LEAN" ;;
     rocmfp6:straight) PRESET="Q6_0_ROCMFPX" ;;
     rocmfp6:agent)    PRESET="Q6_0_ROCMFPX_AGENT" ;;
-    rocmfp6:strix-lean)  PRESET="Q6_0_ROCMFPX_STRIX_LEAN" ;;
-    rocmfp6:strix-speed) PRESET="Q6_0_ROCMFPX_STRIX_SPEED" ;;
-    rocmfp6:strix-quality) PRESET="Q6_0_ROCMFPX_STRIX_QUALITY" ;;
+    rocmfp6:lean)     PRESET="Q6_0_ROCMFPX_LEAN" ;;
+    rocmfp6:agent-lean) PRESET="Q6_0_ROCMFPX_AGENT_LEAN" ;;
+    rocmfp6:agent_lean) PRESET="Q6_0_ROCMFPX_AGENT_LEAN" ;;
     rocmfp8:straight) PRESET="Q8_0_ROCMFPX" ;;
     rocmfp8:agent)    PRESET="Q8_0_ROCMFPX_AGENT" ;;
     *)

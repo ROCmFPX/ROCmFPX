@@ -358,7 +358,7 @@ Available ROCmFPx profiles:
 ```text
 rocmfpx-strix-nwarps1, rocmfpx-strix-nwarps2, rocmfpx-strix-nwarps4
 rocmfpx-strix-rpb2
-rocmfpx-strix-mmid3, rocmfpx-strix-mmid4, rocmfpx-strix-mmid5
+rocmfpx-strix-mmid3, rocmfpx-strix-mmid4
 rocmfpx-strix-moe-rpb1, rocmfpx-strix-moe-rpb2, rocmfpx-strix-moe-rpb3, rocmfpx-strix-moe-rpb4
 ```
 

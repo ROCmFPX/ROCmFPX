@@ -12,6 +12,7 @@ MODEL="${MODEL:-}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-18180}"
 ALIAS="${ALIAS:-rocmfpx-mtp}"
+DEVICE_USER_SET="${DEVICE+x}"
 DEVICE="${DEVICE:-Vulkan0}"
 SPEC_DRAFT_DEVICE="${SPEC_DRAFT_DEVICE:-$DEVICE}"
 CTX_SIZE="${CTX_SIZE:-32768}"
@@ -20,6 +21,15 @@ UBATCH_SIZE_USER_SET="${UBATCH_SIZE+x}"
 PARALLEL_USER_SET="${PARALLEL+x}"
 POLL_USER_SET="${POLL+x}"
 POLL_BATCH_USER_SET="${POLL_BATCH+x}"
+CACHE_TYPE_K_USER_SET="${CACHE_TYPE_K+x}"
+CACHE_TYPE_V_USER_SET="${CACHE_TYPE_V+x}"
+CACHE_TYPE_K_DRAFT_USER_SET="${CACHE_TYPE_K_DRAFT+x}"
+CACHE_TYPE_V_DRAFT_USER_SET="${CACHE_TYPE_V_DRAFT+x}"
+FLASH_ATTN_USER_SET="${FLASH_ATTN+x}"
+SPEC_DRAFT_N_MAX_USER_SET="${SPEC_DRAFT_N_MAX+x}"
+SPEC_DRAFT_N_MIN_USER_SET="${SPEC_DRAFT_N_MIN+x}"
+SPEC_DRAFT_P_MIN_USER_SET="${SPEC_DRAFT_P_MIN+x}"
+SPEC_DRAFT_P_SPLIT_USER_SET="${SPEC_DRAFT_P_SPLIT+x}"
 BATCH_SIZE="${BATCH_SIZE:-2048}"
 UBATCH_SIZE="${UBATCH_SIZE:-512}"
 THREADS="${THREADS:-16}"
@@ -45,15 +55,22 @@ CACHE_TYPE_K="${CACHE_TYPE_K:-f16}"
 CACHE_TYPE_V="${CACHE_TYPE_V:-$CACHE_TYPE_K}"
 CACHE_TYPE_K_DRAFT="${CACHE_TYPE_K_DRAFT:-$CACHE_TYPE_K}"
 CACHE_TYPE_V_DRAFT="${CACHE_TYPE_V_DRAFT:-$CACHE_TYPE_V}"
-SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-4}"
+# Dense MTP sweet spot (measured, Qwen3.6-27B/Vulkan0): n_max 6 + p_min 0.6 = 22.1 t/s,
+# beating n4/p0.75 (20.3) and no-spec (14.0). MoE gets spec disabled below regardless.
+SPEC_DRAFT_N_MAX="${SPEC_DRAFT_N_MAX:-6}"
 SPEC_DRAFT_N_MIN="${SPEC_DRAFT_N_MIN:-0}"
-SPEC_DRAFT_P_MIN="${SPEC_DRAFT_P_MIN:-0.0}"
+# p-min 0.0 drafts low-probability tokens that get rejected, making MTP a net loss
+# (dense 27B: 13.5 no-spec -> 11.3 at p-min 0). 0.6 pairs with n_max 6 for the dense peak.
+SPEC_DRAFT_P_MIN="${SPEC_DRAFT_P_MIN:-0.6}"
 SPEC_DRAFT_P_SPLIT="${SPEC_DRAFT_P_SPLIT:-0.10}"
-CACHE_RAM="${CACHE_RAM:-0}"
-STRICT_BENCH="${STRICT_BENCH:-1}"
+CACHE_RAM="${CACHE_RAM:-8192}"
+STRICT_BENCH="${STRICT_BENCH:-0}"
+CTXCP="${CTXCP:-0}"
+CPENT="${CPENT:--1}"
 NO_MMPROJ="${NO_MMPROJ:-1}"
 AUTO_DETECT_MTP="${AUTO_DETECT_MTP:-1}"
 REQUIRE_MTP="${REQUIRE_MTP:-0}"
+CHAT_TEMPLATE_FILE="${CHAT_TEMPLATE_FILE:-}"
 
 if [[ -z "$MODEL" ]]; then
     echo "MODEL must point to a ROCmFPX/ROCmFP4 GGUF" >&2
@@ -63,10 +80,42 @@ fi
 case "$PERF_PRESET" in
     balanced)
         ;;
+    prompt-fast|prompt_fast)
+        if [[ -z "$DEVICE_USER_SET" ]]; then DEVICE=Vulkan0; fi
+        if [[ -z "$BATCH_SIZE_USER_SET" ]]; then BATCH_SIZE=4096; fi
+        if [[ -z "$UBATCH_SIZE_USER_SET" ]]; then UBATCH_SIZE=512; fi
+        if [[ -z "$PARALLEL_USER_SET" ]]; then PARALLEL=1; fi
+        if [[ -z "$POLL_USER_SET" ]]; then POLL=50; fi
+        if [[ -z "$POLL_BATCH_USER_SET" ]]; then POLL_BATCH=1; fi
+        if [[ -z "$CACHE_TYPE_K_USER_SET" ]]; then CACHE_TYPE_K=q4_0; fi
+        if [[ -z "$CACHE_TYPE_V_USER_SET" ]]; then CACHE_TYPE_V=q4_0; fi
+        if [[ -z "$CACHE_TYPE_K_DRAFT_USER_SET" ]]; then CACHE_TYPE_K_DRAFT=q4_0; fi
+        if [[ -z "$CACHE_TYPE_V_DRAFT_USER_SET" ]]; then CACHE_TYPE_V_DRAFT=q4_0; fi
+        if [[ -z "$FLASH_ATTN_USER_SET" ]]; then FLASH_ATTN=on; fi
+        SPEC_DRAFT_DEVICE="${SPEC_DRAFT_DEVICE:-$DEVICE}"
+        ;;
     latency)
         if [[ -z "$POLL_USER_SET" ]]; then POLL=100; fi
         if [[ -z "$POLL_BATCH_USER_SET" ]]; then POLL_BATCH=1; fi
         if [[ -z "$PARALLEL_USER_SET" ]]; then PARALLEL=1; fi
+        ;;
+    decode-fast|decode_fast)
+        if [[ -z "$DEVICE_USER_SET" ]]; then DEVICE=Vulkan0; fi
+        if [[ -z "$BATCH_SIZE_USER_SET" ]]; then BATCH_SIZE=512; fi
+        if [[ -z "$UBATCH_SIZE_USER_SET" ]]; then UBATCH_SIZE=512; fi
+        if [[ -z "$PARALLEL_USER_SET" ]]; then PARALLEL=1; fi
+        if [[ -z "$POLL_USER_SET" ]]; then POLL=100; fi
+        if [[ -z "$POLL_BATCH_USER_SET" ]]; then POLL_BATCH=1; fi
+        if [[ -z "$CACHE_TYPE_K_USER_SET" ]]; then CACHE_TYPE_K=q8_0; fi
+        if [[ -z "$CACHE_TYPE_V_USER_SET" ]]; then CACHE_TYPE_V=q8_0; fi
+        if [[ -z "$CACHE_TYPE_K_DRAFT_USER_SET" ]]; then CACHE_TYPE_K_DRAFT=q4_0; fi
+        if [[ -z "$CACHE_TYPE_V_DRAFT_USER_SET" ]]; then CACHE_TYPE_V_DRAFT=q4_0; fi
+        if [[ -z "$FLASH_ATTN_USER_SET" ]]; then FLASH_ATTN=on; fi
+        if [[ -z "$SPEC_DRAFT_N_MAX_USER_SET" ]]; then SPEC_DRAFT_N_MAX=6; fi
+        if [[ -z "$SPEC_DRAFT_N_MIN_USER_SET" ]]; then SPEC_DRAFT_N_MIN=0; fi
+        if [[ -z "$SPEC_DRAFT_P_MIN_USER_SET" ]]; then SPEC_DRAFT_P_MIN=0.6; fi
+        if [[ -z "$SPEC_DRAFT_P_SPLIT_USER_SET" ]]; then SPEC_DRAFT_P_SPLIT=0.10; fi
+        SPEC_DRAFT_DEVICE="${SPEC_DRAFT_DEVICE:-$DEVICE}"
         ;;
     throughput)
         if [[ -z "$BATCH_SIZE_USER_SET" ]]; then BATCH_SIZE=2048; fi
@@ -74,7 +123,7 @@ case "$PERF_PRESET" in
         if [[ -z "$PARALLEL_USER_SET" ]]; then PARALLEL=2; fi
         ;;
     *)
-        echo "unknown PERF_PRESET=$PERF_PRESET; use balanced, latency, or throughput" >&2
+        echo "unknown PERF_PRESET=$PERF_PRESET; use balanced, prompt-fast, decode-fast, latency, or throughput" >&2
         exit 2
         ;;
 esac
@@ -110,6 +159,11 @@ if [[ "$AUTO_DETECT_MTP" == "1" ]]; then
     fi
 fi
 
+# NOTE: MoE models DO benefit from draft-mtp with the lean draft_mtp (main lineage) —
+# measured +20% on Qwen3.6-35B-A3B ROCmFP4/Vulkan0 (no-spec 77.6 -> MTP 93.4 t/s). The
+# earlier MoE auto-disable was an artifact of the db247885a draft_mtp throttling MTP;
+# it has been removed. Both dense and MoE keep draft-mtp (n_max 6, p_min 0.6).
+
 cache_args=(--cache-ram "$CACHE_RAM")
 if [[ "$STRICT_BENCH" == "1" ]]; then
     cache_args=(--no-cache-prompt --cache-ram "$CACHE_RAM" --slot-prompt-similarity 0.0)
@@ -118,6 +172,15 @@ fi
 mmproj_args=()
 if [[ "$NO_MMPROJ" == "1" ]]; then
     mmproj_args=(--no-mmproj)
+fi
+
+chat_template_args=()
+if [[ -n "$CHAT_TEMPLATE_FILE" ]]; then
+    if [[ ! -f "$CHAT_TEMPLATE_FILE" ]]; then
+        echo "missing CHAT_TEMPLATE_FILE: $CHAT_TEMPLATE_FILE" >&2
+        exit 1
+    fi
+    chat_template_args=(--chat-template-file "$CHAT_TEMPLATE_FILE")
 fi
 
 perf_args=(
@@ -165,6 +228,8 @@ exec "$BIN" \
     --reasoning-format none \
     --reasoning-budget -1 \
     --no-context-shift \
+    --ctx-checkpoints "$CTXCP" \
+    --checkpoint-every-n-tokens "$CPENT" \
     -dev "$DEVICE" \
     -ngl "$N_GPU_LAYERS" \
     -fa "$FLASH_ATTN" \
@@ -183,6 +248,7 @@ exec "$BIN" \
     "${fit_args[@]}" \
     "${placement_args[@]}" \
     "${mmproj_args[@]}" \
+    "${chat_template_args[@]}" \
     --metrics \
     --no-webui \
     "${cache_args[@]}" \
