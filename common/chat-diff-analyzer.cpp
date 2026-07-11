@@ -135,20 +135,20 @@ static std::vector<std::function<void(const common_chat_template & tmpl, autopar
           }
       },
       // Fireworks
-      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+      [](const common_chat_template & tmpl, autoparser &) -> void {
           if (tmpl.src.find("{%- set system_prompt = '<|start_header_id|>' + 'system' + '<|end_header_id|>\\n\\n'"
             " + message['content'] | trim + '\\n' + system_prompt_suffix + '<|eot_id|>' -%}") != std::string::npos) {
               LOG_DBG(ANSI_ORANGE "[Patch: Fireworks v2]\n" ANSI_RESET);
           }
       },
       // Solar Open
-      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+      [](const common_chat_template & tmpl, autoparser &) -> void {
           if (tmpl.src.find("<|begin|>assistant<|think|><|end|>") != std::string::npos) {
               LOG_DBG(ANSI_ORANGE "[Patch: Solar Open]\n" ANSI_RESET);
           }
       },
       // Apriel 1.6
-      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+      [](const common_chat_template & tmpl, autoparser &) -> void {
           if (tmpl.src.find("if not loop.last and '[BEGIN FINAL RESPONSE]' in asst_text") != std::string::npos) {
               LOG_DBG(ANSI_ORANGE "[Patch: Apriel 1.6]\n" ANSI_RESET);
           }

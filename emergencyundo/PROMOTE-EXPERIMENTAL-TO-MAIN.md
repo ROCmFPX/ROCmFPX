@@ -30,6 +30,28 @@ The repaired tree was then rebuilt from an empty build directory and passed:
 - ROCm and Vulkan copy gates, plus ROCm FlashAttention performance gates.
 - Real-model Q6 Vulkan, ROCm MoE, and MTP smoke tests.
 
+## Draft PR #27 CI repair validation
+
+The promotion remains a draft while GitHub runs the full platform matrix.
+Before the repaired branch was pushed, it also passed these follow-up gates:
+
+- PR #25's WebUI repair and PR #26's ROCm 7.2 negative-infinity repair were
+  integrated as their original commits, without squashing their authorship.
+- A clean CPU build with `LLAMA_FATAL_WARNINGS=ON` completed successfully.
+- The production WebUI build completed successfully with its locked npm
+  dependencies.
+- Python 3.11 scoped lint, type checking, converter syntax, and the full
+  isolated `check-requirements.sh` import suite passed.
+- The combined HIP and Vulkan build completed successfully, including the
+  ROCm 7.2-affected softmax, top-k MoE, cross-entropy, and DeepSeek kernels.
+- `test-llama-archs` passed across ROCm, Vulkan, CPU, and Meta backends.
+- The CPU ROCmFPX gate passed 2,156/2,156 tests.
+- A real 35B MoE ROCm benchmark completed at 67.15 generation tokens/second.
+- Real Qwable MTP decode completed cleanly at 33.8 tokens/second on ROCm and
+  32.9 tokens/second on Vulkan.
+
+Do not merge draft PR #27 while any required GitHub check is pending or red.
+
 ## Important rule
 
 Do not reset or force-push the shared `main` branch. Undo the promotion with a
