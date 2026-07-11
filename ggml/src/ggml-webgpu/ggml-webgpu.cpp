@@ -4109,8 +4109,9 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                           (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_I32);
             break;
         case GGML_OP_SET_ROWS:
-            supports_op = ((op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_Q8_0 ||
-                            op->type == GGML_TYPE_Q4_0) &&
+            // Q8_0 quantization has reproducible parity failures for some batched index layouts.
+            // Fall back to the CPU backend instead of accepting small but silent output differences.
+            supports_op = ((op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_Q4_0) &&
                            src0->type == GGML_TYPE_F32 && (src1->type == GGML_TYPE_I64 || src1->type == GGML_TYPE_I32));
             break;
         case GGML_OP_GET_ROWS:
@@ -4212,6 +4213,15 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                                src2->type == GGML_TYPE_Q4_0 || src2->type == GGML_TYPE_Q8_0) &&
                               op->type == GGML_TYPE_F32;
                 if (!supports_op) {
+                    break;
+                }
+                // The quantized tile path can return NaNs for partial KV tiles (for example,
+                // a 113-token KV sequence on RADV). The vector path passes backend parity;
+                // conservatively fall back to CPU for other quantized K/V layouts.
+                const bool quantized_kv = ggml_is_quantized(src1->type) || ggml_is_quantized(src2->type);
+                if (quantized_kv &&
+                    !ggml_webgpu_flash_attn_use_vec_path(ctx->webgpu_global_ctx, src0, src1, src2)) {
+                    supports_op = false;
                     break;
                 }
                 if (ggml_webgpu_tensor_overlap(src1, src2) && src1->type != src2->type &&

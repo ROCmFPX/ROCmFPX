@@ -44,6 +44,17 @@ Before the repaired branch was pushed, it also passed these follow-up gates:
   isolated `check-requirements.sh` import suite passed.
 - The combined HIP and Vulkan build completed successfully, including the
   ROCm 7.2-affected softmax, top-k MoE, cross-entropy, and DeepSeek kernels.
+- The mixed WebGPU snapshot was restored to the coherent upstream tree present
+  at `5fd2dc2c`; the exact CI Dawn package compiled and linked
+  `test-backend-ops` successfully.
+- Untouched upstream reproduced 48 quantized FlashAttention failures for the
+  tile path on this RADV GPU. The candidate now keeps the verified vector path
+  and conservatively falls back to CPU for unverified quantized tile layouts
+  and Q8 set-rows parity edge cases.
+- Native WebGPU validation then passed 913/913 matrix-multiply cases and
+  2,803/2,803 copy, set-rows, and FlashAttention cases on the Radeon 8060S.
+- The Snapdragon/Hexagon source snapshot's omitted `htp-opnode.h` was restored
+  byte-for-byte from its matching upstream revision.
 - `test-llama-archs` passed across ROCm, Vulkan, CPU, and Meta backends.
 - The CPU ROCmFPX gate passed 2,156/2,156 tests.
 - A real 35B MoE ROCm benchmark completed at 67.15 generation tokens/second.
