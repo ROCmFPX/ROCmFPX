@@ -107,7 +107,7 @@ static __global__ void dsv4_hc_split_sinkhorn_f32(
         }
 
         for (int dst_hc = 0; dst_hc < n_hc; ++dst_hc) {
-            float row_max = -FLT_MAX;
+            float row_max = ggml_cuda_negative_infinity();
             for (int src_hc = 0; src_hc < n_hc; ++src_hc) {
                 const int idx = src_hc + dst_hc*n_hc;
                 const int off = 2*n_hc + idx;

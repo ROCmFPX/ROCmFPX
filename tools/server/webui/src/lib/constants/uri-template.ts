@@ -55,3 +55,6 @@ export const VARIABLE_PREFIX_MODIFIER_REGEX = /:[\d]+$/;
 
 /** Regex to strip one or more leading slashes */
 export const LEADING_SLASHES_REGEX = /^\/+/;
+
+/** Regex to capture the complete MIME type from a base64 image data URI. */
+export const BASE64_IMAGE_URI_REGEX = /^data:(image\/[a-z0-9.\-+]+);base64/;
