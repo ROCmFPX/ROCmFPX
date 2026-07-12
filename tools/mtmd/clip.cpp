@@ -1137,6 +1137,9 @@ struct clip_model_loader {
             get_u32(string_format(KEY_PROJ_DIM,       prefix), hparams.projection_dim);
             get_f32(string_format(KEY_LAYER_NORM_EPS, prefix), hparams.eps);
 
+            // n_head_kv is optional (for GQA), default to n_head.
+            hparams.n_head_kv = hparams.n_head;
+
             if (is_vision) {
                 get_u32(KEY_IMAGE_SIZE, hparams.image_size);
                 get_u32(KEY_PATCH_SIZE, hparams.patch_size);

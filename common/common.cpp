@@ -379,7 +379,11 @@ void common_init() {
     // Default GPU_MAX_HW_QUEUES to 1 on HIP builds when the user has not set it;
     // an explicit value is always respected.
     if (!std::getenv("GPU_MAX_HW_QUEUES")) {
+#if defined(_WIN32)
+        _putenv_s("GPU_MAX_HW_QUEUES", "1");
+#else
         setenv("GPU_MAX_HW_QUEUES", "1", 0);
+#endif
     }
 #endif
 }
@@ -1325,6 +1329,20 @@ common_init_result_ptr common_init_from_params(common_params & params) {
         return res;
     }
 
+    // QAT models (Google Gemma etc.) ship as Q4_0 and run at full quality on this build, but only
+    // reach their speed with GPU offload + FlashAttention. Nudge users who loaded one onto CPU.
+    if (params.n_gpu_layers == 0) {
+        char name_buf[256] = {0};
+        llama_model_meta_val_str(model, "general.name", name_buf, sizeof(name_buf));
+        std::string tag = std::string(name_buf) + " " + params.model.path;
+        std::transform(tag.begin(), tag.end(), tag.begin(),
+                       [](char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; });
+        if (tag.find("qat") != std::string::npos) {
+            LOG_WRN("%s: QAT model detected but running on CPU (-ngl 0). For full speed on this build, "
+                    "add '-ngl 999 -fa on' (measured ~2x decode on Gemma QAT).\n", __func__);
+        }
+    }
+
     llama_context * lctx = res->context();
     if (lctx == NULL) {
         LOG_ERR("%s: failed to create context with model '%s'\n", __func__, params.model.path.c_str());
@@ -2050,7 +2068,6 @@ common_prompt_checkpoint::common_prompt_checkpoint(const common_prompt_checkpoin
     pos_max(other.pos_max),
     data_tgt(other.data_tgt),
     data_dft(other.data_dft),
-    data_spec(other.data_spec),
     storage_tgt(llama_state_seq_storage_clone(other.storage_tgt)),
     storage_dft(llama_state_seq_storage_clone(other.storage_dft)) {
 }
@@ -2066,7 +2083,6 @@ common_prompt_checkpoint & common_prompt_checkpoint::operator=(const common_prom
 
     data_tgt = other.data_tgt;
     data_dft = other.data_dft;
-    data_spec = other.data_spec;
 
     llama_state_seq_storage_free(storage_tgt);
     llama_state_seq_storage_free(storage_dft);
@@ -2082,7 +2098,6 @@ common_prompt_checkpoint::common_prompt_checkpoint(common_prompt_checkpoint && o
     pos_max(other.pos_max),
     data_tgt(std::move(other.data_tgt)),
     data_dft(std::move(other.data_dft)),
-    data_spec(std::move(other.data_spec)),
     storage_tgt(other.storage_tgt),
     storage_dft(other.storage_dft) {
     other.storage_tgt = nullptr;
@@ -2103,7 +2118,6 @@ common_prompt_checkpoint & common_prompt_checkpoint::operator=(common_prompt_che
 
     data_tgt = std::move(other.data_tgt);
     data_dft = std::move(other.data_dft);
-    data_spec = std::move(other.data_spec);
 
     storage_tgt = other.storage_tgt;
     storage_dft = other.storage_dft;
@@ -2117,7 +2131,6 @@ common_prompt_checkpoint & common_prompt_checkpoint::operator=(common_prompt_che
 size_t common_prompt_checkpoint::size() const {
     return data_tgt.size() +
            data_dft.size() +
-           data_spec.size() +
            llama_state_seq_storage_size(storage_tgt) +
            llama_state_seq_storage_size(storage_dft);
 }
@@ -2134,7 +2147,6 @@ void common_prompt_checkpoint::clear() {
 
     data_tgt.clear();
     data_dft.clear();
-    data_spec.clear();
 
     llama_state_seq_storage_free(storage_tgt);
     llama_state_seq_storage_free(storage_dft);
@@ -2257,7 +2269,6 @@ void common_prompt_checkpoint::clear_tgt() {
 
 void common_prompt_checkpoint::clear_dft() {
     data_dft.clear();
-    data_spec.clear();
     llama_state_seq_storage_free(storage_dft);
     storage_dft = nullptr;
 }

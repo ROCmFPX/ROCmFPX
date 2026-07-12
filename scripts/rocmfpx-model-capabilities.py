@@ -17,6 +17,13 @@ MTP_MARKERS = (
     b"nextn.",
 )
 
+# GGUF metadata keys emitted only by MoE architectures (e.g. "<arch>.expert_count").
+# Dense models don't write these, so their presence reliably flags a MoE model.
+MOE_MARKERS = (
+    b"expert_count",
+    b"expert_used_count",
+)
+
 DIFFUSION_MARKERS = (
     b"diffusion_gemma",
     b"diffusion-gemma",
@@ -69,7 +76,12 @@ def infer_model_kind(path: Path, supports_mtp: bool, supports_diffusion: bool, i
     return "regular"
 
 
-def infer_serving_profile(path: Path, model_kind: str, supports_mtp: bool) -> dict[str, object]:
+def is_rocmfpx_family_name(path: Path) -> bool:
+    name = path.name.lower()
+    return any(marker in name for marker in ("rocmfp4", "rocmfpx", "rocm-fp4", "rocm-fpx", "coherent", "agentic"))
+
+
+def infer_serving_profile(path: Path, model_kind: str, supports_mtp: bool, is_agent: bool) -> dict[str, object]:
     name = path.name.lower()
     if "nemotron-3-nano-30b" in name and "rocmfpx_agent" in name:
         return {
@@ -124,10 +136,51 @@ def infer_serving_profile(path: Path, model_kind: str, supports_mtp: bool) -> di
             ],
         }
 
+    if supports_mtp and ("qwable" in name or "qwen" in name) and (is_agent or is_rocmfpx_family_name(path)):
+        return {
+            "name": "qwen-qwable-mtp-rocmfpx-prompt-fast",
+            "reason": "Qwen/Qwable MTP ROCmFP4/ROCmFPX models on Strix have much faster prompt processing on Vulkan with q4 K/V and a 4096/512 batch shape; p-min 0.75 avoids low-confidence draft overhead during decode.",
+            "supports_mtp": True,
+            "server_args": [
+                "-dev", "Vulkan0",
+                "--spec-draft-device", "Vulkan0",
+                "-ngl", "999",
+                "--spec-draft-ngl", "all",
+                "-fa", "on",
+                "--mmap",
+                "-ctk", "q4_0",
+                "-ctv", "q4_0",
+                "--spec-draft-type-k", "q4_0",
+                "--spec-draft-type-v", "q4_0",
+                "-c", "262144",
+                "-b", "4096",
+                "-ub", "512",
+                "-t", "16",
+                "-tb", "32",
+                "--spec-draft-threads", "16",
+                "--spec-draft-threads-batch", "32",
+                "--jinja",
+                "--reasoning", "off",
+                "--reasoning-format", "none",
+                "--reasoning-budget", "-1",
+                "--no-context-shift",
+                "--spec-type", "draft-mtp",
+                "--spec-draft-n-max", "4",
+                "--spec-draft-n-min", "0",
+                "--spec-draft-p-min", "0.75",
+                "--spec-draft-p-split", "0.10",
+                "--no-spec-draft-backend-sampling",
+                "--spec-draft-poll", "1",
+                "--spec-draft-poll-batch", "1",
+                "--no-mmproj",
+                "--metrics",
+            ],
+        }
+
     if supports_mtp and ("qwable" in name or "qwen" in name):
         return {
             "name": "qwen-qwable-dense-mtp",
-            "reason": "Qwen/Qwable MTP-capable ROCmFPX/ROCmFP4 models validated fastest with n-max 4 and q8 target/q4 draft KV.",
+            "reason": "Qwen/Qwable MTP-capable models validated fastest with bounded draft depth and a confidence gate; use q8 target/q4 draft KV where memory allows.",
             "supports_mtp": True,
             "server_args": [
                 "-dev", "ROCm0",
@@ -155,7 +208,7 @@ def infer_serving_profile(path: Path, model_kind: str, supports_mtp: bool) -> di
                 "--spec-type", "draft-mtp",
                 "--spec-draft-n-max", "4",
                 "--spec-draft-n-min", "0",
-                "--spec-draft-p-min", "0.0",
+                "--spec-draft-p-min", "0.75",
                 "--spec-draft-p-split", "0.10",
                 "--no-spec-draft-backend-sampling",
                 "--spec-draft-poll", "1",
@@ -265,7 +318,9 @@ def detect_capabilities(path: Path, probe_bytes: int) -> dict[str, object]:
     qat_markers = marker_hits(lower_data, QAT_MARKERS) + filename_hits(path, QAT_NAME_MARKERS)
     dflash_markers = marker_hits(lower_data, DFLASH_MARKERS) + filename_hits(path, DFLASH_NAME_MARKERS)
     agent_markers = marker_hits(lower_data, AGENT_MARKERS) + filename_hits(path, AGENT_NAME_MARKERS)
+    moe_markers = marker_hits(lower_data, MOE_MARKERS)
     supports_mtp = bool(markers)
+    is_moe = bool(moe_markers)
     supports_diffusion = bool(diffusion_markers)
     supports_dflash = bool(dflash_markers)
     is_qat = bool(qat_markers)
@@ -276,6 +331,8 @@ def detect_capabilities(path: Path, probe_bytes: int) -> dict[str, object]:
         "model_kind": model_kind,
         "probe_bytes": len(data),
         "supports_mtp": supports_mtp,
+        "is_moe": is_moe,
+        "moe_markers": moe_markers,
         "supports_diffusion": supports_diffusion,
         "supports_dflash": supports_dflash,
         "is_qat": is_qat,
@@ -285,7 +342,7 @@ def detect_capabilities(path: Path, probe_bytes: int) -> dict[str, object]:
         "dflash_markers": dflash_markers,
         "qat_markers": qat_markers,
         "agent_markers": agent_markers,
-        "serving_profile": infer_serving_profile(path, model_kind, supports_mtp),
+        "serving_profile": infer_serving_profile(path, model_kind, supports_mtp, is_agent),
     }
 
 
@@ -294,6 +351,7 @@ def main() -> int:
     parser.add_argument("model", help="GGUF model path, usually the first split for split GGUFs")
     parser.add_argument("--probe-mib", type=int, default=64, help="MiB to scan from the start of the GGUF")
     parser.add_argument("--has-mtp", action="store_true", help="Exit 0 only when MTP markers are present")
+    parser.add_argument("--is-moe", action="store_true", help="Exit 0 only when the model is a MoE (has expert_count metadata)")
     parser.add_argument("--server-args", action="store_true", help="Print recommended server args, one shell-quoted line")
     parser.add_argument("--quiet", action="store_true", help="Suppress JSON output")
     args = parser.parse_args()
@@ -311,6 +369,8 @@ def main() -> int:
 
     if args.has_mtp:
         return 0 if caps["supports_mtp"] else 1
+    if args.is_moe:
+        return 0 if caps["is_moe"] else 1
     return 0
 
 

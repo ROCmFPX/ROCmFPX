@@ -77,9 +77,6 @@ json task_params::to_json(bool only_metrics) const {
             {"generation_prompt",         chat_parser_params.generation_prompt},
             {"samplers",                  samplers},
             {"speculative.types",         common_speculative_type_name_str(speculative.types)},
-            {"speculative.n_max",         speculative.draft.n_max},
-            {"speculative.n_min",         speculative.draft.n_min},
-            {"speculative.p_min",         speculative.draft.p_min},
             {"timings_per_token",         timings_per_token},
             {"post_sampling_probs",       post_sampling_probs},
             {"backend_sampling",          sampling.backend_sampling},
@@ -137,9 +134,6 @@ json task_params::to_json(bool only_metrics) const {
         {"generation_prompt",         chat_parser_params.generation_prompt},
         {"samplers",                  samplers},
         {"speculative.types",         common_speculative_type_name_str(speculative.types)},
-        {"speculative.n_max",         speculative.draft.n_max},
-        {"speculative.n_min",         speculative.draft.n_min},
-        {"speculative.p_min",         speculative.draft.p_min},
         {"timings_per_token",         timings_per_token},
         {"post_sampling_probs",       post_sampling_probs},
         {"backend_sampling",          sampling.backend_sampling},
@@ -301,15 +295,6 @@ task_params server_task::params_from_json_cmpl(
     params.post_sampling_probs         = json_value(data, "post_sampling_probs", defaults.post_sampling_probs);
 
     params.speculative = defaults.speculative;
-    const int32_t draft_n_max_cap = std::max(0, defaults.speculative.draft.n_max);
-    params.speculative.draft.n_max = json_value(data, "speculative.n_max", defaults.speculative.draft.n_max);
-    params.speculative.draft.n_max = std::max(0, std::min(params.speculative.draft.n_max, draft_n_max_cap));
-    params.speculative.draft.n_min = json_value(data, "speculative.n_min", defaults.speculative.draft.n_min);
-    params.speculative.draft.n_min = std::max(0, std::min(params.speculative.draft.n_min, params.speculative.draft.n_max));
-    params.speculative.draft.p_min = json_value(data, "speculative.p_min", defaults.speculative.draft.p_min);
-    params.speculative.draft.p_min = std::max(0.0f, std::min(params.speculative.draft.p_min, 1.0f));
-    params.speculative.draft.p_split = json_value(data, "speculative.p_split", defaults.speculative.draft.p_split);
-    params.speculative.draft.p_split = std::max(0.0f, std::min(params.speculative.draft.p_split, 1.0f));
 
     // TODO: to keep things simple, we disable speculative parameter adjustments for now
 #if 0

@@ -47,7 +47,7 @@ jobs:
         id: build_llama_cpp_snapdragon_android
         run: |
           cp docs/backend/snapdragon/CMakeUserPresets.json .
-          cmake --preset arm64-android-snapdragon-release -B build
+          cmake --preset arm64-android-snapdragon-release -B build -DLLAMA_BUILD_WEBUI=OFF
           cmake --build build
           cmake --install build --prefix pkg-snapdragon/llama.cpp
 

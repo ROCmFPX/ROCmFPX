@@ -135,20 +135,20 @@ static std::vector<std::function<void(const common_chat_template & tmpl, autopar
           }
       },
       // Fireworks
-      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+      [](const common_chat_template & tmpl, autoparser &) -> void {
           if (tmpl.src.find("{%- set system_prompt = '<|start_header_id|>' + 'system' + '<|end_header_id|>\\n\\n'"
             " + message['content'] | trim + '\\n' + system_prompt_suffix + '<|eot_id|>' -%}") != std::string::npos) {
               LOG_DBG(ANSI_ORANGE "[Patch: Fireworks v2]\n" ANSI_RESET);
           }
       },
       // Solar Open
-      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+      [](const common_chat_template & tmpl, autoparser &) -> void {
           if (tmpl.src.find("<|begin|>assistant<|think|><|end|>") != std::string::npos) {
               LOG_DBG(ANSI_ORANGE "[Patch: Solar Open]\n" ANSI_RESET);
           }
       },
       // Apriel 1.6
-      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+      [](const common_chat_template & tmpl, autoparser &) -> void {
           if (tmpl.src.find("if not loop.last and '[BEGIN FINAL RESPONSE]' in asst_text") != std::string::npos) {
               LOG_DBG(ANSI_ORANGE "[Patch: Apriel 1.6]\n" ANSI_RESET);
           }
@@ -1107,8 +1107,8 @@ void analyze_tools::extract_argument_name_markers() {
             left_result.tags["pre"] == right_result.tags["pre"] &&
             left_result.tags["suffix"] == right_result.tags["suffix"]) {
             // Name is inside a structure (e.g., JSON key): prefix is the shared wrapper
-            arguments.name_prefix = trim_whitespace(left_result.tags["pre"]);
-            arguments.name_suffix = trim_leading_whitespace(left_result.tags["suffix"]);
+            arguments.name_prefix = left_result.tags["pre"];
+            arguments.name_suffix = left_result.tags["suffix"];
         } else if (diff.left.substr(0, ARG_FIRST.length()) == ARG_FIRST && diff.right.substr(0, ARG_SECOND.length()) == ARG_SECOND) {
             // Name is directly in the diff: prefix comes from last marker in diff.prefix
             auto pre_parser = build_tagged_peg_parser([&](common_peg_parser_builder & p) {
@@ -1193,8 +1193,7 @@ void analyze_tools::extract_argument_value_markers() {
                 value_suffix = value_suffix.substr(0, end_marker_pos);
             }
         }
-        value_suffix = trim_leading_whitespace(value_suffix);
-        if (!value_suffix.empty()) {
+        if (!trim_whitespace(value_suffix).empty()) {
             arguments.value_suffix = value_suffix;
         }
     }

@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - experiment-ROCmFPx-family
+      - main
+      - experimental-rocmfpx-branch
     paths:
       - 'ggml/rocmfpx/**'
       - 'src/llama-quant.cpp'

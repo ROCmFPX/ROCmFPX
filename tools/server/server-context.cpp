@@ -332,8 +332,6 @@ struct server_slot {
             n_draft_max = std::min(n_draft_max, n_remaining - 1);
         }
 
-        n_draft_max = std::min(n_draft_max, std::max(0, task->params.speculative.draft.n_max));
-
         SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
 
         return n_draft_max;
@@ -813,14 +811,31 @@ private:
             const bool spec_mtp = std::find(params_base.speculative.types.begin(),
                                             params_base.speculative.types.end(),
                                             COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
+            const bool spec_eagle3 = std::find(params_base.speculative.types.begin(),
+                                               params_base.speculative.types.end(),
+                                               COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) != params_base.speculative.types.end();
+            const bool spec_dflash = std::find(params_base.speculative.types.begin(),
+                                               params_base.speculative.types.end(),
+                                               COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params_base.speculative.types.end();
             if (spec_mtp) {
+                // NOTE: do NOT set ctx_other = ctx_tgt for a separate-model MTP draft.
+                // MTP reads the target's pre-norm hidden states via ctx_tgt directly
+                // (see speculative.cpp). Setting ctx_other here would make the draft
+                // ctor mis-detect is_mem_shared (gemma4-style shared KV) and disable
+                // chain_heads for multi-head Step MTP3 drafts, breaking draft KV resets.
                 cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+            } else if (spec_eagle3 || spec_dflash) {
+                cparams.ctx_other = ctx_tgt;
             }
 
             // note: for small models maybe we can set this to the maximum possible draft from all speculative types
             //       the extra memory for small models is likely negligible?
             cparams.n_rs_seq = 0;
             ctx_dft.reset(llama_init_from_model(model_dft.get(), cparams));
+            if (ctx_dft == nullptr) {
+                SRV_ERR("failed to create draft context, '%s'\n", params_dft.model.path.c_str());
+                return false;
+            }
 
             ctx_dft_seq_rm_type = spec_mtp ? COMMON_CONTEXT_SEQ_RM_TYPE_NO : common_context_can_seq_rm(ctx_dft.get());
 
@@ -833,6 +848,7 @@ private:
 
             auto cparams_mtp = common_context_params_to_llama(params_base);
             cparams_mtp.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+            cparams_mtp.ctx_other = ctx_tgt;
             cparams_mtp.type_k   = params_base.speculative.draft.cache_type_k;
             cparams_mtp.type_v   = params_base.speculative.draft.cache_type_v;
             cparams_mtp.n_rs_seq = 0;
@@ -1899,8 +1915,6 @@ private:
 
         cur.update_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
         cur.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
-        // stash the draft's speculative state with the checkpoint
-        common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
 
         SLT_INF(slot,
                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
@@ -2354,8 +2368,6 @@ private:
                             /* .id_last  = */ slot.sampled,
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
-                            /* .n_min    = */ slot.task->params.speculative.draft.n_min,
-                            /* .p_min    = */ slot.task->params.speculative.draft.p_min,
                         };
 
                         drafting.push_back(&slot);
@@ -2702,6 +2714,7 @@ private:
 
                                     if (!do_reset) {
                                         // restore the context checkpoint
+
                                         const bool restored_tgt = it->load_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                                         const bool restored_dft = it->load_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
 
@@ -2713,8 +2726,6 @@ private:
                                                     (float) it->size() / 1024 / 1024);
                                             do_reset = true;
                                         } else {
-                                            // restore the draft's speculative state
-                                            common_speculative_set_state(spec.get(), slot.id, it->data_spec);
                                             pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
                                             n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
                                             SLT_WRN(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);

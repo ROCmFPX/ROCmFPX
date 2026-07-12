@@ -31,6 +31,26 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef GGML_ROCMFP6_EXPANDED_DEVICE
+#define GGML_ROCMFP6_EXPANDED_DEVICE 0
+#endif
+
+// Optional device-only ROCmFP6 layout. GGUF/CPU storage remains the packed
+// block_rocmfp6 layout; experimental ROCm builds may expand qs to signed
+// bytes to avoid bit unpacking in hot matmul/FA kernels.
+struct block_rocmfp6_expanded {
+    int8_t  qs[QK_ROCMFP6];
+    uint8_t e[2];
+};
+
+static_assert(sizeof(block_rocmfp6_expanded) == QK_ROCMFP6 + 2*sizeof(uint8_t), "wrong expanded rocmfp6 block size/padding");
+
+#if GGML_ROCMFP6_EXPANDED_DEVICE
+using block_rocmfp6_device = block_rocmfp6_expanded;
+#else
+using block_rocmfp6_device = block_rocmfp6;
+#endif
+
 #if defined(GGML_USE_HIP)
 #include "vendors/hip.h"
 #elif defined(GGML_USE_MUSA)
@@ -565,6 +585,10 @@ struct block_reduce_policy;
 template <typename T, typename... Ts>
 inline constexpr bool is_any = (std::is_same_v<T, Ts> || ...);
 
+static __device__ __forceinline__ float ggml_cuda_negative_infinity() {
+    return __int_as_float(0xff800000);
+}
+
 template<typename...>
 inline constexpr bool ggml_cuda_dependent_false_v = false;
 
@@ -603,9 +627,9 @@ template <typename T> struct block_reduce_policy<block_reduce_method::MAX, T> {
 
     static __device__ T sentinel() {
         if constexpr (std::is_same_v<T, float>) {
-            return -INFINITY;
+            return ggml_cuda_negative_infinity();
         } else if constexpr (std::is_same_v<T, half2>) {
-            return make_half2(-INFINITY, -INFINITY);
+            return make_half2(ggml_cuda_negative_infinity(), ggml_cuda_negative_infinity());
         } else {
             static_assert(ggml_cuda_dependent_false_v<T>, "Unsupported type for block reduce max");
         }
