@@ -61,6 +61,50 @@ Before the repaired branch was pushed, it also passed these follow-up gates:
 - Real Qwable MTP decode completed cleanly at 33.8 tokens/second on ROCm and
   32.9 tokens/second on Vulkan.
 
+The next GitHub matrix exposed several source directories that had been copied
+from mismatched upstream revisions. The follow-up candidate therefore also:
+
+- Restores the complete Hexagon and OpenCL trees from upstream snapshot
+  `5fd2dc2c`. Every file hash and both directory file lists were checked
+  locally before one extra blank line at EOF was normalized; the new files
+  shown by Git are intentional parts of those trees.
+- Completes the matching upstream chat/PEG parser changes for whitespace,
+  streaming, and LFM2/LFM2.5 tool parsing, and skips unsupported Responses API
+  tools that have no Chat Completions equivalent.
+- Restores the optional multimodal GQA default `n_head_kv = n_head`, fixing the
+  TinyGemma vision-server startup assertion.
+- Uses CPU fallback for non-contiguous WebGPU normalization views that fail
+  parity on Apple's WebGPU/Metal implementation.
+- Removes two CUDA const-correctness warnings that are errors in the CUDA CI
+  configuration.
+- Uses the Windows CRT environment API for the HIP queue workaround and routes
+  the MTP speculative-step setter through the exported staging API, avoiding
+  the two Windows compile/link failures from the previous matrix.
+- Adds exact HIP-quality exceptions for three pre-existing main-branch kernels
+  and eight gfx908-only ROCmFPX FP3/FP6 FlashAttention instantiations. The
+  quality gate remains active for every other symbol; no wildcard exemption is
+  used.
+
+Validation of this follow-up tree includes:
+
+- A fresh Release CPU build with `LLAMA_FATAL_WARNINGS=ON`, including
+  `test-chat`, `test-llama-archs`, `test-backend-ops`, and `llama-server`.
+- The complete Release and Debug chat suites, including the restored LFM and
+  Responses cases.
+- The architecture round-trip suite.
+- TinyGemma vision-server startup with the same model and projector used by
+  CI, returning a healthy status.
+- WebGPU NORM, L2_NORM, and RMS_NORM correctness: 61/61 supported cases.
+- Same-toolchain gfx908 compile-metrics builds of backed-up `main` and the
+  candidate, followed by validation of the exact ROCm 7.2.1 CI exception list.
+- A rebuilt Vulkan MTP smoke test using the exported speculative-step API,
+  completing cleanly at 42.6 generation tokens/second.
+
+This machine does not have OpenCL development headers, and it cannot reproduce
+the Snapdragon/Hexagon toolchain. The exact-tree restorations must therefore
+pass their GitHub platform jobs before the PR can leave draft status. Do not
+treat hash verification alone as a successful backend build.
+
 Do not merge draft PR #27 while any required GitHub check is pending or red.
 
 ## Important rule

@@ -22,9 +22,6 @@
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
-// Internal staging hook used by multi-head MTP graph builders.
-void llm_graph_set_mtp_speculative_step(int32_t step);
-
 const std::map<std::string, common_speculative_type> common_speculative_type_from_name_map = {
     {"none",          COMMON_SPECULATIVE_TYPE_NONE},
     {"draft-simple",  COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE},
@@ -1497,7 +1494,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                     llama_memory_seq_rm(mem_dft, seq_id, batch_in.pos[i_batch_beg[seq_id]], -1);
                 }
                 llama_set_nextn_layer_offset(ctx_dft, head);
-                llm_graph_set_mtp_speculative_step(head);
+                llama_set_mtp_speculative_step(head);
             }
 
             const int32_t rc = llama_decode(ctx_dft, batch);
@@ -1511,7 +1508,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         if (chain_heads) {
             llama_set_nextn_layer_offset(ctx_dft, 0); // restore default for non-draft decodes
-            llm_graph_set_mtp_speculative_step(0);
+            llama_set_mtp_speculative_step(0);
         }
         if (!ok) {
             return false;
@@ -1605,7 +1602,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 }
                 llama_set_nextn_layer_offset(ctx_dft, i);
             }
-            llm_graph_set_mtp_speculative_step(i);
+            llama_set_mtp_speculative_step(i);
 
             int ret = llama_decode(ctx_dft, batch);
             if (ret != 0) {

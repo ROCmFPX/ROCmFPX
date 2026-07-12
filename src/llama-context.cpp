@@ -3886,6 +3886,10 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
     ctx->set_nextn_layer_offset(offset);
 }
 
+void llama_set_mtp_speculative_step(int32_t step) {
+    llm_graph_set_mtp_speculative_step(step);
+}
+
 int32_t llama_model_n_embd_pre_norm(const llama_model * model) {
     return model->n_embd_pre_norm();
 }

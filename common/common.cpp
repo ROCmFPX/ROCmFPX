@@ -379,7 +379,11 @@ void common_init() {
     // Default GPU_MAX_HW_QUEUES to 1 on HIP builds when the user has not set it;
     // an explicit value is always respected.
     if (!std::getenv("GPU_MAX_HW_QUEUES")) {
+#if defined(_WIN32)
+        _putenv_s("GPU_MAX_HW_QUEUES", "1");
+#else
         setenv("GPU_MAX_HW_QUEUES", "1", 0);
+#endif
     }
 #endif
 }
