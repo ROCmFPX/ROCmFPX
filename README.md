@@ -1,53 +1,62 @@
 # ROCmFPX for llama.cpp
 
-Experimental AMD-focused ROCmFP3, ROCmFP4, ROCmFP6, and ROCmFP8 quantization
-formats for `llama.cpp`.
+ROCmFPX adds experimental AMD-focused 3-, 4-, 6-, and 8-bit GGUF model-weight
+formats to `llama.cpp`, with CPU reference paths and accelerated HIP/ROCm and
+Vulkan kernels.
 
-This repository is for people who want to download, compile, quantize, and test
-the ROCmFPX family directly from:
+> **Status:** ROCmFPX is an experimental feature family on the canonical `main`
+> branch. APIs, tuning choices, and performance can change. Results depend on
+> hardware, drivers, model, prompt, and quantization recipe; use BF16/F16 sources
+> for quality comparisons.
 
-```text
-https://github.com/charlie12345/ROCmFPX
-```
+## Why ROCmFPX?
 
-The tested ROCmFPX source now lives on `main` so GitHub shows these instructions
-by default. The former experimental branch remains available for comparison and
-rollback during the promotion window.
+- **AMD-first weight formats:** ROCmFP3, ROCmFP4, ROCmFP6, and ROCmFP8 are real
+  GGUF model-weight quants, not just K/V-cache compression.
+- **Native accelerated paths:** HIP/ROCm and Vulkan kernels are backed by CPU
+  reference implementations for correctness testing.
+- **Speed and size choices:** ROCmFP4 is the speed-first 4-bit family; existing
+  Qwen comparisons put its files about 12% below the matched Q4_K_M size.
+- **Agent-aware presets:** coherent/agent recipes protect tensors that matter for
+  code, JSON, tool calling, and structured output.
+- **Built-in MTP acceleration:** models with an MTP/NextN head—including
+  M-RoPE Qwen models—can use target-verified self-speculative decoding without
+  loading a separate draft model.
+- **Broad validation:** the promoted source was exercised through local
+  CPU/Vulkan/ROCm tests and cross-platform CI covering Windows, macOS/Metal,
+  WebUI provisioning, and Apple packaging.
 
-> Status: experimental feature family on the canonical `main` branch. APIs,
-> serving defaults, benchmark thresholds, and ROCmFPX tuning choices may change
-> quickly. Results are hardware-, driver-, model-, and prompt-sensitive, so use
-> BF16/F16 sources for real quality tests.
+Start with [Quick Start](#quick-start-strix-halo--gfx1151), choose a format in
+[Which Format Should I Pick?](#which-format-should-i-pick), or jump directly to
+[MTP Speculative Decoding](#faster-decode-mtp-speculative-decoding).
 
-## Update — 2026-07-04
+## Verified MTP Results — Strix Halo, 2026-07-12
 
-Latest changes in this repository (measured on `gfx1151` / Strix Halo):
+These are local command-line decode results from the promoted `main` source on
+Strix Halo (`gfx1151`). Throughput is the final `Generation:` rate from
+`llama-cli`; runs used full GPU offload, FlashAttention, `-c 4096`, greedy
+sampling (`--temp 0`), `-b 512 -ub 512`, the same prompt within each row, and
+one model at a time.
 
-- **M-RoPE MTP fix — speculative decoding now actually runs on `qwen35` /
-  `qwen35moe` (and every other M-RoPE arch).** These architectures use IMROPE
-  (`n_pos_per_embd = 4`), and the batch position check in `src/llama-batch.cpp`
-  was rejecting the MTP draft/verify batch on *every* step (`for M-RoPE, it is
-  required that the position satisfies: X < Y`). MTP was silently falling back
-  to plain decode. The MTP hook batch is a *hybrid*: it carries a token id (for
-  the embedding lookup) **and** an injected hidden-state row, so it must use the
-  same lenient position rule as an embedding batch (`X <= Y`). Fixed by gating
-  the strict check on `batch.token && !batch.embd`. Measured (Vulkan0, `n_max 6,
-  p_min 0.6`):
-  - Dense Qwen3.5-27B coder (`qwen35`): **14 → 48 t/s** (3.4×).
-  - MoE Qwen3.6-35B-A3B (`qwen35moe`): **76 → 115 t/s** (1.5×).
-- **MTP is now used for both dense and MoE.** The server script
-  (`scripts/run-rocmfpx-mtp-server.sh`) applies `n_max 6, p_min 0.6` to both;
-  MoE gains from MTP once the position check lets it run (the earlier "MoE runs
-  no-spec / expert-union ceiling" guidance was an artifact of MTP never actually
-  engaging on these M-RoPE models). NEOX-RoPE MTP (e.g. Gemma4 assistants) was
-  never affected. On this hardware **`Vulkan0` decodes faster than `ROCm0`** and
-  is the server default.
-- **QAT models (Gemma) default to full GPU offload + FlashAttention** so the
-  Google QAT speed/quality shows on AMD out of the box.
-- **`strix-rocmfpx` CMake preset** captures the known-good gfx1151 build
-  (HIP + Vulkan + native CPU).
-- **Correctness:** EAGLE3 concat axis fix; DFlash encoder input width now reads
-  `target_hidden_size` (the converter emits it).
+| Model and backend | Tokens | MTP profile | No MTP | MTP result | Speedup |
+|---|---:|---|---:|---:|---:|
+| Qwable-5-27B-Coder ROCmFP4 COHERENT_AGENT, Vulkan0 | 64 | `n6 / p0.60` | 14.0 t/s | 33.2 t/s | 2.37x |
+| Qwen3.6-35B-A3B ROCmFP4 STRIX_LEAN-FRESH, Vulkan0 | 256 | `n4 / p0.55` | 76.5 t/s | 116.1 t/s median, 118.3 peak | 1.52x median |
+| Qwen3.6-35B-A3B ROCmFP4 STRIX_LEAN-FRESH, ROCm0 | 256 | `n4 / p0.55` | — | 106.2 t/s median | — |
+
+Qwable is a matched single 64-token pair. Qwen no-MTP is one 256-token run;
+the MTP values are the median and peak of three matched 256-token runs.
+
+The promoted source and the pre-promotion experimental build were effectively
+tied on Qwen3.6: median differences were `-0.7%` on Vulkan and `-0.3%` on ROCm.
+On a longer 512-token Vulkan run, the promoted source reached `110.7 t/s` versus
+`107.2 t/s` for the experimental build. Qwable's 256-token branch comparison
+was also tied: promoted/experimental measured `32.9/33.0 t/s` on Vulkan and
+`32.3/32.3 t/s` on ROCm.
+
+MTP gains are content-dependent: predictable code, JSON, and lists usually
+accept more draft tokens than creative prose. Treat the profiles above as tested
+starting points, not universal defaults.
 
 ## Quick Start (Strix Halo / `gfx1151`)
 
@@ -62,24 +71,57 @@ cd ROCmFPX && git checkout main
 # 2. Build for Strix Halo
 env JOBS=16 scripts/build-strix-rocmfp4-mtp.sh          # -> build-strix-rocmfp4/
 
-# 3. Quantize a BF16/F16 GGUF to ROCmFP4 (4.25 bpw, fastest decode)
+# 3. Quantize a BF16/F16 GGUF to ROCmFP4 (4.25 bpw, speed-first layout)
 build-strix-rocmfp4/bin/llama-quantize model-BF16.gguf model-ROCMFP4_FAST.gguf Q4_0_ROCMFP4_FAST
 
-# 4. Run it (ROCm)
-export HSA_OVERRIDE_GFX_VERSION=11.5.1
-export GGML_HIP_ENABLE_UNIFIED_MEMORY=1
-build-strix-rocmfp4/bin/llama-cli -m model-ROCMFP4_FAST.gguf -dev ROCm0 -ngl 999 -fa on --jinja
+# 4. Run it with the fastest backend measured on this Strix Halo system
+build-strix-rocmfp4/bin/llama-cli \
+  -m model-ROCMFP4_FAST.gguf -dev Vulkan0 -ngl 999 -fa on --jinja
 ```
 
 That is the whole loop: **build → quantize → run.** The sections below explain
 each format, how to convert an existing NVFP4 model, and how to squeeze more
 decode speed with speculative decoding.
 
+For a model that contains an MTP/NextN head, add a tested starting profile:
+
+```bash
+build-strix-rocmfp4/bin/llama-cli \
+  -m model-with-MTP.gguf -dev Vulkan0 -ngl 999 -fa on --jinja \
+  --temp 0 --spec-type draft-mtp \
+  --spec-draft-n-max 6 --spec-draft-p-min 0.6
+```
+
+For Qwen3.6-35B-A3B on the tested Strix Halo system, `n4 / p0.55` was faster:
+
+```text
+--spec-draft-n-max 4 --spec-draft-p-min 0.55
+```
+
+To use HIP/ROCm instead of Vulkan:
+
+```bash
+export HSA_OVERRIDE_GFX_VERSION=11.5.1
+export GGML_HIP_ENABLE_UNIFIED_MEMORY=1
+build-strix-rocmfp4/bin/llama-cli \
+  -m model-ROCMFP4_FAST.gguf -dev ROCm0 -ngl 999 -fa on --jinja
+```
+
+## Tested Support
+
+| Target | Status |
+|---|---|
+| Strix Halo / RDNA3.5 (`gfx1151`) | locally built and benchmarked with Vulkan and HIP/ROCm; Vulkan was fastest for tested decode workloads |
+| RDNA2 (`gfx1030`), RDNA3 (`gfx1100`), RDNA4 (`gfx1200`) | dedicated build scripts are provided; results vary by GPU and ROCm version |
+| CPU | reference and correctness paths; not the recommended performance backend |
+| Vulkan | accelerated and the recommended decode starting point on tested Strix Halo hardware |
+| HIP/ROCm | accelerated and validated on the tested Strix Halo system |
+
 ## Which Format Should I Pick?
 
 | Goal | Use | Why |
 |---|---|---|
-| **Smallest + fastest decode** | `Q4_0_ROCMFP4_FAST` | 4.25 bpw, single scale/block — the speed default |
+| **Smallest + speed-first decode** | `Q4_0_ROCMFP4_FAST` | 4.25 bpw, single scale/block — the speed-oriented default |
 | **Balanced 4-bit** | `Q4_0_ROCMFP4` | 4.50 bpw, dual per-16 scale — a touch more precision |
 | **Agents / tools / JSON / code** | `Q4_0_ROCMFP4_COHERENT` (or any `*_AGENT`) | protects the tensors that keep structured output correct |
 | **Strix Halo tuned recipe** | `Q4_0_ROCMFP4_STRIX_LEAN` | attn-K/V quality recipe tuned on `gfx1151` |
@@ -119,7 +161,7 @@ kernel coverage.
 This work builds on `llama.cpp`; upstream authors and contributors retain credit
 under the MIT license. See `AUTHORS`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`.
 
-ROCmFP4 and ROCmFPX experiment work in this branch is maintained by
+ROCmFP4 and ROCmFPX experiment work in this repository is maintained by
 `charlie12345` / `caf`.
 
 Additional ROCmFPX contributors:
@@ -146,12 +188,12 @@ ROCmFPX math but protect the tensors that tend to break structured output:
 token/output embeddings, attention Q/K/V/O, selected FFN-down, and selected
 FFN-gate tensors.
 
-## Preliminary Benchmarks
+## Detailed and Historical Benchmarks
 
-These are local experimental-branch results from a Strix Halo / `gfx1151`
-system. Treat them as early comparison data, not a final benchmark site. All
-rows used the same model pair, backend, batch shape, q4 K/V cache, Flash
-Attention enabled, and one test at a time.
+These are additional pre-promotion comparisons from a Strix Halo / `gfx1151`
+system. Treat them as historical local data, not a universal benchmark. All
+rows within each table used the same model pair, backend, batch shape, K/V
+cache, FlashAttention setting, and one test at a time.
 
 ### Qwen3.6 27B, Vanilla No-MTP
 
@@ -173,14 +215,15 @@ On this 27B vanilla run, ROCmFP4 was slightly behind Q4_K_M for ROCm prompt
 fill, but faster for decode on both ROCm and Vulkan. Vulkan ROCmFP4 also led
 prompt fill.
 
-### Qwen3.6 35B A3B MTP
+### Qwen3.6 35B A3B Weight-Quant Comparison
 
 Model pair:
 
 - Baseline: `Qwen3.6-35B-A3B-MTP-Q4_K_M.gguf`, `21.71 GB`
 - ROCmFPX: `Qwen3.6-35B-A3B-MTP-BF16-to-ROCmFP4-STRIX_LEAN-ROCmFPXCLONE.gguf`, `19.05 GB`
 - Size delta: ROCmFP4 is `12.28%` smaller
-- Test: `llama-bench`, `pp512 + tg128`
+- Test: `llama-bench`, `pp512 + tg128`; this table measures the weight quants,
+  not speculative MTP acceleration
 
 | Backend | Quant | Prompt fill tok/s | Decode tg128 tok/s |
 |---|---|---:|---:|
@@ -199,7 +242,7 @@ smoke:
 | Vulkan0 | Q4_K_M | 654.0 | 40.2 |
 | Vulkan0 | ROCmFP4 STRIX_LEAN | 730.9 | 57.5 |
 
-On this 35B A3B MTP run, ROCmFP4 was smaller and faster on decode/generation
+On this 35B A3B comparison, ROCmFP4 was smaller and faster on decode/generation
 across ROCm and Vulkan. ROCm prompt fill was still slightly behind Q4_K_M in
 `llama-bench`, while Vulkan prompt fill and Hermes-style prompts favored
 ROCmFP4.
@@ -211,11 +254,8 @@ git clone https://github.com/charlie12345/ROCmFPX.git
 cd ROCmFPX
 ```
 
-The pre-promotion experimental branch remains available for comparison:
-
-```bash
-git checkout experimental-rocmfpx-branch
-```
+Most users should stay on `main`. The preserved
+`experimental-rocmfpx-branch` exists for history and rollback comparisons.
 
 Pick the build script for your machine:
 
@@ -226,7 +266,7 @@ Pick the build script for your machine:
 | RDNA3 / RX 7000 (`gfx1100` class) | `env JOBS=16 scripts/build-rdna3.sh` | `build-rdna3/` |
 | RDNA4 / RX 9000 (`gfx1200` class) | `env JOBS=16 scripts/build-rdna4.sh` | `build-rdna4/` |
 | RDNA4 / RX 9000 — self-contained (no system ROCm) | `env JOBS=16 scripts/build-rocmfp4-rocm714-local.sh` | `build-rdna4-rocm714/` |
-| Vulkan fallback | use the Vulkan CMake path in `docs/BUILD-AMD-ARCHITECTURES.md` | custom |
+| Vulkan-only / manual | use the Vulkan CMake path in `docs/BUILD-AMD-ARCHITECTURES.md` | custom |
 
 For Strix Halo, the common runtime environment is:
 
@@ -366,7 +406,7 @@ ROCmFPX supports: NVFP4 and ROCmFP4 use the **same UE4M3 scale** and share **7 o
 build-strix-rocmfp4/bin/llama-quantize --allow-requantize \
   model-NVFP4.gguf model-ROCMFP4.gguf Q4_0_ROCMFP4
 
-# Smaller 4.25 bpw (fastest decode, a little more loss):
+# Smaller 4.25 bpw (speed-first layout, a little more loss):
 build-strix-rocmfp4/bin/llama-quantize --allow-requantize \
   model-NVFP4.gguf model-ROCMFP4_FAST.gguf Q4_0_ROCMFP4_FAST
 ```
@@ -389,24 +429,26 @@ what the weight format alone can do, because accepted draft tokens produce sever
 tokens per weight read.
 
 MTP helps **both dense and MoE** models here. On `gfx1151`, `-dev Vulkan0`
-decodes faster than `-dev ROCm0` for both.
+was the fastest backend in the validated Qwen3.6 and Qwable comparisons.
 
 ```bash
-# Any MTP model (dense or MoE): same flags
+# General starting profile for a model with an embedded MTP/NextN head
 build-strix-rocmfp4/bin/llama-cli \
-  -m model-ROCMFP4_FAST.gguf -dev Vulkan0 -ngl 999 -fa on --jinja \
+  -m model-with-MTP.gguf -dev Vulkan0 -ngl 999 -fa on --jinja \
+  --temp 0 \
   --spec-type draft-mtp --spec-draft-n-max 6 --spec-draft-p-min 0.6
 ```
 
-- **`--spec-draft-p-min` matters most.** At `0.0` the draft proposes
-  low-probability tokens that get rejected, making MTP a net *loss*; `0.6`–`0.75`
-  only drafts high-confidence tokens. Dense sweet spot here: `n_max 6, p_min 0.6`.
+- **Tune per model and workload.** `n6 / p0.60` is a useful starting point, but
+  the validated Qwen3.6-35B-A3B profile was faster at `n4 / p0.55`. Very low
+  `p_min` can waste work on rejected drafts; an overly high value can miss useful
+  draft tokens.
 - The speedup is **content-dependent**: structured / predictable output (code, lists,
   JSON) accepts more drafts and gains most; free-form creative text gains less.
 - It is **lossless**: at greedy (`--temp 0`) the output matches non-speculative
   decoding token-for-token (the target model verifies every drafted token).
-- Measured on `gfx1151` (Vulkan0, `n6/p0.6`): dense Qwen3.5-27B coder
-  **14 → 48 t/s**; MoE Qwen3.6-35B-A3B **76 → 115 t/s**.
+- See [Verified MTP Results](#verified-mtp-results--strix-halo-2026-07-12) for
+  current Qwable and Qwen3.6 measurements, profiles, and branch-parity context.
 
 **M-RoPE models (`qwen35` / `qwen35moe`, and any IMROPE/MROPE arch):** MTP now
 works on these. They use 4-D M-RoPE positions, and the batch position check
@@ -540,23 +582,6 @@ BACKEND=ROCm0 \
 ALIAS=rocmfpx-agent \
 OUT_DIR=/tmp/rocmfpx-agentic-smoke \
 scripts/check-rocmfpx-agentic-smoke.sh
-```
-
-## Local Reference Results
-
-Current Strix Halo local reference points:
-
-| Model | Size / BPW | Result |
-|---|---:|---|
-| ROCmFP8 Agent from BF16 | `31,568.94 MiB / 8.39 BPW` | agentic smoke pass |
-| ROCmFP4 Agent from BF16 | `17,136.79 MiB / 4.55 BPW` | agentic smoke pass |
-| BF16 baseline | source | agentic smoke pass |
-
-ROCmFP4 Agent benchmark on ROCm0:
-
-```text
-pp512: 650.63 t/s
-tg128: 76.55 t/s
 ```
 
 ## Code Layout
