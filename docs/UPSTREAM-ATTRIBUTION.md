@@ -59,6 +59,14 @@ compatibility, fail when no complete asset source is available, and disable
 embedded WebUI in backend-only CI jobs while dedicated WebUI jobs retain
 coverage.
 
+### Apple XCFramework Build Script
+
+The promotion CI repair restores the tracked Apple packaging script that was
+omitted when the source snapshot imported its calling workflows. The restored
+file is byte-for-byte identical to:
+
+- `4d742877b2631bd9094bc7603bc59b65940563e2` - `build : use umbrella Headers directory for XCFramework module map (#23974)` by Gerard Martinez.
+
 ### DiffusionGemma Support
 
 The upstream DiffusionGemma source branch used locally was
