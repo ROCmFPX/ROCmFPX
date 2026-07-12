@@ -607,7 +607,7 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
             }
 
             id = common_sampler_validate_or_select_fallback(__func__, ctx, cur_p, id);
-            if (found && id == id_backend) {
+            if (id == id_backend) {
                 return id;
             }
 
