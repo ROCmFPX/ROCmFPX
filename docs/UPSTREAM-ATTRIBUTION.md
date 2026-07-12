@@ -47,6 +47,18 @@ The promotion CI repair restores the upstream parser expectations from:
 Only the affected test fixtures are ported because the corresponding parser
 behavior is already present in the experimental branch.
 
+### WebUI CI Provisioning
+
+The promotion CI repair manually adapts these upstream fixes:
+
+- `0c3e4fccca8aea028df37d39510e9df11d90c1b3` - `fix: Propagate version tag to WebUI asset download in self-hosted CI (#23051)` by Aleksander Grygier, co-authored by Sigbjorn Skjaeret.
+- `1348f67c58f561808136e8a152a9eddec168f221` - `webui: Use lowercase hash for HF checksum check (#23107)` by Omer Ozarslan.
+
+Local adaptations invoke the discovered npm executable for Windows
+compatibility, fail when no complete asset source is available, and disable
+embedded WebUI in backend-only CI jobs while dedicated WebUI jobs retain
+coverage.
+
 ### DiffusionGemma Support
 
 The upstream DiffusionGemma source branch used locally was
