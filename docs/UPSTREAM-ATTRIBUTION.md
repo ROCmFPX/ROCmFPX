@@ -38,6 +38,15 @@ Some changes were manually adapted because a direct cherry-pick conflicted with
 local ROCmFP4 or MTP graph changes. These commits are local-authored in Git, so
 the upstream sources are listed here explicitly.
 
+### Chat Parser Whitespace Fixtures
+
+The promotion CI repair restores the upstream parser expectations from:
+
+- `a6dff7127092a9cd75db81aaef0456598d1d0452` - `chat: fix whitespace problems once and for all (#24624)` by Piotr Wilkin.
+
+Only the affected test fixtures are ported because the corresponding parser
+behavior is already present in the experimental branch.
+
 ### DiffusionGemma Support
 
 The upstream DiffusionGemma source branch used locally was
