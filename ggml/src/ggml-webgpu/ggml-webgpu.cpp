@@ -4275,7 +4275,10 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
         case GGML_OP_RMS_NORM:
         case GGML_OP_NORM:
         case GGML_OP_L2_NORM:
-            supports_op = op->type == GGML_TYPE_F32 && src0->type == GGML_TYPE_F32;
+            // Non-contiguous rows fail parity on Apple's WebGPU/Metal implementation.
+            // Normal model activations are contiguous; use CPU for unusual strided views.
+            supports_op = op->type == GGML_TYPE_F32 && src0->type == GGML_TYPE_F32 &&
+                          ggml_is_contiguous_rows(src0);
             break;
         case GGML_OP_ROPE:
             supports_op = op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16;

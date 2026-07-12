@@ -5900,8 +5900,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             const ggml_tensor * src0 = op->src[0];
             const ggml_tensor * pos  = op->src[1];
             const ggml_tensor * freq = op->src[2];
-            const int n_dims = ((int32_t *) op->op_params)[0];
-            const int mode   = ((int32_t *) op->op_params)[1];
+            const int n_dims = op->op_params[0];
+            const int mode   = op->op_params[1];
             return (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16) &&
                    op->type == src0->type && pos->type == GGML_TYPE_I32 &&
                    (freq == nullptr || freq->type == GGML_TYPE_F32) &&
