@@ -2047,9 +2047,16 @@ static bool server_prompt_cache_disk_flush_and_drop(const std::string & path, bo
     }
 
     bool ok = true;
-    if (durable && fdatasync(fd) != 0) {
-        SRV_ERR("prompt cache disk fdatasync failed: path=%s error=%s\n", path.c_str(), std::strerror(errno));
-        ok = false;
+    if (durable) {
+#if defined(__APPLE__)
+        const int sync_result = fsync(fd);
+#else
+        const int sync_result = fdatasync(fd);
+#endif
+        if (sync_result != 0) {
+            SRV_ERR("prompt cache disk file sync failed: path=%s error=%s\n", path.c_str(), std::strerror(errno));
+            ok = false;
+        }
     }
 
 #if defined(POSIX_FADV_DONTNEED)
