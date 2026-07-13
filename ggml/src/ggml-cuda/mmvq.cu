@@ -120,6 +120,14 @@
 #error "GGML_ROCMFPX_MOE_MMVQ_ROWS_PER_BLOCK must be between 1 and 4"
 #endif
 
+#ifndef GGML_ROCMFPX_HY3_ADAPTIVE_MOE_RPB
+#define GGML_ROCMFPX_HY3_ADAPTIVE_MOE_RPB 0
+#endif
+
+#if GGML_ROCMFPX_HY3_ADAPTIVE_MOE_RPB != 0 && GGML_ROCMFPX_HY3_ADAPTIVE_MOE_RPB != 1
+#error "GGML_ROCMFPX_HY3_ADAPTIVE_MOE_RPB must be 0 or 1"
+#endif
+
 #if GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL != 1 && GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL != 2
 #error "GGML_ROCMFP4_RDNA35_RPB_WIDE_DUAL must be 1 or 2"
 #endif
@@ -1065,8 +1073,8 @@ static void mul_mat_vec_q_switch_fusion(
         sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride);
 }
 
-template <ggml_type type>
-static void mul_mat_vec_q_moe_launch(
+template <ggml_type type, int rows_per_block>
+static void mul_mat_vec_q_moe_launch_rpb(
         const void * vx, const void * vy, const int32_t * ids, float * dst,
         const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t nrows_x,
         const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
@@ -1074,7 +1082,6 @@ static void mul_mat_vec_q_moe_launch(
         const uint32_t ncols_dst, const uint32_t ids_stride,
         const int warp_size, const int nchannels_dst, cudaStream_t stream) {
 
-    constexpr int rows_per_block = calc_moe_mmvq_rows_per_block<type>();
     const int64_t nblocks_rows = (nrows_x + rows_per_block - 1) / rows_per_block;
     const dim3 block_nums(nblocks_rows, nchannels_dst);
     const dim3 block_dims(warp_size, ncols_dst);
@@ -1084,6 +1091,46 @@ static void mul_mat_vec_q_moe_launch(
         stride_row_x, stride_col_y, stride_col_dst,
         stride_channel_x, stride_channel_y, stride_channel_dst,
         ncols_dst, ids_stride);
+}
+
+template <ggml_type type>
+static void mul_mat_vec_q_moe_launch(
+        const void * vx, const void * vy, const int32_t * ids, float * dst,
+        const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t nrows_x,
+        const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
+        const uint32_t stride_channel_x, const uint32_t stride_channel_y, const uint32_t stride_channel_dst,
+        const uint32_t ncols_dst, const uint32_t ids_stride,
+        const int warp_size, const int nchannels_dst, cudaStream_t stream) {
+
+#if defined(GGML_USE_HIP) && GGML_ROCMFPX_HY3_ADAPTIVE_MOE_RPB
+    // HY3's 192-expert matrices favor different launch shapes for decode and
+    // multi-token verification. Keep this opt-in so established FPX recipes
+    // retain the generic launch policy.
+    if constexpr (type == GGML_TYPE_Q2_0_ROCMFPX) {
+        if (ncols_dst == 1) {
+            if (nrows_x <= 2048) {
+                mul_mat_vec_q_moe_launch_rpb<type, 3>(vx, vy, ids, dst, ncols_x, nchannels_y, nrows_x,
+                    stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y,
+                    stride_channel_dst, ncols_dst, ids_stride, warp_size, nchannels_dst, stream);
+            } else {
+                mul_mat_vec_q_moe_launch_rpb<type, 1>(vx, vy, ids, dst, ncols_x, nchannels_y, nrows_x,
+                    stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y,
+                    stride_channel_dst, ncols_dst, ids_stride, warp_size, nchannels_dst, stream);
+            }
+        } else {
+            mul_mat_vec_q_moe_launch_rpb<type, 3>(vx, vy, ids, dst, ncols_x, nchannels_y, nrows_x,
+                stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y,
+                stride_channel_dst, ncols_dst, ids_stride, warp_size, nchannels_dst, stream);
+        }
+        return;
+    }
+
+#endif
+
+    constexpr int rows_per_block = calc_moe_mmvq_rows_per_block<type>();
+    mul_mat_vec_q_moe_launch_rpb<type, rows_per_block>(vx, vy, ids, dst, ncols_x, nchannels_y, nrows_x,
+        stride_row_x, stride_col_y, stride_col_dst, stride_channel_x, stride_channel_y,
+        stride_channel_dst, ncols_dst, ids_stride, warp_size, nchannels_dst, stream);
 }
 
 template <ggml_type type>
