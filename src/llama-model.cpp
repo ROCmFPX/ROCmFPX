@@ -2116,11 +2116,12 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         };
                     }
 
-                    if (arch == LLM_ARCH_HY_V3 && hparams.n_layer_nextn > 0) {
+                    if (arch == LLM_ARCH_HYV3 && hparams.nextn_predict_layers > 0) {
+                        const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
                         if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
-                            filter = [&](int32_t il) { return (uint32_t) il >= hparams.n_layer(); };
+                            filter = [n_main](int32_t il) { return (uint32_t) il >= n_main; };
                         } else {
-                            filter = [&](int32_t il) { return (uint32_t) il < hparams.n_layer(); };
+                            filter = [n_main](int32_t il) { return (uint32_t) il < n_main; };
                         }
                     }
 
