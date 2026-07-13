@@ -59,6 +59,13 @@ GGML_API void dequantize_row_nvfp4(const block_nvfp4 * GGML_RESTRICT x, float * 
 GGML_API void dequantize_row_turbo3_0(const block_turbo3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_turbo4_0(const block_turbo4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 
+GGML_API void ggml_vec_dot_turbo3_0(int n, float * GGML_RESTRICT s, size_t bs,
+                                    const void * GGML_RESTRICT vx, size_t bx,
+                                    const void * GGML_RESTRICT vy, size_t by, int nrc);
+GGML_API void ggml_vec_dot_turbo4_0(int n, float * GGML_RESTRICT s, size_t bs,
+                                    const void * GGML_RESTRICT vx, size_t bx,
+                                    const void * GGML_RESTRICT vy, size_t by, int nrc);
+
 GGML_API void dequantize_row_q2_K(const block_q2_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_q3_K(const block_q3_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_q4_K(const block_q4_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);

@@ -161,6 +161,7 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE,  // standalone draft model speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3,  // Eagle3 speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_MTP,     // Multi-token prediction
+    COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH,  // DFlash block-diffusion drafting
     COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding based on n-grams
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,   // self-speculative decoding with n-gram keys only
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, // self-speculative decoding with n-gram keys and 4 m-gram values
@@ -362,7 +363,7 @@ struct common_params_speculative {
 
     uint32_t need_n_rs_seq() const {
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
         });
 
         return needs_rs_seq ? draft.n_max : 0u;
@@ -609,6 +610,7 @@ struct common_params {
     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
     int32_t checkpoint_every_nt = 8192;  // make a checkpoint every n tokens during prefill
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+    int32_t cache_disk_limit_mib = 8192; // disk prompt-cache limit when cache_disk_path is set
 
     std::string hostname      = "127.0.0.1";
     std::string public_path   = "";                                                                         // NOLINT
@@ -645,6 +647,10 @@ struct common_params {
 
     // enable built-in tools
     std::vector<std::string> server_tools;
+
+    // Optional base directory for the automatic SSD-backed prompt cache. The
+    // server creates and owns a private per-process directory below this path.
+    std::string cache_disk_path;
 
     // router server configs
     std::string models_dir    = ""; // directory containing models for the router server
@@ -1066,10 +1072,6 @@ struct common_prompt_checkpoint {
 
     std::vector<uint8_t> data_tgt;
     std::vector<uint8_t> data_dft;
-
-    // (optional) speculative-decoding implementation state stashed with the checkpoint
-    // (e.g. eagle3's deferred-boundary g_embd row)
-    std::vector<uint8_t> data_spec;
 
     llama_state_seq_storage * storage_tgt = nullptr;
     llama_state_seq_storage * storage_dft = nullptr;

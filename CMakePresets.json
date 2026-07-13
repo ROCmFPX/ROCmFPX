@@ -32,6 +32,21 @@
     { "name": "vulkan",   "hidden": true, "cacheVariables": { "GGML_VULKAN":      "ON" } },
 
     {
+        "name": "strix-rocmfpx",
+        "inherits": [ "base", "release" ],
+        "description": "Known-good ROCmFPX build for AMD Strix Halo (gfx1151 / RDNA3.5): HIP + Vulkan + native CPU. The winning decode knobs (GGML_ROCMFP6_MMVQ_HALF_BLOCK_SPLIT=1, GGML_ROCMFPX_RDNA35_NWARPS=1) are the in-source defaults and need no cache override.",
+        "cacheVariables": {
+            "GGML_HIP":                 "ON",
+            "AMDGPU_TARGETS":           "gfx1151",
+            "CMAKE_HIP_ARCHITECTURES":  "gfx1151",
+            "CMAKE_HIP_COMPILER":       "/usr/lib/llvm-21/bin/clang++",
+            "GGML_VULKAN":              "ON",
+            "GGML_NATIVE":              "ON",
+            "LLAMA_CURL":               "OFF"
+        }
+    },
+
+    {
         "name": "x64-windows-llvm", "hidden": true,
         "cacheVariables": {
             "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/x64-windows-llvm.cmake"

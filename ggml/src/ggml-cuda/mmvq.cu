@@ -552,6 +552,11 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
     if (table_id == MMVQ_PARAMETERS_RDNA3_5) {
         if (ncols_dst >= 1 && ncols_dst <= GGML_ROCMFP4_RDNA35_NWARPS_MAX_NCOLS) {
             switch (type) {
+                // NOTE: giving stock Q4_0 the ROCmFP4 RDNA3.5 config (nwarps=2)
+                // was tried and measured ~2.3% SLOWER tg on gfx1151 (Q4_0's
+                // access pattern differs), so Q4_0 is intentionally left at the
+                // default nwarps=1 here. Run Google QAT (Q4_0) models natively;
+                // do not add Q4_0 to this switch without a fresh gfx1151 A/B.
                 case GGML_TYPE_Q4_0_ROCMFP4:
                 case GGML_TYPE_Q4_0_ROCMFP4_FAST:
                     return GGML_ROCMFP4_RDNA35_NWARPS;

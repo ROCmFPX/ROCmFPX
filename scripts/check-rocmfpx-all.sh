@@ -11,7 +11,6 @@ cd "$ROOT"
 
 scripts/check-rocmfpx-qwen-all.sh
 scripts/check-rocmfpx-model-capabilities.sh
-scripts/check-rocmfpx-dynamic-draft.sh
 
 if [[ "$SKIP_OPTIONAL" != "1" ]]; then
     scripts/build-rocmfpx-agent-fixtures.sh

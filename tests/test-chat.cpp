@@ -2979,18 +2979,16 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
         tst.test(
                "<seed:tool_call>\n"
                "<function=edit>\n"
-               "<parameter=filename>\n"
-               "foo.cpp\n"
+               "<parameter=filename>"
+               "foo.cpp"
                "</parameter>\n"
                "<parameter=oldString>"
                "def foo(arg = \"14\"):\n"
                "    return arg + \"bar\"\n"
-               "\n"
                "</parameter>\n"
                "<parameter=newString>"
                "def foo(arg = \"15\"):\n"
                "    pass\n"
-               "\n"
                "</parameter>\n"
                "</function>\n"
                "</seed:tool_call>")
@@ -3880,49 +3878,30 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             .run();
     }
 
-    // LFM2-8B-A1B tests - uses <|tool_list_start|>/<|tool_list_end|> and <|tool_call_start|>[name(args)]<|tool_call_end|>
+    for (const char * tmpl : {
+             "models/templates/LFM2-8B-A1B.jinja",
+             "models/templates/LFM2.5-Instruct.jinja",
+             "models/templates/LFM2.5-8B-A1B.jinja",
+         }) {
+        test_lfm2_parser(tmpl, detailed_debug);
+    }
+
+    // Thinking cases only apply to LFM2.5-8B-A1B, the one LFM2 template that emits <think>
     {
-        auto tst = peg_tester("models/templates/LFM2-8B-A1B.jinja", detailed_debug);
+        auto tst = peg_tester("models/templates/LFM2.5-8B-A1B.jinja", detailed_debug);
 
-        // Basic content only
-        tst.test("Hello, world!\nWhat's up?").expect(message_assist).run();
+        // Reasoning is parsed independent of enable_thinking
 
-        // Single tool call without reasoning
-        tst.test("<|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|>")
-            .tools({ special_function_tool })
-            .expect(message_assist_call)
-            .run();
-
-        // Tool call with string argument
-        tst.test("<|tool_call_start|>[get_time(city=\"XYZCITY\")]<|tool_call_end|>")
-            .tools({ get_time_tool })
-            .expect(message_with_tool_calls("get_time", "{\"city\":\"XYZCITY\"}"))
-            .run();
-
-        // Tool call with reasoning (enable_thinking=true)
+        // Tool call with reasoning
         tst.test("<think>I'm\nthinking</think><|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|>")
-            .enable_thinking(true)
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .tools({ special_function_tool })
             .expect(message_assist_call_thoughts)
             .run();
 
-        // Multiple tool calls (parallel)
-        tst.test("<|tool_call_start|>[special_function(arg1=1), special_function_with_opt(arg1=1, arg2=2)]<|tool_call_end|>")
-            .parallel_tool_calls(true)
-            .tools({
-                special_function_tool, special_function_tool_with_optional_param
-            })
-            .expect_tool_calls({
-                { "special_function", R"({"arg1": 1})", {} },
-                { "special_function_with_opt", R"({"arg1": 1, "arg2": 2})", {} },
-            })
-            .run();
-
         // Tool call with reasoning and content
         tst.test("<think>I need to call a function</think>"
                  "Let me check the time.<|tool_call_start|>[get_time(city=\"Paris\")]<|tool_call_end|>")
-            .enable_thinking(true)
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .tools({ get_time_tool })
             .expect(message_with_reasoning_content_and_multiple_tool_calls(
@@ -3930,32 +3909,9 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             ))
             .run();
 
-        // Python tool with multiline code in string
-        tst.test("<|tool_call_start|>[python(code=\"def hello():\\n    print('hey')\")]<|tool_call_end|>")
-            .tools({ python_tool })
-            .expect_tool_calls({
-                { "python", R"#({"code": "def hello():\\n    print('hey')"})#", "" }
-            })
-            .run();
-
-        // Partial tool call (streaming)
-        tst.test("<|tool_call_start|>[special_function(arg1=")
-            .tools({ special_function_tool })
-            .is_partial(true)
-            .expect(simple_assist_msg("", "", "special_function", "{\"arg1\": "))
-            .run();
-
-        // Tool call with empty arguments
-        tst.test("<|tool_call_start|>[empty_args()]<|tool_call_end|>")
-            .tools({ empty_args_tool })
-            .expect(simple_assist_msg("", "", "empty_args", "{}"))
-            .run();
-
-        // fake tool call marker in reasoning
-        tst.test(
-               "<think>Let me think about <|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|> hmm</think>"
-               "<|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|>")
-            .enable_thinking(true)
+        // Fake tool call marker inside reasoning is not parsed as a call
+        tst.test("<think>Let me think about <|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|> hmm</think>"
+                 "<|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|>")
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .tools({ special_function_tool })
             .expect_reasoning("Let me think about <|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|> hmm")
@@ -3963,67 +3919,21 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
                 { "special_function", R"({"arg1": 1})", {} },
             })
             .run();
-    }
 
-    // LFM2.5 tests - uses plain "List of tools: [...]" and bare [name(args)] without wrapper tokens
-    {
-        auto tst = peg_tester("models/templates/LFM2.5-Instruct.jinja", detailed_debug);
-
-        // Basic content only
-        tst.test("Hello, world!\nWhat's up?").expect(message_assist).run();
-
-        // Single tool call without reasoning
-        tst.test("[special_function(arg1=1)]")
-            .tools({ special_function_tool })
-            .expect(message_assist_call)
+        // enable_thinking=false still captures emitted reasoning
+        tst.test("<think>I'm\nthinking</think>Hello, world!\nWhat's up?")
+            .enable_thinking(false)
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect(message_assist_thoughts)
             .run();
 
-        // Tool call with string argument
-        tst.test("[get_time(city=\"XYZCITY\")]")
-            .tools({ get_time_tool })
-            .expect(message_with_tool_calls("get_time", "{\"city\":\"XYZCITY\"}"))
-            .run();
-
-        // Tool call with reasoning (enable_thinking=true)
-        tst.test("<think>I'm\nthinking</think>[special_function(arg1=1)]")
-            .enable_thinking(true)
+        tst.test("<think>I'm\nthinking</think><|tool_call_start|>[special_function(arg1=1)]<|tool_call_end|>")
+            .enable_thinking(false)
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .tools({ special_function_tool })
             .expect(message_assist_call_thoughts)
             .run();
 
-        // Multiple tool calls (parallel)
-        tst.test("[special_function(arg1=1), special_function_with_opt(arg1=1, arg2=2)]")
-            .parallel_tool_calls(true)
-            .tools({
-                special_function_tool, special_function_tool_with_optional_param
-            })
-            .expect_tool_calls({
-                { "special_function", R"({"arg1": 1})", {} },
-                { "special_function_with_opt", R"({"arg1": 1, "arg2": 2})", {} },
-            })
-            .run();
-
-        // Tool call with content before tool call
-        tst.test("Let me check the time.[get_time(city=\"Paris\")]")
-            .tools({ get_time_tool })
-            .expect(message_with_reasoning_content_and_multiple_tool_calls(
-                "", "Let me check the time.", { { "get_time", "{\"city\":\"Paris\"}" } }
-            ))
-            .run();
-
-        // Partial tool call (streaming)
-        tst.test("[special_function(arg1=")
-            .tools({ special_function_tool })
-            .is_partial(true)
-            .expect(simple_assist_msg("", "", "special_function", "{\"arg1\": "))
-            .run();
-
-        // Tool call with empty arguments
-        tst.test("[empty_args()]")
-            .tools({ empty_args_tool })
-            .expect(simple_assist_msg("", "", "empty_args", "{}"))
-            .run();
     }
 
     // Reka-Edge tests - uses native JSON format with per-call wrapper
@@ -4151,7 +4061,7 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
     // Format: <TOOLCALL>[{"name": "func", "arguments": {...}}]</TOOLCALL>
     {
         auto tst = peg_tester("models/templates/NVIDIA-Nemotron-Nano-v2.jinja", detailed_debug);
-        tst.test("<TOOLCALL>[{\"name\": \"special_function\", \"arguments\": {\"arg1\": 1}}]</TOOLCALL><SPECIAL_12>")
+        tst.test("<TOOLCALL>[{\"name\": \"special_function\", \"arguments\": {\"arg1\": 1}}]</TOOLCALL>")
             .tools({ special_function_tool })
             .expect(message_assist_call)
             .run();

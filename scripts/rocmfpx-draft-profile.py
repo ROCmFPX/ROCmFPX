@@ -64,17 +64,24 @@ def choose_profile(prompt_tokens: int, profile: str) -> dict[str, float | int]:
         }
     # fp4-general: flat moderate profile, still backs off at long context.
     if profile == "fp4-general":
+        if prompt_tokens < 49152:
+            return {
+                "speculative.n_max": 4,
+                "speculative.n_min": 0,
+                "speculative.p_min": 0.75,
+                "speculative.p_split": 0.10,
+            }
         if prompt_tokens >= 98304:
             return {
-                "speculative.n_max": 2,
+                "speculative.n_max": 1,
                 "speculative.n_min": 0,
                 "speculative.p_min": 0.0,
                 "speculative.p_split": 0.10,
             }
         return {
-            "speculative.n_max": 4,
+            "speculative.n_max": 2,
             "speculative.n_min": 0,
-            "speculative.p_min": 0.0,
+            "speculative.p_min": 0.25,
             "speculative.p_split": 0.10,
         }
     # fp3-mtp: 4-bracket ladder matching the acceptance-rate evidence.

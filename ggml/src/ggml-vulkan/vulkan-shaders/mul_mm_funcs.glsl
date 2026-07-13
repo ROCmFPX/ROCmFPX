@@ -22,13 +22,16 @@ vec4 rocmfpx_mm_fp3_vec4(uint ib, uint idx) {
 #endif
 
 #if defined(DATA_A_ROCMFPX_FP6)
-int32_t rocmfpx_mm_fp6_pack4(uint ib, uint idx) {
-    return rocmfpx_fp6_pack4_qs(data_a[ib].qs, idx);
+float rocmfpx_mm_fp6_value(uint ib, uint idx) {
+    const float d = ue4m3_to_fp32(data_a[ib].e[idx >= 16u ? 1u : 0u]);
+    return float(int(data_a[ib].qs[idx])) * d;
 }
 
 vec4 rocmfpx_mm_fp6_vec4(uint ib, uint idx) {
-    const float d = ue4m3_to_fp32(data_a[ib].e[idx >= 16u ? 1u : 0u]);
-    return vec4(unpack8(rocmfpx_mm_fp6_pack4(ib, idx))) * d;
+    return vec4(rocmfpx_mm_fp6_value(ib, idx + 0u),
+                rocmfpx_mm_fp6_value(ib, idx + 1u),
+                rocmfpx_mm_fp6_value(ib, idx + 2u),
+                rocmfpx_mm_fp6_value(ib, idx + 3u));
 }
 #endif
 

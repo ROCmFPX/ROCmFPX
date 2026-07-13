@@ -602,21 +602,17 @@ void quantize(uint dst_idx, uint src_idx)
 
 #if defined(DATA_A_ROCMFPX_FP6)
 uint rocmfpx_fp6_quantize_code(float x, float inv_scale) {
-    if (isnan(x) || isinf(x) || isnan(inv_scale) || isinf(inv_scale) || inv_scale <= 0.0) {
+    if (inv_scale <= 0.0) {
         return 0u;
     }
 
-    const int q = clamp(int(round(x * inv_scale)), -32, 31);
-    if (q == 0) {
-        return 0u;
-    }
-
-    return q < 0 ? (32u | (uint(-q) & 31u)) : uint(q);
+    uint mag = uint(clamp(int(round(abs(x * inv_scale))), 0, 31));
+    return mag == 0u ? 0u : ((x < 0.0 ? 32u : 0u) | mag);
 }
 
 int rocmfpx_fp6_decode_value(uint code) {
     const int mag = int(code & 31u);
-    return (code & 32u) != 0u ? -(mag == 0 ? 32 : mag) : mag;
+    return (code & 32u) != 0u ? -mag : mag;
 }
 
 float rocmfpx_fp6_mse_for_scale(uint src_idx, uint offset, uint e, float best_err) {
@@ -687,24 +683,8 @@ uint rocmfpx_choose_scale_fp6_mse(uint src_idx, uint offset) {
     return best_e;
 }
 
-void rocmfpx_fp6_set_bits(inout uint qs[24], uint bit_pos, uint code) {
-    [[unroll]] for (uint bit = 0u; bit < 6u; ++bit) {
-        const uint dst_bit = bit_pos + bit;
-        const uint byte_index = dst_bit >> 3u;
-        const uint mask = 1u << (dst_bit & 7u);
-        uint v = qs[byte_index];
-        v = (code & (1u << bit)) != 0u ? (v | mask) : (v & ~mask);
-        qs[byte_index] = v;
-    }
-}
-
 void quantize(uint dst_idx, uint src_idx)
 {
-    uint qs[24];
-    [[unroll]] for (uint j = 0u; j < 24u; ++j) {
-        qs[j] = 0u;
-    }
-
     [[unroll]] for (uint part = 0u; part < 2u; ++part) {
         const uint offset = part * 16u;
         const uint e = rocmfpx_choose_scale_fp6_mse(src_idx, offset);
@@ -714,12 +694,8 @@ void quantize(uint dst_idx, uint src_idx)
 
         [[unroll]] for (uint j = 0u; j < 16u; ++j) {
             const uint i = offset + j;
-            rocmfpx_fp6_set_bits(qs, i * 6u, rocmfpx_fp6_quantize_code(load_s(src_idx + i), id));
+            data_q[dst_idx].qs[i] = int8_t(rocmfpx_fp6_decode_value(rocmfpx_fp6_quantize_code(load_s(src_idx + i), id)));
         }
-    }
-
-    [[unroll]] for (uint j = 0u; j < 24u; ++j) {
-        data_q[dst_idx].qs[j] = uint8_t(qs[j]);
     }
 }
 #endif

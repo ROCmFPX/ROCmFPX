@@ -9,7 +9,7 @@ rocmfpx_setup_env
 BUILD_DIR="${BUILD_DIR:-$ROOT/build-strix-rocmfp4}"
 BIN="${BIN:-$BUILD_DIR/bin/llama-server}"
 MODEL="${MODEL:-}"
-DEVICE="${DEVICE:-ROCm0}"
+DEVICE="${DEVICE:-Vulkan0}"
 REQUIRE_MTP="${REQUIRE_MTP:-0}"
 REQUIRE_PROFILE="${REQUIRE_PROFILE:-0}"
 WRAPPER_OUT="${WRAPPER_OUT:-}"

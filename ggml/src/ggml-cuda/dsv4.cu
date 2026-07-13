@@ -2,6 +2,8 @@
 
 #include "convert.cuh"
 
+#include <cfloat>
+
 #define CUDA_DSV4_BLOCK_SIZE 256
 #define CUDA_DSV4_MAX_GRIDDIM_X 0x7FFFFFFF
 

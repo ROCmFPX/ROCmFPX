@@ -99,7 +99,7 @@ __launch_bounds__(4 * WARP_SIZE, 1) __global__ void topk_moe_cuda(const float * 
 
     float wt[experts_per_thread];
 
-    // Initialize all slots to -INFINITY
+    // Initialize all slots to negative infinity.
 #pragma unroll
     for (int i = 0; i < experts_per_thread; i++) {
         wt[i] = ggml_cuda_negative_infinity();
@@ -123,7 +123,7 @@ __launch_bounds__(4 * WARP_SIZE, 1) __global__ void topk_moe_cuda(const float * 
     // Sanitize NaN to -FLT_MAX so the iterative argmax produces unique expert IDs.
     // NaN comparisons always return false, which would cause the same expert to be
     // selected repeatedly. -FLT_MAX compares normally and is still excluded by the
-    // -INFINITY sentinel used after each selection round.
+    // -FLT_MAX sentinel used after each selection round.
     // More relevant for the cuBLAS path. See https://github.com/ggml-org/llama.cpp/issues/19659
 #pragma unroll
     for (int i = 0; i < experts_per_thread; i++) {

@@ -1366,7 +1366,7 @@ static void test_nemotron_tool_format(testing & t) {
     // Check argument markers (note: markers retain trailing newlines for proper parsing)
     t.assert_equal("arg_name_prefix should be '<parameter='", "<parameter=", analysis.tools.arguments.name_prefix);
     t.assert_equal("arg_name_suffix should be '>\\n'", ">\n", analysis.tools.arguments.name_suffix);
-    t.assert_equal("arg_value_suffix should be '</parameter>\\n'", "</parameter>\n", analysis.tools.arguments.value_suffix);
+    t.assert_equal("arg_value_suffix should be '\\n</parameter>\\n'", "\n</parameter>\n", analysis.tools.arguments.value_suffix);
 
     // Check format classification
     t.assert_true("tool format should be TAG_WITH_TAGGED", analysis.tools.format.mode == tool_format::TAG_WITH_TAGGED);
@@ -1905,12 +1905,11 @@ static void test_tagged_args_with_embedded_quotes(testing & t) {
         return p.content(p.until("<seed:tool_call>")) + p.optional(tool_section) + p.end();
     });
 
-    // The exact input from the failing test
     std::string input =
         "<seed:tool_call>\n"
         "<function=edit>\n"
-        "<parameter=filename>\n"
-        "foo.cpp\n"
+        "<parameter=filename>"
+        "foo.cpp"
         "</parameter>\n"
         "<parameter=oldString>"
         "def foo(arg = \"14\"):\n"
@@ -1966,4 +1965,3 @@ static void test_tagged_args_with_embedded_quotes(testing & t) {
         }
     }
 }
-

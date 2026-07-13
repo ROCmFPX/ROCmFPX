@@ -581,71 +581,36 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 #endif
 
 #if defined(DATA_A_ROCMFPX_FP6)
-uint rocmfpx_fp6_get_bits(uint ib, uint bit_pos, uint a_offset) {
-    uint code = 0u;
-    [[unroll]] for (uint bit = 0u; bit < 6u; ++bit) {
-        const uint src_bit = bit_pos + bit;
-        code |= ((uint(data_a[a_offset + ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
-    }
-    return code;
-}
-
-int rocmfpx_fp6_decode_code(uint code) {
-    const int mag = int(code & 31u);
-    return (code & 32u) != 0u ? -(mag == 0 ? 32 : mag) : mag;
-}
-
-float rocmfpx_fp6_decode_code_f32(uint code) {
-    return float(rocmfpx_fp6_decode_code(code));
-}
-
 float rocmfpx_fp6_dequant(uint ib, uint idx, uint a_offset) {
     const float d = ue4m3_to_fp32(data_a[a_offset + ib].e[idx >= 16u ? 1u : 0u]);
-    return float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, idx * 6u, a_offset))) * d;
-}
-
-vec4 rocmfpx_fp6_dequant4_aligned(uint ib, uint idx, uint a_offset) {
-    const uint qib = a_offset + ib;
-    const uint byte_pos = 3u * (idx >> 2);
-    const uint bits = uint(data_a[qib].qs[byte_pos + 0u]) |
-                     (uint(data_a[qib].qs[byte_pos + 1u]) <<  8) |
-                     (uint(data_a[qib].qs[byte_pos + 2u]) << 16);
-    const float d = ue4m3_to_fp32(data_a[qib].e[idx >= 16u ? 1u : 0u]);
-    return d * vec4(rocmfpx_fp6_decode_code_f32( bits        & 0x3Fu),
-                    rocmfpx_fp6_decode_code_f32((bits >>  6) & 0x3Fu),
-                    rocmfpx_fp6_decode_code_f32((bits >> 12) & 0x3Fu),
-                    rocmfpx_fp6_decode_code_f32((bits >> 18) & 0x3Fu));
+    return float(int(data_a[a_offset + ib].qs[idx])) * d;
 }
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
-    const float d0 = ue4m3_to_fp32(data_a[a_offset + ib].e[0]);
-    const float d1 = ue4m3_to_fp32(data_a[a_offset + ib].e[1]);
-    return vec2(float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, (iqs + 0u) * 6u, a_offset))) * ((iqs + 0u) >= 16u ? d1 : d0),
-                float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, (iqs + 1u) * 6u, a_offset))) * ((iqs + 1u) >= 16u ? d1 : d0));
+    return vec2(rocmfpx_fp6_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 1u, a_offset));
 }
 
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
-    const float d0 = ue4m3_to_fp32(data_a[a_offset + ib].e[0]);
-    const float d1 = ue4m3_to_fp32(data_a[a_offset + ib].e[1]);
-    return vec4(float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, (iqs + 0u) * 6u, a_offset))) * ((iqs + 0u) >= 16u ? d1 : d0),
-                float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, (iqs + 1u) * 6u, a_offset))) * ((iqs + 1u) >= 16u ? d1 : d0),
-                float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, (iqs + 2u) * 6u, a_offset))) * ((iqs + 2u) >= 16u ? d1 : d0),
-                float(rocmfpx_fp6_decode_code(rocmfpx_fp6_get_bits(ib, (iqs + 3u) * 6u, a_offset))) * ((iqs + 3u) >= 16u ? d1 : d0));
+    return vec4(rocmfpx_fp6_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 1u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 2u, a_offset),
+                rocmfpx_fp6_dequant(ib, iqs + 3u, a_offset));
 }
 #endif
 
 #if defined(DATA_A_ROCMFPX_FP8)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const float d = ue4m3_to_fp32(data_a[a_offset + ib].e);
-    return vec2(float(data_a[a_offset + ib].qs[iqs + 0u]) * d,
-                float(data_a[a_offset + ib].qs[iqs + 1u]) * d);
+    return vec2(float(int(data_a[a_offset + ib].qs[iqs + 0u])) * d,
+                float(int(data_a[a_offset + ib].qs[iqs + 1u])) * d);
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
     const float d = ue4m3_to_fp32(data_a[a_offset + ib].e);
-    return vec4(float(data_a[a_offset + ib].qs[iqs + 0u]) * d,
-                float(data_a[a_offset + ib].qs[iqs + 1u]) * d,
-                float(data_a[a_offset + ib].qs[iqs + 2u]) * d,
-                float(data_a[a_offset + ib].qs[iqs + 3u]) * d);
+    return vec4(float(int(data_a[a_offset + ib].qs[iqs + 0u])) * d,
+                float(int(data_a[a_offset + ib].qs[iqs + 1u])) * d,
+                float(int(data_a[a_offset + ib].qs[iqs + 2u])) * d,
+                float(int(data_a[a_offset + ib].qs[iqs + 3u])) * d);
 }
 #endif
 

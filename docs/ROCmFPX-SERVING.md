@@ -65,9 +65,10 @@ scripts/rocmfpx-model-capabilities.py /path/to/model.gguf --server-args
 ```
 
 The helper emits a validated serving profile for known local families. For
-example, Qwen/Qwable MTP models get `draft-mtp` with `n-max 4`, while Nemotron
-3 Nano 30B A3B ROCmFPX agent models are marked non-MTP and use the validated
-ROCm/f16-KV profile.
+example, Qwen/Qwable MTP ROCmFP4/ROCmFPX models get the Strix prompt-fast
+Vulkan profile with `draft-mtp`, `n-max 4`, q4 target/draft K/V, and a
+`4096/512` batch shape, while Nemotron 3 Nano 30B A3B ROCmFPX agent models are
+marked non-MTP and use the validated ROCm/f16-KV profile.
 
 The capability JSON includes a `model_kind` field so regular GGUF, MTP,
 diffusion, QAT, and agent-oriented ROCmFPX models do not receive the same
@@ -152,6 +153,63 @@ THREADS_BATCH=32
 STRICT_BENCH=1
 ```
 
+For ROCmFP4/ROCmFPX prompt-heavy work on Strix, use the prompt-fast preset:
+
+```bash
+PERF_PRESET=prompt-fast \
+MODEL=/path/to/qwen-or-qwable-rocmfpx-mtp.gguf \
+scripts/run-rocmfpx-mtp-server.sh
+```
+
+This leaves the GGUF unchanged and only changes the serving shape:
+
+```text
+DEVICE=Vulkan0
+BATCH_SIZE=4096
+UBATCH_SIZE=512
+CACHE_TYPE_K=q4_0
+CACHE_TYPE_V=q4_0
+CACHE_TYPE_K_DRAFT=q4_0
+CACHE_TYPE_V_DRAFT=q4_0
+FLASH_ATTN=on
+PARALLEL=1
+POLL=50
+```
+
+For single-user decode on Qwen/Qwable MTP ROCmFP4/ROCmFPX models, use the
+decode-fast preset:
+
+```bash
+PERF_PRESET=decode-fast \
+MODEL=/path/to/qwen-or-qwable-rocmfpx-mtp.gguf \
+scripts/run-rocmfpx-mtp-server.sh
+```
+
+This is still a serving policy change, not a GGUF or quantization change. It
+uses Vulkan0, q8 accepted K/V, q4 draft K/V, `512/512` batch shape, single
+slot, and a `p-min 0.75` confidence gate so low-confidence draft tokens do not
+burn verify work. On the local Qwen3.6 27B MTP ROCmFP4 STRIX_LEAN smoke matrix,
+the relevant results were:
+
+| Profile | Backend | KV | `n-max` | `p-min` | Short decode tok/s | Sustained decode tok/s |
+|---|---|---|---:|---:|---:|---:|
+| default q4 | ROCm0 | q4 main / q4 draft | 4 | 0.00 | 10.6 | 17.4 |
+| gated q4 | ROCm0 | q4 main / q4 draft | 4 | 0.75 | 28.6 | 21.7 |
+| reduced-depth q4 | ROCm0 | q4 main / q4 draft | 2 | 0.00 | 30.9 | 17.8 |
+| gated q4 | Vulkan0 | q4 main / q4 draft | 4 | 0.75 | 30.3 | 22.2 |
+| decode-fast shape | Vulkan0 | q8 main / q4 draft | 4 | 0.75 | 30.5 | 24.4 |
+
+If memory headroom is tight at very long context, keep q4 accepted K/V and
+retain `p-min 0.75`; that preserved most of the decode gain in the local test
+without the q8 accepted-KV memory cost.
+
+On Qwen3.6 35B A3B MTP ROCmFP4 coherent, this profile measured about
+`556 tok/s` prompt and `42 tok/s` decode, versus the same ROCmFP4 GGUF on ROCm
+at about `292 tok/s` prompt for the best tested batch shape. The quality gap
+remains the quantization gap, not a serving-profile coherency issue: the
+ROCmFP4 coherent GGUF was about 7% smaller than Q4_K_M, with WikiText-2 PPL
+`5.7358` versus Q4_K_M `5.4800` on the same clone build.
+
 `STRICT_BENCH=1` disables prompt-cache reuse and sets slot prompt similarity to
 zero so benchmark rows are easier to compare. For interactive serving, set
 `STRICT_BENCH=0` if you want normal prompt-cache behavior.
@@ -172,6 +230,8 @@ Presets:
 | Preset | Behavior |
 |---|---|
 | `balanced` | stable default, single slot, conservative polling |
+| `prompt-fast` | Strix ROCmFP4/ROCmFPX prefill profile; Vulkan0, q4 K/V, `4096/512`, single slot |
+| `decode-fast` | Strix Qwen/Qwable MTP decode profile; Vulkan0, q8 accepted K/V, q4 draft K/V, `p-min 0.75`, `512/512`, single slot |
 | `latency` | keeps one slot and raises polling to reduce wakeup overhead |
 | `throughput` | uses two slots by default for continuous batching / multi-client use |
 
@@ -179,9 +239,9 @@ Safe sweep variables:
 
 ```text
 DEVICE=ROCm0 or Vulkan0
-PERF_PRESET=balanced|latency|throughput
+PERF_PRESET=balanced|prompt-fast|decode-fast|latency|throughput
 PARALLEL=1..4
-BATCH_SIZE=512,1024,2048
+BATCH_SIZE=512,1024,2048,4096
 UBATCH_SIZE=256,512,1024
 POLL=50..100
 POLL_BATCH=0|1
@@ -196,6 +256,39 @@ Start with ROCm for Nemotron-style non-MTP models and Vulkan or ROCm for
 Qwable/Qwen MTP models, then benchmark both. Keep `PARALLEL=1` for single-user
 decode-speed measurements; use `PARALLEL=2` or higher only when testing
 continuous batching or multiple clients.
+
+The prompt-fast profile is the safe family-wide serving fix for ROCmFP4 and
+ROCmFPX GGUFs where Vulkan supports the model ops. A HIP-side family fix should
+target the large-prefill `MUL_MAT`/MMQ path for ROCmFP4/ROCmFPX so ROCm0 can
+match the Vulkan shader path; changing quant presets is not the first lever
+when the same GGUF is already coherent and faster on Vulkan.
+
+For HIP-side MMQ work, use the focused sweep harness before changing defaults:
+
+```bash
+OUT_DIR=/tmp/rocmfp4-prefill-mmq-sweep scripts/sweep-rocmfp4-prefill-mmq.sh
+```
+
+The harness rebuilds selected MMQ compile-time variants, runs a focused
+ROCmFP4 backend guard, and benchmarks both the ROCmFP4 target GGUF and the
+Q4_K_M baseline from the same build. On Qwen3.6 35B A3B MTP STRIX_LEAN, the
+tested `GGML_ROCMFP4_Q8_1_MMQ_VDR=4` / `GGML_ROCMFP4_FAST_Q8_1_MMQ_VDR=4`
+candidate improved decode but did not confirm as a prompt-processing win on a
+repeat run, so the default MMQ VDR settings remain unchanged.
+
+For broader ROCm/Vulkan speed checks, use the ROCmFPX speed harness:
+
+```bash
+OUT_DIR=/tmp/rocmfpx-rocm-ai-speed scripts/sweep-rocmfpx-rocm-ai-speed.sh
+```
+
+The harness can compare the default build with opt-in ROCm variants such as
+rocWMMA FlashAttention while keeping GGUF formats unchanged. Every variant
+must pass the ROCmFPX backend-op family gates before its full-model benchmark
+numbers are accepted. On the clean Strix Halo Qwen3.6 35B A3B run, rocWMMA
+FlashAttention compiled and passed the family gates, but the default build was
+faster for ROCmFP4 prompt processing, so rocWMMA remains opt-in rather than a
+default.
 
 ## Imatrix Quantization
 

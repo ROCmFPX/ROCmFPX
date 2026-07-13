@@ -4,19 +4,56 @@
 #include <math.h>
 #include <string.h>
 
+// Finite unsigned E4M3 scale bytes decoded to FP32. Precomputed from the same
+// exp/mant formula rocmfpx_ue4m3_to_fp32() used to evaluate with ldexpf():
+//   exp == 0 -> mant * 2^-10 ; otherwise (8 + mant) * 2^(exp - 11).
+// The scale search re-decodes candidate bytes for every block, and dequant
+// decodes a scale for every element, so keeping this as a table (identical to
+// the former per-call ldexpf result) removes the transcendental from both hot
+// paths without changing any produced value.
+#define ROCMFPX_SCALE_SUB(M) ((M) * 0x1p-10f)
+#define ROCMFPX_SCALE_E(B, M) ((8 + (M)) * (B))
+
+static const float rocmfpx_scale_ue4m3[127] = {
+    ROCMFPX_SCALE_SUB(0),      ROCMFPX_SCALE_SUB(1),      ROCMFPX_SCALE_SUB(2),      ROCMFPX_SCALE_SUB(3),
+    ROCMFPX_SCALE_SUB(4),      ROCMFPX_SCALE_SUB(5),      ROCMFPX_SCALE_SUB(6),      ROCMFPX_SCALE_SUB(7),
+    ROCMFPX_SCALE_E(0x1p-10f,0), ROCMFPX_SCALE_E(0x1p-10f,1), ROCMFPX_SCALE_E(0x1p-10f,2), ROCMFPX_SCALE_E(0x1p-10f,3),
+    ROCMFPX_SCALE_E(0x1p-10f,4), ROCMFPX_SCALE_E(0x1p-10f,5), ROCMFPX_SCALE_E(0x1p-10f,6), ROCMFPX_SCALE_E(0x1p-10f,7),
+    ROCMFPX_SCALE_E(0x1p-9f,0),  ROCMFPX_SCALE_E(0x1p-9f,1),  ROCMFPX_SCALE_E(0x1p-9f,2),  ROCMFPX_SCALE_E(0x1p-9f,3),
+    ROCMFPX_SCALE_E(0x1p-9f,4),  ROCMFPX_SCALE_E(0x1p-9f,5),  ROCMFPX_SCALE_E(0x1p-9f,6),  ROCMFPX_SCALE_E(0x1p-9f,7),
+    ROCMFPX_SCALE_E(0x1p-8f,0),  ROCMFPX_SCALE_E(0x1p-8f,1),  ROCMFPX_SCALE_E(0x1p-8f,2),  ROCMFPX_SCALE_E(0x1p-8f,3),
+    ROCMFPX_SCALE_E(0x1p-8f,4),  ROCMFPX_SCALE_E(0x1p-8f,5),  ROCMFPX_SCALE_E(0x1p-8f,6),  ROCMFPX_SCALE_E(0x1p-8f,7),
+    ROCMFPX_SCALE_E(0x1p-7f,0),  ROCMFPX_SCALE_E(0x1p-7f,1),  ROCMFPX_SCALE_E(0x1p-7f,2),  ROCMFPX_SCALE_E(0x1p-7f,3),
+    ROCMFPX_SCALE_E(0x1p-7f,4),  ROCMFPX_SCALE_E(0x1p-7f,5),  ROCMFPX_SCALE_E(0x1p-7f,6),  ROCMFPX_SCALE_E(0x1p-7f,7),
+    ROCMFPX_SCALE_E(0x1p-6f,0),  ROCMFPX_SCALE_E(0x1p-6f,1),  ROCMFPX_SCALE_E(0x1p-6f,2),  ROCMFPX_SCALE_E(0x1p-6f,3),
+    ROCMFPX_SCALE_E(0x1p-6f,4),  ROCMFPX_SCALE_E(0x1p-6f,5),  ROCMFPX_SCALE_E(0x1p-6f,6),  ROCMFPX_SCALE_E(0x1p-6f,7),
+    ROCMFPX_SCALE_E(0x1p-5f,0),  ROCMFPX_SCALE_E(0x1p-5f,1),  ROCMFPX_SCALE_E(0x1p-5f,2),  ROCMFPX_SCALE_E(0x1p-5f,3),
+    ROCMFPX_SCALE_E(0x1p-5f,4),  ROCMFPX_SCALE_E(0x1p-5f,5),  ROCMFPX_SCALE_E(0x1p-5f,6),  ROCMFPX_SCALE_E(0x1p-5f,7),
+    ROCMFPX_SCALE_E(0x1p-4f,0),  ROCMFPX_SCALE_E(0x1p-4f,1),  ROCMFPX_SCALE_E(0x1p-4f,2),  ROCMFPX_SCALE_E(0x1p-4f,3),
+    ROCMFPX_SCALE_E(0x1p-4f,4),  ROCMFPX_SCALE_E(0x1p-4f,5),  ROCMFPX_SCALE_E(0x1p-4f,6),  ROCMFPX_SCALE_E(0x1p-4f,7),
+    ROCMFPX_SCALE_E(0x1p-3f,0),  ROCMFPX_SCALE_E(0x1p-3f,1),  ROCMFPX_SCALE_E(0x1p-3f,2),  ROCMFPX_SCALE_E(0x1p-3f,3),
+    ROCMFPX_SCALE_E(0x1p-3f,4),  ROCMFPX_SCALE_E(0x1p-3f,5),  ROCMFPX_SCALE_E(0x1p-3f,6),  ROCMFPX_SCALE_E(0x1p-3f,7),
+    ROCMFPX_SCALE_E(0x1p-2f,0),  ROCMFPX_SCALE_E(0x1p-2f,1),  ROCMFPX_SCALE_E(0x1p-2f,2),  ROCMFPX_SCALE_E(0x1p-2f,3),
+    ROCMFPX_SCALE_E(0x1p-2f,4),  ROCMFPX_SCALE_E(0x1p-2f,5),  ROCMFPX_SCALE_E(0x1p-2f,6),  ROCMFPX_SCALE_E(0x1p-2f,7),
+    ROCMFPX_SCALE_E(0x1p-1f,0),  ROCMFPX_SCALE_E(0x1p-1f,1),  ROCMFPX_SCALE_E(0x1p-1f,2),  ROCMFPX_SCALE_E(0x1p-1f,3),
+    ROCMFPX_SCALE_E(0x1p-1f,4),  ROCMFPX_SCALE_E(0x1p-1f,5),  ROCMFPX_SCALE_E(0x1p-1f,6),  ROCMFPX_SCALE_E(0x1p-1f,7),
+    ROCMFPX_SCALE_E(0x1p0f,0),   ROCMFPX_SCALE_E(0x1p0f,1),   ROCMFPX_SCALE_E(0x1p0f,2),   ROCMFPX_SCALE_E(0x1p0f,3),
+    ROCMFPX_SCALE_E(0x1p0f,4),   ROCMFPX_SCALE_E(0x1p0f,5),   ROCMFPX_SCALE_E(0x1p0f,6),   ROCMFPX_SCALE_E(0x1p0f,7),
+    ROCMFPX_SCALE_E(0x1p1f,0),   ROCMFPX_SCALE_E(0x1p1f,1),   ROCMFPX_SCALE_E(0x1p1f,2),   ROCMFPX_SCALE_E(0x1p1f,3),
+    ROCMFPX_SCALE_E(0x1p1f,4),   ROCMFPX_SCALE_E(0x1p1f,5),   ROCMFPX_SCALE_E(0x1p1f,6),   ROCMFPX_SCALE_E(0x1p1f,7),
+    ROCMFPX_SCALE_E(0x1p2f,0),   ROCMFPX_SCALE_E(0x1p2f,1),   ROCMFPX_SCALE_E(0x1p2f,2),   ROCMFPX_SCALE_E(0x1p2f,3),
+    ROCMFPX_SCALE_E(0x1p2f,4),   ROCMFPX_SCALE_E(0x1p2f,5),   ROCMFPX_SCALE_E(0x1p2f,6),   ROCMFPX_SCALE_E(0x1p2f,7),
+    ROCMFPX_SCALE_E(0x1p3f,0),   ROCMFPX_SCALE_E(0x1p3f,1),   ROCMFPX_SCALE_E(0x1p3f,2),   ROCMFPX_SCALE_E(0x1p3f,3),
+    ROCMFPX_SCALE_E(0x1p3f,4),   ROCMFPX_SCALE_E(0x1p3f,5),   ROCMFPX_SCALE_E(0x1p3f,6),   ROCMFPX_SCALE_E(0x1p3f,7),
+    ROCMFPX_SCALE_E(0x1p4f,0),   ROCMFPX_SCALE_E(0x1p4f,1),   ROCMFPX_SCALE_E(0x1p4f,2),   ROCMFPX_SCALE_E(0x1p4f,3),
+    ROCMFPX_SCALE_E(0x1p4f,4),   ROCMFPX_SCALE_E(0x1p4f,5),   ROCMFPX_SCALE_E(0x1p4f,6),
+};
+
+#undef ROCMFPX_SCALE_SUB
+#undef ROCMFPX_SCALE_E
+
 float rocmfpx_ue4m3_to_fp32(uint8_t e) {
-    if (!rocmfpx_scale_is_valid(e)) {
-        return 0.0f;
-    }
-
-    const int exp  = e >> 3;
-    const int mant = e & 7;
-
-    if (exp == 0) {
-        return (float) mant * 0x1p-10f;
-    }
-
-    return ldexpf((float) (8 + mant), exp - 11);
+    return rocmfpx_scale_is_valid(e) ? rocmfpx_scale_ue4m3[e] : 0.0f;
 }
 
 bool rocmfpx_scale_is_valid(uint8_t e) {
@@ -288,7 +325,6 @@ static inline float rocmfpx_fp3_decoded_mag(float x, float inv_scale) {
     } else {
         mag = 4.0f;
     }
-
     return x < 0.0f ? -mag : mag;
 }
 

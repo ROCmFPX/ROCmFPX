@@ -106,6 +106,10 @@ LLAMA_API int32_t llama_model_n_embd_pre_norm(const struct llama_model * model);
 // chain multiple trained NextN heads. Default 0 (first head).
 LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t offset);
 
+// Select the speculative NextN step used to validate reusable MTP graph inputs.
+// This is process-thread state rather than context state and defaults to zero.
+LLAMA_API void llama_set_mtp_speculative_step(int32_t step);
+
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_pre_norm    (struct llama_context * ctx);

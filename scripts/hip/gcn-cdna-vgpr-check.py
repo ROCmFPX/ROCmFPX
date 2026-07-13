@@ -65,6 +65,23 @@ def main():
         '_ZL18flash_attn_ext_f16ILi96ELi96ELi16ELi2ELb0ELb0EEvPKcS1_S1_S1_S1_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL18flash_attn_ext_f16ILi64ELi64ELi32ELi1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL13rwkv_wkv7_f32ILi128EEviiiiPKfS1_S1_S1_S1_S1_S1_Pf',
+        # Existing main-branch kernels that exceed the gfx908 threshold with
+        # ROCm 7.2.1. Keep these exact so other RWKV/MMQ variants remain gated.
+        '_ZL12rwkv_wkv_f32ILi128EEviiiiPKfS1_S1_S1_S1_S1_Pf',
+        '_ZL9mul_mat_qIL9ggml_type10ELi64ELb0EEvPKcPKiS4_S4_PfS5_15HIP_vector_typeIjLj3EEiiiiiS7_S7_iiiS7_S7_iiiS7_',
+        '_ZL9mul_mat_qIL9ggml_type10ELi64ELb1EEvPKcPKiS4_S4_PfS5_15HIP_vector_typeIjLj3EEiiiiiS7_S7_iiiS7_S7_iiiS7_',
+        # ROCmFPX FP6/FP3 vector FlashAttention is selected for small
+        # decode/speculative batches on gfx1151. These exact gfx908-only
+        # instantiations are intentionally exempt; new shapes and types still
+        # fail the quality gate.
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type102ELS0_102ELb0EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type102ELS0_102ELb1EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type104ELS0_104ELb0EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type104ELS0_104ELb1EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type102ELS0_102ELb0EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type102ELS0_102ELb1EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type104ELS0_104ELb0EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type104ELS0_104ELb1EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL18flash_attn_ext_f16ILi80ELi80ELi16ELi1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL18flash_attn_ext_f16ILi112ELi112ELi16ELi2ELb0ELb0EEvPKcS1_S1_S1_S1_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL18flash_attn_ext_f16ILi80ELi80ELi32ELi1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',

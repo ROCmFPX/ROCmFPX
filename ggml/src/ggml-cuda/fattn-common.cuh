@@ -851,7 +851,7 @@ template <int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_rocmfpx_fp6(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
 
-    const block_rocmfp6 * K = (const block_rocmfp6 *) K_c;
+    const block_rocmfp6_device * K = (const block_rocmfp6_device *) K_c;
     GGML_UNUSED(Q_v);
 
     float sum = 0.0f;
@@ -863,7 +863,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_rocmfpx_fp6(
         const int ib  = k_KQ / QI_ROCMFP6;
         const int iqs = k_KQ % QI_ROCMFP6;
 
-        const int v = rocmfpx_pack4_fp6_vec_cuda(K[ib].qs, iqs * 4);
+        const int v = rocmfpx_pack4_fp6_device_vec_cuda(&K[ib], iqs * 4);
         const int half_idx = iqs / (QI_ROCMFP6/2);
 
         const float2 * Q_ds = (const float2 *) Q_ds_v;
@@ -949,7 +949,7 @@ static __device__ __forceinline__ void dequantize_V_rocmfpx_fp3(const void * __r
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_rocmfpx_fp6(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    const block_rocmfp6 * x = (const block_rocmfp6 *) vx;
+    const block_rocmfp6_device * x = (const block_rocmfp6_device *) vx;
 
     const int64_t ib  = i0 / QK_ROCMFP6;
     const int     pos = i0 % QK_ROCMFP6;
@@ -959,8 +959,8 @@ static __device__ __forceinline__ void dequantize_V_rocmfpx_fp6(const void * __r
     float vals[ne];
     const int base0 = int((pos / 4) * 4);
     const int base1 = int(((pos + ne - 1) / 4) * 4);
-    const int packed0 = rocmfpx_pack4_fp6_vec_cuda(x[ib].qs, base0);
-    const int packed1 = base1 != base0 ? rocmfpx_pack4_fp6_vec_cuda(x[ib].qs, base1) : packed0;
+    const int packed0 = rocmfpx_pack4_fp6_device_vec_cuda(&x[ib], base0);
+    const int packed1 = base1 != base0 ? rocmfpx_pack4_fp6_device_vec_cuda(&x[ib], base1) : packed0;
 #pragma unroll
     for (int l = 0; l < ne; ++l) {
         const int idx  = pos + l;
@@ -1447,8 +1447,56 @@ void launch_fattn(
     const int cc  = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
 
+#ifdef GGML_USE_HIP
+    // HIP/ROCm: f16 dequant temp buffers for quantized KV need different
+    // allocation behavior depending on HIP graph capture state.
+    //
+    // Large prefill batches normally run eagerly and can allocate/free raw HIP
+    // memory so multi-GB f16 temp buffers do not stay retained in the legacy pool.
+    // Captured decode/speculative batches cannot call cudaMalloc/cudaFree or
+    // cudaStreamSynchronize during capture, so they must reuse the ggml pool.
+    //
+    // Small Q batches are also forced through the pool so the graph warmup path
+    // populates the allocation before capture starts.
+    hipStreamCaptureStatus fa_capture_status = hipStreamCaptureStatusNone;
+    CUDA_CHECK(hipStreamIsCapturing(main_stream, &fa_capture_status));
+    const bool fa_use_pool = (fa_capture_status != hipStreamCaptureStatusNone) || (Q->ne[1] <= 8);
+
+    struct hip_f16_alloc {
+        half           * ptr       = nullptr;
+        ggml_cuda_pool * mem_pool  = nullptr;
+        size_t           pool_size = 0;
+        cudaStream_t     stream;
+
+        hip_f16_alloc(cudaStream_t s, ggml_cuda_pool * p) : mem_pool(p), stream(s) {}
+
+        ~hip_f16_alloc() {
+            if (!ptr) {
+                return;
+            }
+            if (mem_pool) {
+                mem_pool->free(ptr, pool_size);
+            } else {
+                (void) cudaStreamSynchronize(stream);
+                (void) cudaFree(ptr);
+            }
+        }
+
+        void alloc(size_t nelements) {
+            if (mem_pool) {
+                ptr = (half *) mem_pool->alloc(nelements * sizeof(half), &pool_size);
+            } else {
+                CUDA_CHECK(cudaMalloc(&ptr, nelements * sizeof(half)));
+            }
+        }
+    };
+
+    hip_f16_alloc K_f16(main_stream, fa_use_pool ? &pool : nullptr);
+    hip_f16_alloc V_f16(main_stream, fa_use_pool ? &pool : nullptr);
+#else
     ggml_cuda_pool_alloc<half>   K_f16(pool);
     ggml_cuda_pool_alloc<half>   V_f16(pool);
+#endif
     ggml_cuda_pool_alloc<int>    KV_max(pool);
     ggml_cuda_pool_alloc<float>  dst_tmp(pool);
     ggml_cuda_pool_alloc<float2> dst_tmp_meta(pool);
