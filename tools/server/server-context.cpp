@@ -2361,13 +2361,17 @@ private:
 
                         slot.spec_prompt = slot.prompt.tokens.get_text_tokens();
 
+                        const auto & sd = slot.task->params.speculative.draft;
+
                         common_speculative_get_draft_params(spec.get(), slot.id) = {
                             /* .drafting = */ true,
-                            /* .n_max    = */ n_draft_max,
+                            /* .n_max    = */ std::min(n_draft_max, sd.n_max),
                             /* .n_past   = */ slot.prompt.n_tokens(),
                             /* .id_last  = */ slot.sampled,
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
+                            /* .n_min    = */ sd.n_min,
+                            /* .p_min    = */ sd.p_min,
                         };
 
                         drafting.push_back(&slot);
