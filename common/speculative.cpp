@@ -277,7 +277,10 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
     bool process(const llama_batch & batch) override {
         auto * ctx_dft = params.ctx_dft;
 
-        const int ret = llama_decode(ctx_dft, batch);
+        llama_batch batch_dft = batch;
+        batch_dft.logits = nullptr;
+
+        const int ret = llama_decode(ctx_dft, batch_dft);
 
         if (ret != 0) {
             LOG_ERR("%s: failed to decode draft batch, ret = %d\n", __func__, ret);
@@ -1201,10 +1204,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
             const int32_t n = (int32_t) dp.n_past;
 
-            int32_t n_draft = params.n_max;
-            if (dp.n_max > 0) {
-                n_draft = std::min(n_draft, dp.n_max);
-            }
+            const int32_t n_draft = common_speculative_effective_n_max(params, dp);
 
             const int32_t n_block_tokens = n_draft + 1;
             i_block_beg[seq_id] = batch.n_tokens;
@@ -1384,7 +1384,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         llama_set_embeddings_pre_norm(ctx_tgt, true, /*masked*/ false);
         llama_set_embeddings_pre_norm(ctx_dft, true, full_hidden_rows ? /*masked*/ false : /*masked*/ true);
 
-        is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
+        // Only Gemma4 assistants share the target KV cache. Embedded MTP
+        // contexts also use ctx_other to read target hidden states, but keep
+        // their own MTP-layer cache and must advance draft positions.
+        is_mem_shared = full_hidden_rows && llama_get_ctx_other(ctx_dft) == ctx_tgt;
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
 
         if (chain_heads) {
@@ -2777,11 +2780,9 @@ void common_speculative_draft(common_speculative * spec) {
             if (dp.drafting && !result.empty()) {
                 dp.drafting = false;
 
-                if (dp.n_max > 0) {
-                    if (!result.empty() && (int) result.size() > dp.n_max) {
-                        LOG_DBG("%s: truncating draft to %d tokens\n", __func__, dp.n_max);
-                        result.resize(dp.n_max);
-                    }
+                if (dp.n_max >= 0 && (int) result.size() > dp.n_max) {
+                    LOG_DBG("%s: truncating draft to %d tokens\n", __func__, dp.n_max);
+                    result.resize(dp.n_max);
                 }
 
                 if (!result.empty()) {
