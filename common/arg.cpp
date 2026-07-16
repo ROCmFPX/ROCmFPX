@@ -3386,7 +3386,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--spec-mtp-strict"},
         {"--no-spec-mtp-strict"},
-        "use single-row target verification for exact greedy HY3 MTP output; may reduce throughput (default: enabled)",
+        "use single-row target verification for exact greedy HY3 MTP output; may reduce throughput and requires one server slot (auto parallel selects one; default: enabled)",
         [](common_params & params, bool value) {
             params.speculative.mtp_strict = value;
         }
