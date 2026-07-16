@@ -11,6 +11,7 @@ on:
       - 'src/llama-quant.cpp'
       - 'include/llama.h'
       - 'scripts/check-rocmfpx-*.sh'
+      - 'scripts/check-rocmfp2-*.sh'
       - 'scripts/check-release-recipe-map.py'
       - 'scripts/sweep-rocmfpx-*.sh'
       - 'scripts/build-rocmfpx-*.sh'
@@ -22,6 +23,7 @@ on:
       - 'src/llama-quant.cpp'
       - 'include/llama.h'
       - 'scripts/check-rocmfpx-*.sh'
+      - 'scripts/check-rocmfp2-*.sh'
       - 'scripts/check-release-recipe-map.py'
       - 'scripts/sweep-rocmfpx-*.sh'
       - 'scripts/build-rocmfpx-*.sh'
@@ -71,6 +73,9 @@ jobs:
 
       - name: Reference probe
         run: scripts/check-rocmfpx-reference.sh
+
+      - name: ROCmFP2 reference probe
+        run: scripts/check-rocmfp2-reference.sh
 
       - name: CPU ROCmFPX backend ops
         run: |
