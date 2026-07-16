@@ -1315,7 +1315,7 @@ static void test_hy3_tool_analysis(testing & t) {
             analysis.preserved_tokens.begin(), analysis.preserved_tokens.end(),
             "<｜hy_eos:opensource｜>") == analysis.preserved_tokens.end());
 
-    autoparser::generation_params inputs;
+    ::autoparser::generation_params inputs;
     inputs.tools            = build_tools_definition();
     inputs.tool_choice      = COMMON_CHAT_TOOL_CHOICE_AUTO;
     inputs.reasoning_format = COMMON_REASONING_FORMAT_NONE;
