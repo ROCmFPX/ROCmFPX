@@ -1985,6 +1985,15 @@ namespace fs = std::filesystem;
 constexpr const char * SERVER_PROMPT_CACHE_DISK_NAMESPACE = ".llama-prompt-cache-v1";
 constexpr const char * SERVER_PROMPT_CACHE_OWNER_MAGIC = "llama.cpp automatic prompt cache v1";
 
+static std::string server_prompt_cache_disk_path_utf8(const fs::path & path) {
+#if defined(__cpp_lib_char8_t)
+    const std::u8string value = path.u8string();
+    return std::string(reinterpret_cast<const char *>(value.data()), value.size());
+#else
+    return path.u8string();
+#endif
+}
+
 static bool server_prompt_cache_disk_owned(const fs::path & path) {
     std::ifstream owner(path / ".owner");
     std::string magic;
@@ -1997,7 +2006,7 @@ static bool server_prompt_cache_disk_remove_file(const std::string & path) {
     }
 
     std::error_code ec;
-    fs::remove(path, ec);
+    fs::remove(fs::u8path(path), ec);
     if (ec) {
         SRV_WRN("prompt cache disk cleanup failed: path=%s error=%s\n", path.c_str(), ec.message().c_str());
         return false;
@@ -2020,7 +2029,7 @@ static bool server_prompt_cache_disk_size_exact(
     }
 
     std::error_code ec;
-    const uintmax_t actual = fs::file_size(path, ec);
+    const uintmax_t actual = fs::file_size(fs::u8path(path), ec);
     if (ec || actual > std::numeric_limits<size_t>::max()) {
         if (actual_out != nullptr) {
             *actual_out = 0;
@@ -2117,24 +2126,24 @@ server_prompt_cache::server_prompt_cache(
     disk_limit_size = 1024ull*1024ull*disk_limit_size_mib;
 
     std::error_code ec;
-    fs::path base = fs::absolute(disk_base_path, ec);
+    fs::path base = fs::absolute(fs::u8path(disk_base_path), ec);
     if (ec) {
         throw std::runtime_error("unable to resolve prompt cache disk path '" + disk_base_path + "': " + ec.message());
     }
 
     fs::create_directories(base, ec);
     if (ec || !fs::is_directory(base)) {
-        throw std::runtime_error("unable to create prompt cache disk path '" + base.string() + "': " + ec.message());
+        throw std::runtime_error("unable to create prompt cache disk path '" + server_prompt_cache_disk_path_utf8(base) + "': " + ec.message());
     }
 
     const fs::path cache_root = base / SERVER_PROMPT_CACHE_DISK_NAMESPACE;
     fs::create_directories(cache_root, ec);
     if (ec || !fs::is_directory(cache_root)) {
-        throw std::runtime_error("unable to create prompt cache namespace '" + cache_root.string() + "': " + ec.message());
+        throw std::runtime_error("unable to create prompt cache namespace '" + server_prompt_cache_disk_path_utf8(cache_root) + "': " + ec.message());
     }
     fs::permissions(cache_root, fs::perms::owner_all, fs::perm_options::replace, ec);
     if (ec) {
-        throw std::runtime_error("unable to secure prompt cache namespace '" + cache_root.string() + "': " + ec.message());
+        throw std::runtime_error("unable to secure prompt cache namespace '" + server_prompt_cache_disk_path_utf8(cache_root) + "': " + ec.message());
     }
 
     // An OOM/SIGKILL cannot run the destructor. Each run therefore holds an
@@ -2144,7 +2153,7 @@ server_prompt_cache::server_prompt_cache(
         if (ec) {
             break;
         }
-        const auto name = entry.path().filename().string();
+        const auto name = server_prompt_cache_disk_path_utf8(entry.path().filename());
         const bool is_run_dir      = name.rfind("run-", 0) == 0;
         const bool is_deleting_dir = name.rfind(".deleting-run-", 0) == 0;
         if (!entry.is_directory() || (!is_run_dir && !is_deleting_dir) || !server_prompt_cache_disk_owned(entry.path())) {
@@ -2171,7 +2180,7 @@ server_prompt_cache::server_prompt_cache(
         continue;
 #endif
 
-        const auto stale_path = entry.path().string();
+        const auto stale_path = server_prompt_cache_disk_path_utf8(entry.path());
         std::error_code rm_ec;
         const auto removed = fs::remove_all(entry.path(), rm_ec);
         if (!rm_ec) {
@@ -2193,19 +2202,19 @@ server_prompt_cache::server_prompt_cache(
             break;
         }
         if (ec && ec != std::errc::file_exists) {
-            throw std::runtime_error("unable to create owned prompt cache directory '" + owned.string() + "': " + ec.message());
+            throw std::runtime_error("unable to create owned prompt cache directory '" + server_prompt_cache_disk_path_utf8(owned) + "': " + ec.message());
         }
         ec.clear();
         owned.clear();
     }
     if (owned.empty() || !fs::is_directory(owned)) {
-        throw std::runtime_error("unable to allocate a unique prompt cache run directory below '" + cache_root.string() + "'");
+        throw std::runtime_error("unable to allocate a unique prompt cache run directory below '" + server_prompt_cache_disk_path_utf8(cache_root) + "'");
     }
 
     fs::permissions(owned, fs::perms::owner_all, fs::perm_options::replace, ec);
     if (ec) {
         fs::remove_all(owned);
-        throw std::runtime_error("unable to secure owned prompt cache directory '" + owned.string() + "': " + ec.message());
+        throw std::runtime_error("unable to secure owned prompt cache directory '" + server_prompt_cache_disk_path_utf8(owned) + "': " + ec.message());
     }
 
 #if !defined(_WIN32)
@@ -2220,14 +2229,14 @@ server_prompt_cache::server_prompt_cache(
             disk_lock_fd = -1;
         }
         fs::remove_all(owned);
-        throw std::runtime_error("unable to lock owned prompt cache directory '" + owned.string() + "'");
+        throw std::runtime_error("unable to lock owned prompt cache directory '" + server_prompt_cache_disk_path_utf8(owned) + "'");
     }
 #else
     {
         std::ofstream lock(owned / ".lock", std::ios::out | std::ios::trunc);
         if (!lock.good()) {
             fs::remove_all(owned);
-            throw std::runtime_error("unable to create prompt cache lock file in '" + owned.string() + "'");
+            throw std::runtime_error("unable to create prompt cache lock file in '" + server_prompt_cache_disk_path_utf8(owned) + "'");
         }
     }
 #endif
@@ -2245,7 +2254,7 @@ server_prompt_cache::server_prompt_cache(
             disk_lock_fd = -1;
 #endif
             fs::remove_all(owned);
-            throw std::runtime_error("unable to write prompt cache ownership manifest in '" + owned.string() + "'");
+            throw std::runtime_error("unable to write prompt cache ownership manifest in '" + server_prompt_cache_disk_path_utf8(owned) + "'");
         }
     }
     fs::permissions(owned / ".owner", fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
@@ -2256,11 +2265,11 @@ server_prompt_cache::server_prompt_cache(
         disk_lock_fd = -1;
 #endif
         fs::remove_all(owned);
-        throw std::runtime_error("unable to secure prompt cache ownership manifest in '" + owned.string() + "': " + ec.message());
+        throw std::runtime_error("unable to secure prompt cache ownership manifest in '" + server_prompt_cache_disk_path_utf8(owned) + "': " + ec.message());
     }
 
-    this->disk_base_path  = base.string();
-    this->disk_owned_path = owned.string();
+    this->disk_base_path  = server_prompt_cache_disk_path_utf8(base);
+    this->disk_owned_path = server_prompt_cache_disk_path_utf8(owned);
 
     SRV_INF("prompt cache disk enabled: path=%s owned_path=%s limit_mib=%d\n",
             this->disk_base_path.c_str(), this->disk_owned_path.c_str(), disk_limit_size_mib);
@@ -2274,9 +2283,10 @@ server_prompt_cache::~server_prompt_cache() {
     SRV_INF("prompt cache disk cleanup: path=%s entries=%zu bytes=%zu saves=%" PRIu64 " loads=%" PRIu64 " evictions=%" PRIu64 "\n",
             disk_owned_path.c_str(), disk_states.size(), disk_size_total, disk_saves, disk_loads, disk_evictions);
 
-    fs::path cleanup_path = disk_owned_path;
+    fs::path cleanup_path = fs::u8path(disk_owned_path);
     std::error_code ec;
-    const fs::path trash_path = cleanup_path.parent_path() / (".deleting-" + cleanup_path.filename().string());
+    const fs::path trash_path = cleanup_path.parent_path() /
+        fs::u8path(".deleting-" + server_prompt_cache_disk_path_utf8(cleanup_path.filename()));
     fs::rename(cleanup_path, trash_path, ec);
     if (!ec) {
         cleanup_path = trash_path;
@@ -2294,7 +2304,8 @@ server_prompt_cache::~server_prompt_cache() {
 
     fs::remove_all(cleanup_path, ec);
     if (ec) {
-        SRV_WRN("prompt cache disk cleanup failed: path=%s error=%s\n", cleanup_path.string().c_str(), ec.message().c_str());
+        const std::string cleanup_path_utf8 = server_prompt_cache_disk_path_utf8(cleanup_path);
+        SRV_WRN("prompt cache disk cleanup failed: path=%s error=%s\n", cleanup_path_utf8.c_str(), ec.message().c_str());
     }
 }
 
@@ -2474,16 +2485,20 @@ bool server_prompt_cache::save_disk(
     }
 
     const uint64_t entry_id = disk_next_id++;
-    const fs::path owned = disk_owned_path;
+    const fs::path owned = fs::u8path(disk_owned_path);
     const std::string stem = "state-" + std::to_string(entry_id);
     const fs::path path_main_tmp = owned / (stem + "-target.bin.tmp");
     const fs::path path_main     = owned / (stem + "-target.bin");
     const fs::path path_drft_tmp = owned / (stem + "-draft.bin.tmp");
     const fs::path path_drft     = owned / (stem + "-draft.bin");
+    const std::string path_main_tmp_utf8 = server_prompt_cache_disk_path_utf8(path_main_tmp);
+    const std::string path_main_utf8     = server_prompt_cache_disk_path_utf8(path_main);
+    const std::string path_drft_tmp_utf8 = server_prompt_cache_disk_path_utf8(path_drft_tmp);
+    const std::string path_drft_utf8     = server_prompt_cache_disk_path_utf8(path_drft);
 
     const auto cleanup_temps = [&]() -> bool {
-        const bool main_ok = server_prompt_cache_disk_remove_file(path_main_tmp.string());
-        const bool drft_ok = server_prompt_cache_disk_remove_file(path_drft_tmp.string());
+        const bool main_ok = server_prompt_cache_disk_remove_file(path_main_tmp_utf8);
+        const bool drft_ok = server_prompt_cache_disk_remove_file(path_drft_tmp_utf8);
         return main_ok && drft_ok;
     };
     const auto fail_io = [&](const char * reason, const std::string & path) -> bool {
@@ -2498,27 +2513,27 @@ bool server_prompt_cache::save_disk(
     const int64_t t_start = ggml_time_us();
 
     const size_t n_main = llama_state_seq_save_file(
-        ctx_main, path_main_tmp.c_str(), id_slot, tokens.data(), tokens.size());
+        ctx_main, path_main_tmp_utf8.c_str(), id_slot, tokens.data(), tokens.size());
     size_t actual_main = 0;
     if (n_main == 0 ||
-        !server_prompt_cache_disk_size_exact(path_main_tmp.string(), n_main, &actual_main) ||
-        !server_prompt_cache_disk_flush_and_drop(path_main_tmp.string(), true)) {
+        !server_prompt_cache_disk_size_exact(path_main_tmp_utf8, n_main, &actual_main) ||
+        !server_prompt_cache_disk_flush_and_drop(path_main_tmp_utf8, true)) {
         SRV_ERR("prompt cache disk save failed: entry=%" PRIu64 " component=target path=%s\n",
-                entry_id, path_main_tmp.c_str());
-        return fail_io("target-save", path_main_tmp.string());
+                entry_id, path_main_tmp_utf8.c_str());
+        return fail_io("target-save", path_main_tmp_utf8);
     }
 
     size_t n_drft = 0;
     if (ctx_drft) {
         n_drft = llama_state_seq_save_file(
-            ctx_drft, path_drft_tmp.c_str(), id_slot, tokens.data(), tokens.size());
+            ctx_drft, path_drft_tmp_utf8.c_str(), id_slot, tokens.data(), tokens.size());
         size_t actual_drft = 0;
         if (n_drft == 0 ||
-            !server_prompt_cache_disk_size_exact(path_drft_tmp.string(), n_drft, &actual_drft) ||
-            !server_prompt_cache_disk_flush_and_drop(path_drft_tmp.string(), true)) {
+            !server_prompt_cache_disk_size_exact(path_drft_tmp_utf8, n_drft, &actual_drft) ||
+            !server_prompt_cache_disk_flush_and_drop(path_drft_tmp_utf8, true)) {
             SRV_ERR("prompt cache disk save failed: entry=%" PRIu64 " component=draft path=%s\n",
-                    entry_id, path_drft_tmp.c_str());
-            return fail_io("draft-save", path_drft_tmp.string());
+                    entry_id, path_drft_tmp_utf8.c_str());
+            return fail_io("draft-save", path_drft_tmp_utf8);
         }
     }
 
@@ -2537,15 +2552,15 @@ bool server_prompt_cache::save_disk(
     fs::permissions(path_main_tmp, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
     if (ec) {
         SRV_ERR("prompt cache disk permissions failed: entry=%" PRIu64 " component=target path=%s error=%s\n",
-                entry_id, path_main_tmp.string().c_str(), ec.message().c_str());
-        return fail_io("target-permissions", path_main_tmp.string());
+                entry_id, path_main_tmp_utf8.c_str(), ec.message().c_str());
+        return fail_io("target-permissions", path_main_tmp_utf8);
     }
     if (ctx_drft) {
         fs::permissions(path_drft_tmp, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
         if (ec) {
             SRV_ERR("prompt cache disk permissions failed: entry=%" PRIu64 " component=draft path=%s error=%s\n",
-                    entry_id, path_drft_tmp.string().c_str(), ec.message().c_str());
-            return fail_io("draft-permissions", path_drft_tmp.string());
+                    entry_id, path_drft_tmp_utf8.c_str(), ec.message().c_str());
+            return fail_io("draft-permissions", path_drft_tmp_utf8);
         }
     }
 
@@ -2557,19 +2572,19 @@ bool server_prompt_cache::save_disk(
     fs::rename(path_main_tmp, path_main, ec);
     if (ec) {
         SRV_ERR("prompt cache disk atomic rename failed: entry=%" PRIu64 " component=target path=%s error=%s\n",
-                entry_id, path_main.string().c_str(), ec.message().c_str());
-        return fail_io("target-rename", path_main.string());
+                entry_id, path_main_utf8.c_str(), ec.message().c_str());
+        return fail_io("target-rename", path_main_utf8);
     }
 
     if (ctx_drft) {
         ec.clear();
         fs::rename(path_drft_tmp, path_drft, ec);
         if (ec) {
-            const bool main_cleanup_ok = server_prompt_cache_disk_remove_file(path_main.string());
+            const bool main_cleanup_ok = server_prompt_cache_disk_remove_file(path_main_utf8);
             const bool temp_cleanup_ok = cleanup_temps();
             SRV_ERR("prompt cache disk atomic rename failed: entry=%" PRIu64 " component=draft path=%s error=%s\n",
-                    entry_id, path_drft.string().c_str(), ec.message().c_str());
-            disable_disk_saves("draft-rename", path_drft.string());
+                    entry_id, path_drft_utf8.c_str(), ec.message().c_str());
+            disable_disk_saves("draft-rename", path_drft_utf8);
             if (!main_cleanup_ok || !temp_cleanup_ok) {
                 disable_disk_saves("draft-rename-cleanup", disk_owned_path);
             }
@@ -2578,10 +2593,10 @@ bool server_prompt_cache::save_disk(
     }
 
     if (!server_prompt_cache_disk_sync_dir(disk_owned_path) ||
-        !server_prompt_cache_disk_flush_and_drop(path_main.string(), false) ||
-        (ctx_drft && !server_prompt_cache_disk_flush_and_drop(path_drft.string(), false))) {
-        const bool main_cleanup_ok = server_prompt_cache_disk_remove_file(path_main.string());
-        const bool drft_cleanup_ok = server_prompt_cache_disk_remove_file(path_drft.string());
+        !server_prompt_cache_disk_flush_and_drop(path_main_utf8, false) ||
+        (ctx_drft && !server_prompt_cache_disk_flush_and_drop(path_drft_utf8, false))) {
+        const bool main_cleanup_ok = server_prompt_cache_disk_remove_file(path_main_utf8);
+        const bool drft_cleanup_ok = server_prompt_cache_disk_remove_file(path_drft_utf8);
         disable_disk_saves("commit-sync", disk_owned_path);
         if (!main_cleanup_ok || !drft_cleanup_ok) {
             disable_disk_saves("commit-sync-cleanup", disk_owned_path);
@@ -2591,8 +2606,8 @@ bool server_prompt_cache::save_disk(
 
     server_prompt_disk_state state;
     state.tokens    = prompt.tokens.clone();
-    state.path_main = path_main.string();
-    state.path_drft = ctx_drft ? path_drft.string() : std::string();
+    state.path_main = path_main_utf8;
+    state.path_drft = ctx_drft ? path_drft_utf8 : std::string();
     state.size_main = n_main;
     state.size_drft = n_drft;
     state.spec      = state_spec;
