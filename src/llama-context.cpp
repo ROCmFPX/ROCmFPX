@@ -1753,7 +1753,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
     return false; // all sequences use backend sampling
 }
 
-int llama_context::decode(const llama_batch & batch_inp) {
+int llama_context::decode(const llama_batch & batch_inp, uint32_t n_ubatch_override) {
     // MTP hook batches carry both token (next-token id) and embd (h_pre_norm row),
     // so accept either present rather than requiring exactly one.
     GGML_ASSERT(batch_inp.token || batch_inp.embd);
@@ -1825,7 +1825,15 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     GGML_ASSERT(n_tokens_all <= cparams.n_batch);
 
-    GGML_ASSERT((cparams.causal_attn || cparams.n_ubatch >= n_tokens_all) && "non-causal attention requires n_ubatch >= n_tokens");
+    const uint32_t n_ubatch = n_ubatch_override == 0
+        ? cparams.n_ubatch
+        : std::min(cparams.n_ubatch, n_ubatch_override);
+
+    if (!cparams.causal_attn && n_ubatch < n_tokens_all) {
+        LLAMA_LOG_ERROR("%s: non-causal attention requires n_ubatch >= n_tokens (%u < %u)\n",
+                __func__, n_ubatch, n_tokens_all);
+        return -1;
+    }
 
     if (t_compute_start_us == 0) {
         t_compute_start_us = ggml_time_us();
@@ -1861,7 +1869,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     llama_memory_context_ptr mctx;
 
     while (true) {
-        mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
+        mctx = memory->init_batch(*balloc, n_ubatch, output_all);
         if (!mctx) {
             return -2;
         }
@@ -4339,6 +4347,18 @@ int32_t llama_decode(
         llama_context * ctx,
           llama_batch   batch) {
     const int ret = ctx->decode(batch);
+    if (ret != 0 && ret != 1) {
+        LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
+    }
+
+    return ret;
+}
+
+int32_t llama_decode_with_ubatch(
+        llama_context * ctx,
+          llama_batch   batch,
+             uint32_t   n_ubatch) {
+    const int ret = ctx->decode(batch, n_ubatch);
     if (ret != 0 && ret != 1) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
     }

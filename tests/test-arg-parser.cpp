@@ -102,6 +102,10 @@ int main(void) {
     argv = {"binary_name", "--draft", "123"};
     assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_EMBEDDING));
 
+    // HY3 strict MTP control is server-only
+    argv = {"binary_name", "--no-spec-mtp-strict"};
+    assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_EMBEDDING));
+
     // negated arg
     argv = {"binary_name", "--no-mmap"};
     assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_COMMON));
@@ -131,6 +135,18 @@ int main(void) {
     argv = {"binary_name", "--spec-draft-n-max", "123"};
     assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), params, LLAMA_EXAMPLE_SPECULATIVE));
     assert(params.speculative.draft.n_max == 123);
+
+    {
+        common_params strict_params;
+
+        argv = {"binary_name", "--no-spec-mtp-strict"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), strict_params, LLAMA_EXAMPLE_SERVER));
+        assert(strict_params.speculative.mtp_strict == false);
+
+        argv = {"binary_name", "--spec-mtp-strict"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), strict_params, LLAMA_EXAMPLE_SERVER));
+        assert(strict_params.speculative.mtp_strict == true);
+    }
 
     // multi-value args (CSV)
     argv = {"binary_name", "--lora", "file1.gguf,\"file2,2.gguf\",\"file3\"\"3\"\".gguf\",file4\".gguf"};

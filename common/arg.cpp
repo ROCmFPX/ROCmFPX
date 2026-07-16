@@ -3384,6 +3384,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     //
 
     add_opt(common_arg(
+        {"--spec-mtp-strict"},
+        {"--no-spec-mtp-strict"},
+        "use single-row target verification for exact greedy HY3 MTP output; may reduce throughput (default: enabled)",
+        [](common_params & params, bool value) {
+            params.speculative.mtp_strict = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SPEC_MTP_STRICT"));
+    add_opt(common_arg(
         {"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"}, "<user>/<model>[:quant]",
         "Same as --hf-repo, but for the draft model (default: unused)",
         [](common_params & params, const std::string & value) {

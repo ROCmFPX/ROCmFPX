@@ -712,6 +712,7 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+    bool strict_hy3_mtp_verification = false;
 
     bool add_bos_token = true;
 
@@ -797,6 +798,28 @@ private:
         n_ctx = llama_n_ctx(ctx_tgt);
 
         add_bos_token = llama_vocab_get_add_bos(vocab);
+
+        {
+            char model_arch[32] = {};
+            const bool is_hy3 =
+                llama_model_meta_val_str(model_tgt, "general.architecture", model_arch, sizeof(model_arch)) >= 0 &&
+                strcmp(model_arch, "hy_v3") == 0;
+            const bool has_mtp =
+                std::find(params_base.speculative.types.begin(),
+                          params_base.speculative.types.end(),
+                          COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
+
+            strict_hy3_mtp_verification = is_hy3 && has_mtp && params_base.speculative.mtp_strict;
+            if (strict_hy3_mtp_verification) {
+                if (params_base.n_parallel != 1) {
+                    SRV_ERR("%s", "HY3 strict MTP requires a single server slot; restart with -np 1 or use --no-spec-mtp-strict\n");
+                    return false;
+                }
+                SRV_WRN("%s", "HY3 strict MTP: single-row target verification is enabled for exact greedy output and may reduce throughput\n");
+            } else if (is_hy3 && has_mtp) {
+                SRV_WRN("%s", "HY3 MTP strict verification is disabled; greedy output may diverge from no-spec decoding\n");
+            }
+        }
 
         if (params_base.speculative.has_dft()) {
             // TODO speculative: move to common/speculative.cpp?
@@ -3083,7 +3106,28 @@ private:
                 batch.logits   + i,
             };
 
-            const int ret = llama_decode(ctx_tgt, batch_view);
+            bool has_hy3_mtp_verification = false;
+            if (strict_hy3_mtp_verification) {
+                for (const auto & slot : slots) {
+                    if (!slot.task || slot.task->params.sampling.temp > 0.0f) {
+                        continue;
+                    }
+
+                    has_hy3_mtp_verification = std::any_of(
+                        slot.spec_i_batch.begin(),
+                        slot.spec_i_batch.end(),
+                        [i, n_tokens](int32_t idx) {
+                            return idx >= i && idx < i + n_tokens;
+                        });
+                    if (has_hy3_mtp_verification) {
+                        break;
+                    }
+                }
+            }
+
+            const int ret = has_hy3_mtp_verification
+                ? llama_decode_with_ubatch(ctx_tgt, batch_view, 1)
+                : llama_decode(ctx_tgt, batch_view);
 
             metrics.on_decoded(slots);
 

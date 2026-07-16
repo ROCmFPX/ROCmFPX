@@ -9,6 +9,14 @@
 #include <cstdint>
 #include <map>
 
+// Process a batch of tokens while temporarily limiting the physical
+// micro-batch size for this call. A value of 0 uses the context default.
+// The logical decode remains a single call and retains all output rows.
+LLAMA_API int32_t llama_decode_with_ubatch(
+        struct llama_context * ctx,
+          struct llama_batch   batch,
+                   uint32_t     n_ubatch);
+
 // Reserve a new compute graph. It is valid until the next call to llama_graph_reserve.
 LLAMA_API struct ggml_cgraph * llama_graph_reserve(
         struct llama_context * ctx,
