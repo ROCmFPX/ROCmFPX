@@ -8490,12 +8490,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // gpt-oss issue with Vulkan mmq_id
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_MXFP4, GGML_TYPE_F32, 32, 2, false, 2880, 32, 2880));
 
-    // HY3 exact routed-expert shapes: 192 experts, top-8, 4096 hidden, 1536 intermediate.
+    // HY3 exact routed-expert shapes for the native ROCmFPX low-bit kernels:
+    // 192 experts, top-8, 4096 hidden, 1536 intermediate. Generic IQ/K types
+    // use the standard correctness matrices below; their full tensors take
+    // several minutes per case on WebGPU.
     for (int bs : {1, 4, 32, 128}) {
         for (ggml_type type_a : {
-                GGML_TYPE_Q2_0_ROCMFPX, GGML_TYPE_Q3_0_ROCMFPX,
-                GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S,
-                GGML_TYPE_Q2_K, GGML_TYPE_Q3_K}) {
+                GGML_TYPE_Q2_0_ROCMFPX, GGML_TYPE_Q3_0_ROCMFPX}) {
             test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 192, 8, false, 1536, bs, 4096));
             test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 192, 8, false, 4096, bs, 1536));
         }
