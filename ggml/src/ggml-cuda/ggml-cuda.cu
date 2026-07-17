@@ -699,12 +699,15 @@ static constexpr size_t ggml_cuda_rocmfpx_fp6_expanded_block_size = sizeof(block
 
 static int8_t ggml_cuda_rocmfpx_fp6_decode_code(uint8_t code) {
     const int8_t mag = code & 31;
-    return (code & 32) != 0 ? -mag : mag;
+    return (code & 32) != 0 ? -(mag == 0 ? 32 : mag) : mag;
 }
 
 static uint8_t ggml_cuda_rocmfpx_fp6_encode_code(int8_t value) {
     if (value == 0) {
         return 0;
+    }
+    if (value == -32) {
+        return 32;
     }
     const uint8_t mag = (uint8_t) std::min<int>(std::abs((int) value), 31);
     return (value < 0 ? 32 : 0) | mag;
@@ -5549,6 +5552,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q4_0_ROCMFP4:
                     case GGML_TYPE_Q4_0_ROCMFP4_FAST:
                     case GGML_TYPE_Q3_0_ROCMFPX:
+                    case GGML_TYPE_Q2_0_ROCMFPX:
                     case GGML_TYPE_Q6_0_ROCMFPX:
                     case GGML_TYPE_Q8_0_ROCMFPX:
                     case GGML_TYPE_NVFP4:
@@ -5591,6 +5595,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q4_0_ROCMFP4:
                     case GGML_TYPE_Q4_0_ROCMFP4_FAST:
                     case GGML_TYPE_Q3_0_ROCMFPX:
+                    case GGML_TYPE_Q2_0_ROCMFPX:
                     case GGML_TYPE_Q6_0_ROCMFPX:
                     case GGML_TYPE_Q8_0_ROCMFPX:
                         return true;

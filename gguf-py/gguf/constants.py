@@ -3873,6 +3873,13 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_GATE_SHEXP,
         MODEL_TENSOR.FFN_DOWN_SHEXP,
         MODEL_TENSOR.FFN_UP_SHEXP,
+        # NextN/MTP tensors (HY V3 draft head)
+        MODEL_TENSOR.NEXTN_EH_PROJ,
+        MODEL_TENSOR.NEXTN_EMBED_TOKENS,
+        MODEL_TENSOR.NEXTN_ENORM,
+        MODEL_TENSOR.NEXTN_HNORM,
+        MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
+        MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
     ],
     MODEL_ARCH.HUNYUAN_DENSE: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -4474,6 +4481,7 @@ class GGMLQuantizationType(IntEnum):
     Q6_0_ROCMFPX      = 102
     Q8_0_ROCMFPX      = 103
     Q3_0_ROCMFPX      = 104
+    Q2_0_ROCMFPX      = 107
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -4546,6 +4554,7 @@ class LlamaFileType(IntEnum):
     MOSTLY_Q8_0_ROCMFPX_AGENT    = 115
     MOSTLY_Q6_0_ROCMFPX_LEAN     = 116
     MOSTLY_Q6_0_ROCMFPX_AGENT_LEAN = 117
+    MOSTLY_Q2_0_ROCMFPX  = 119  # except 1d tensors
 
     GUESSED              = 1024  # not specified in the model file
 
@@ -4674,6 +4683,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q6_0_ROCMFPX:      (32, 24 + 2),
     GGMLQuantizationType.Q8_0_ROCMFPX:      (32, 32 + 1),
     GGMLQuantizationType.Q3_0_ROCMFPX:      (32, 12 + 2),
+    GGMLQuantizationType.Q2_0_ROCMFPX:      (32, 8 + 2),
 }
 
 

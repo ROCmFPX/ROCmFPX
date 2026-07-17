@@ -5,6 +5,7 @@
 
 import subprocess
 import os
+import signal
 
 TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmp")
 import re
@@ -64,6 +65,7 @@ class ServerProcess:
     model_draft: str | None = None
     n_threads: int | None = None
     n_gpu_layer: int | None = None
+    n_gpu_layer_draft: int | None = None
     n_batch: int | None = None
     n_ubatch: int | None = None
     n_ctx: int | None = None
@@ -105,6 +107,8 @@ class ServerProcess:
     media_path: str | None = None
     sleep_idle_seconds: int | None = None
     cache_ram: int | None = None
+    cache_disk: str | None = None
+    cache_disk_limit: int | None = None
     no_cache_idle_slots: bool = False
     log_path: str | None = None
     webui_mcp_proxy: bool = False
@@ -172,8 +176,10 @@ class ServerProcess:
             server_args.extend(["--ubatch-size", self.n_ubatch])
         if self.n_threads:
             server_args.extend(["--threads", self.n_threads])
-        if self.n_gpu_layer:
+        if self.n_gpu_layer is not None:
             server_args.extend(["--n-gpu-layers", self.n_gpu_layer])
+        if self.n_gpu_layer_draft is not None:
+            server_args.extend(["--n-gpu-layers-draft", self.n_gpu_layer_draft])
         if self.server_continuous_batching:
             server_args.append("--cont-batching")
         if self.server_embeddings:
@@ -249,6 +255,10 @@ class ServerProcess:
             server_args.extend(["--sleep-idle-seconds", self.sleep_idle_seconds])
         if self.cache_ram is not None:
             server_args.extend(["--cache-ram", self.cache_ram])
+        if self.cache_disk is not None:
+            server_args.extend(["--cache-disk", self.cache_disk])
+        if self.cache_disk_limit is not None:
+            server_args.extend(["--cache-disk-limit", self.cache_disk_limit])
         if self.no_cache_idle_slots:
             server_args.append("--no-cache-idle-slots")
         if self.webui_mcp_proxy:
@@ -263,9 +273,9 @@ class ServerProcess:
 
         flags = 0
         if "nt" == os.name:
-            flags |= subprocess.DETACHED_PROCESS
+            # Keep the child in this console so CTRL_BREAK can request a
+            # graceful shutdown of its dedicated process group.
             flags |= subprocess.CREATE_NEW_PROCESS_GROUP
-            flags |= subprocess.CREATE_NO_WINDOW
 
         if self.log_path:
             self._log = open(self.log_path, "w")
@@ -311,7 +321,16 @@ class ServerProcess:
             server_instances.remove(self)
         if self.process:
             print(f"Stopping server with pid={self.process.pid}")
-            self.process.terminate()
+            if os.name == "nt":
+                # Popen.terminate() calls TerminateProcess on Windows, which
+                # bypasses llama-server's cleanup and C++ destructors.
+                try:
+                    self.process.send_signal(signal.CTRL_BREAK_EVENT)
+                except OSError as e:
+                    print(f"Could not signal server process group gracefully: {e}")
+                    self.process.terminate()
+            else:
+                self.process.terminate()
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:

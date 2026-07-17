@@ -8,11 +8,14 @@
 #include "build-info.h"
 #include "common.h"
 #include "fit.h"
+#include "gguf.h"
 #include "llama.h"
 #include "log.h"
 
+#include <algorithm>
 #include <atomic>
 #include <clocale>
+#include <cstring>
 #include <exception>
 #include <signal.h>
 #include <thread> // for std::thread::hardware_concurrency
@@ -23,6 +26,31 @@
 
 static std::function<void(int)> shutdown_handler;
 static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
+
+static bool server_model_is_hy3(const std::string & path) {
+    const struct gguf_init_params gguf_params = {
+        /* .no_alloc = */ true,
+        /* .ctx      = */ nullptr,
+    };
+    struct gguf_context * ctx = gguf_init_from_file(path.c_str(), gguf_params);
+    if (ctx == nullptr) {
+        return false;
+    }
+
+    const int64_t key_id = gguf_find_key(ctx, "general.architecture");
+    const bool is_hy3 =
+        key_id >= 0 &&
+        gguf_get_kv_type(ctx, key_id) == GGUF_TYPE_STRING &&
+        std::strcmp(gguf_get_val_str(ctx, key_id), "hy_v3") == 0;
+    gguf_free(ctx);
+    return is_hy3;
+}
+
+static bool server_params_use_mtp(const common_params & params) {
+    return std::find(params.speculative.types.begin(),
+                     params.speculative.types.end(),
+                     COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
+}
 
 static inline void signal_handler(int signal) {
     if (is_terminating.test_and_set()) {
@@ -101,9 +129,17 @@ int main(int argc, char ** argv) {
         }
 
         if (params.n_parallel < 0) {
-            SRV_INF("%s", "n_parallel is set to auto, using n_parallel = 4 and kv_unified = true\n");
+            const bool strict_hy3_mtp =
+                params.speculative.mtp_strict &&
+                server_params_use_mtp(params) &&
+                server_model_is_hy3(params.model.path);
+            const int32_t n_parallel_auto = strict_hy3_mtp ? 1 : 4;
 
-            params.n_parallel = 4;
+            SRV_INF("n_parallel is set to auto, using n_parallel = %d and kv_unified = true%s\n",
+                    n_parallel_auto,
+                    strict_hy3_mtp ? " (required by HY3 strict MTP)" : "");
+
+            params.n_parallel = n_parallel_auto;
             params.kv_unified = true;
         }
     }
@@ -257,8 +293,6 @@ int main(int argc, char ** argv) {
             SRV_ERR("%s", "exiting due to HTTP server error\n");
             return 1;
         }
-        ctx_http.is_ready.store(true);
-
         shutdown_handler = [&](int) {
             ctx_http.stop();
         };
@@ -298,8 +332,6 @@ int main(int argc, char ** argv) {
         }
 
         routes.update_meta(ctx_server);
-        ctx_http.is_ready.store(true);
-
         SRV_INF("%s", "model loaded\n");
 
         shutdown_handler = [&](int) {
@@ -318,10 +350,15 @@ int main(int argc, char ** argv) {
     sigaction(SIGTERM, &sigint_action, NULL);
 #elif defined (_WIN32)
     auto console_ctrl_handler = +[](DWORD ctrl_type) -> BOOL {
-        return (ctrl_type == CTRL_C_EVENT) ? (signal_handler(SIGINT), true) : false;
+        return (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT)
+            ? (signal_handler(SIGINT), true)
+            : false;
     };
     SetConsoleCtrlHandler(reinterpret_cast<PHANDLER_ROUTINE>(console_ctrl_handler), true);
 #endif
+
+    // Report readiness only after graceful shutdown handling is installed.
+    ctx_http.is_ready.store(true);
 
     if (is_router_server) {
         SRV_INF("router server is listening on %s\n", ctx_http.listening_address.c_str());

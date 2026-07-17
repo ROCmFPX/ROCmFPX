@@ -11,8 +11,11 @@ on:
       - 'src/llama-quant.cpp'
       - 'include/llama.h'
       - 'scripts/check-rocmfpx-*.sh'
+      - 'scripts/check-rocmfp2-*.sh'
+      - 'scripts/check-release-recipe-map.py'
       - 'scripts/sweep-rocmfpx-*.sh'
       - 'scripts/build-rocmfpx-*.sh'
+      - 'docs/recipes/**'
       - '.github/workflows/check-rocmfpx.yml'
   pull_request:
     paths:
@@ -20,8 +23,11 @@ on:
       - 'src/llama-quant.cpp'
       - 'include/llama.h'
       - 'scripts/check-rocmfpx-*.sh'
+      - 'scripts/check-rocmfp2-*.sh'
+      - 'scripts/check-release-recipe-map.py'
       - 'scripts/sweep-rocmfpx-*.sh'
       - 'scripts/build-rocmfpx-*.sh'
+      - 'docs/recipes/**'
       - '.github/workflows/check-rocmfpx.yml'
 
 concurrency:
@@ -52,6 +58,9 @@ jobs:
             bash -n "$s"
           done
 
+      - name: Released model recipe map
+        run: python3 scripts/check-release-recipe-map.py
+
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -64,6 +73,9 @@ jobs:
 
       - name: Reference probe
         run: scripts/check-rocmfpx-reference.sh
+
+      - name: ROCmFP2 reference probe
+        run: scripts/check-rocmfp2-reference.sh
 
       - name: CPU ROCmFPX backend ops
         run: |

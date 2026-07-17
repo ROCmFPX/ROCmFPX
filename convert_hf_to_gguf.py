@@ -112,6 +112,11 @@ class ModelBase:
     disable_mistral_community_chat_template: bool = False
     sentence_transformers_dense_modules: bool = False
 
+    # MTP export modes; architectures with filtering support opt in.
+    supports_mtp_export: bool = False
+    mtp_only: bool = False
+    no_mtp: bool = False
+
     def __init__(self, dir_model: Path, ftype: gguf.LlamaFileType, fname_out: Path, *, is_big_endian: bool = False,
                  use_temp_file: bool = False, eager: bool = False,
                  metadata_override: Path | None = None, model_name: str | None = None,
@@ -5581,6 +5586,8 @@ class _Qwen35MtpMixin:
     `mtp.*` to the standard layer-indexed nextn naming so the existing
     tensor_map handles them."""
 
+    supports_mtp_export = True
+
     # Class-level annotations so the type checker understands the attributes
     # available on the concrete subclasses in the MRO
     hparams: dict[str, Any]
@@ -10012,6 +10019,7 @@ class MiMoV2VisionModel(MmprojModel):
 @ModelBase.register("Step3p5ForCausalLM")
 class Step35Model(TextModel):
     model_arch = gguf.MODEL_ARCH.STEP35
+    supports_mtp_export = True
 
     def set_gguf_parameters(self):
         rope_theta = self.hparams.get("rope_theta")
@@ -12483,6 +12491,22 @@ class HunYuanMoEModel(TextModel):
 @ModelBase.register("HYV3ForCausalLM")
 class HYV3Model(TextModel):
     model_arch = gguf.MODEL_ARCH.HYV3
+    supports_mtp_export = True
+
+    # Trunk layer count, stashed before indexing so filter_tensors can
+    # distinguish the appended MTP block from the main decoder.
+    _n_main_layers: int | None = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        n_nextn = int(self.hparams.get("num_nextn_predict_layers", 0))
+        if n_nextn > 0 and not self.no_mtp:
+            self.block_count += n_nextn
+            self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def index_tensors(self, remote_hf_model_id: str | None = None):
+        type(self)._n_main_layers = int(self.hparams["num_hidden_layers"])
+        return super().index_tensors(remote_hf_model_id=remote_hf_model_id)
 
     def set_vocab(self):
         self._set_vocab_gpt2()
@@ -12496,14 +12520,36 @@ class HYV3Model(TextModel):
         self.gguf_writer.add_expert_weights_norm(self.hparams.get("route_norm", True))
         self.gguf_writer.add_expert_weights_scale(float(self.hparams.get("router_scaling_factor", 1.0)))
         self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+        n_nextn = int(self.hparams.get("num_nextn_predict_layers", 0))
+        if n_nextn > 0 and not self.no_mtp:
+            self.gguf_writer.add_nextn_predict_layers(n_nextn)
         logger.info("gguf: HYV3 sigmoid router with correction bias")
+
+    @classmethod
+    def filter_tensors(cls, item: tuple[str, Callable[[], Tensor]]) -> tuple[str, Callable[[], Tensor]] | None:
+        if (titem := super().filter_tensors(item)) is None:
+            return None
+        name, gen = titem
+
+        assert cls._n_main_layers is not None
+        match = re.match(r"model\.layers\.(\d+)\.", name)
+        is_mtp = match is not None and int(match.group(1)) >= cls._n_main_layers
+
+        if is_mtp and cls.no_mtp:
+            return None
+        if cls.mtp_only and not is_mtp and name not in (
+            "model.embed_tokens.weight", "model.norm.weight", "lm_head.weight",
+        ):
+            return None
+
+        if is_mtp:
+            name = name.replace(".final_layernorm.", ".shared_head.norm.")
+
+        return name, gen
 
     _experts: list[dict[str, Tensor]] | None = None
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        if name.startswith("model.layers.") and bid is not None and bid >= self.block_count:
-            return
-
         if name.startswith("model.layers.") and ".mlp.experts." in name:
             n_experts = self.find_hparam(["num_local_experts", "num_experts"])
             assert bid is not None
@@ -14491,9 +14537,10 @@ def main() -> None:
             logger.error("--mtp and --no-mtp are mutually exclusive")
             sys.exit(1)
 
-        if (args.mtp or args.no_mtp) and not issubclass(model_class, (_Qwen35MtpMixin, Step35Model)):
-            logger.error("--mtp / --no-mtp are only supported for Qwen3.5/3.6 and Step3.5 text variants today")
-            sys.exit(1)
+        if args.mtp or args.no_mtp:
+            if not model_class.supports_mtp_export:
+                logger.error("--mtp / --no-mtp are not supported for %s", model_architecture)
+                sys.exit(1)
 
         # set on the class so __init__ / filter_tensors see the correct mode
         if args.no_mtp:

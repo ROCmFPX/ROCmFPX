@@ -346,6 +346,7 @@ struct common_params_speculative_ngram_cache {
 
 struct common_params_speculative {
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
+    bool mtp_strict = true;
 
     // used by Simple, MTP, Eagle3, etc. - all methods that require some kind of draft model
     common_params_speculative_draft draft;
@@ -610,6 +611,7 @@ struct common_params {
     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
     int32_t checkpoint_every_nt = 8192;  // make a checkpoint every n tokens during prefill
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+    int32_t cache_disk_limit_mib = 8192; // disk prompt-cache limit when cache_disk_path is set
 
     std::string hostname      = "127.0.0.1";
     std::string public_path   = "";                                                                         // NOLINT
@@ -646,6 +648,10 @@ struct common_params {
 
     // enable built-in tools
     std::vector<std::string> server_tools;
+
+    // Optional base directory for the automatic SSD-backed prompt cache. The
+    // server creates and owns a private per-process directory below this path.
+    std::string cache_disk_path;
 
     // router server configs
     std::string models_dir    = ""; // directory containing models for the router server

@@ -58,6 +58,9 @@ static void test_nemotron_analysis(testing & t);
 static void test_nemotron_reasoning_detection(testing & t);
 static void test_nemotron_tool_format(testing & t);
 
+// HY3 template analysis tests
+static void test_hy3_tool_analysis(testing & t);
+
 // CohereForAI template analysis tests
 static void test_cohere_reasoning_detection(testing & t);
 static void test_cohere_analysis(testing & t);
@@ -99,6 +102,7 @@ int main(int argc, char * argv[]) {
     t.test("seed_oss_diffs", test_seed_oss_tool_analysis);
     t.test("cohere", test_cohere_analysis);
     t.test("nemotron", test_nemotron_analysis);
+    t.test("hy3", test_hy3_tool_analysis);
     t.test("smollm3", test_smollm3_analysis);
     t.test("standard_json_tools", test_standard_json_tools_formats);
     t.test("normalize_quotes_to_json", test_normalize_quotes_to_json);
@@ -1291,6 +1295,64 @@ static common_chat_template load_template(testing & t, const std::string & templ
     common_chat_template tmpl(template_source, "", "");
     t.assert_true("Nemotron template loaded successfully", template_source.length() > 0);
     return tmpl;
+}
+
+static void test_hy3_tool_analysis(testing & t) {
+    common_chat_template tmpl = load_template(t, "models/templates/tencent-Hy3.jinja");
+
+    struct autoparser analysis;
+    analysis.analyze_template(tmpl);
+
+    t.assert_equal("tool mode should be tagged arguments", tool_format::TAG_WITH_TAGGED, analysis.tools.format.mode);
+    t.assert_equal("tool section start", "<tool_calls:opensource>\n", analysis.tools.format.section_start);
+    t.assert_equal("tool section end", "</tool_calls:opensource>", analysis.tools.format.section_end);
+    t.assert_equal("per-call end should be empty", "", analysis.tools.format.per_call_end);
+    t.assert_equal("function argument separator", "<tool_sep:opensource>", analysis.tools.function.args_separator);
+    t.assert_true("separator should be preserved", std::find(
+            analysis.preserved_tokens.begin(), analysis.preserved_tokens.end(),
+            "<tool_sep:opensource>") != analysis.preserved_tokens.end());
+    t.assert_true("HY3 EOS should not be preserved", std::find(
+            analysis.preserved_tokens.begin(), analysis.preserved_tokens.end(),
+            "<｜hy_eos:opensource｜>") == analysis.preserved_tokens.end());
+
+    ::autoparser::generation_params inputs;
+    inputs.tools            = build_tools_definition();
+    inputs.tool_choice      = COMMON_CHAT_TOOL_CHOICE_AUTO;
+    inputs.reasoning_format = COMMON_REASONING_FORMAT_NONE;
+
+    auto parser = analysis.build_parser(inputs);
+    std::string output =
+        "<tool_calls:opensource>\n"
+        "<tool_call:opensource>test_function_name<tool_sep:opensource>\n"
+        "<arg_key:opensource>param1</arg_key:opensource>\n"
+        "<arg_value:opensource>first</arg_value:opensource>\n"
+        "<arg_key:opensource>param2</arg_key:opensource>\n"
+        "<arg_value:opensource>first-extra</arg_value:opensource>\n"
+        "</tool_call:opensource>\n"
+        "<tool_call:opensource>test_function_name<tool_sep:opensource>\n"
+        "<arg_key:opensource>param1</arg_key:opensource>\n"
+        "<arg_value:opensource>second</arg_value:opensource>\n"
+        "<arg_key:opensource>param2</arg_key:opensource>\n"
+        "<arg_value:opensource>second-extra</arg_value:opensource>\n"
+        "</tool_call:opensource>\n"
+        "</tool_calls:opensource>";
+
+    common_peg_parse_context ctx(output);
+    auto result = parser.parse(ctx);
+    if (!t.assert_true("parallel HY3 tool calls should parse", result.success())) {
+        return;
+    }
+
+    common_chat_msg msg;
+    auto mapper = common_chat_peg_mapper(msg);
+    mapper.from_ast(ctx.ast, result);
+    t.assert_equal("parallel HY3 tool call count", 2u, msg.tool_calls.size());
+    if (msg.tool_calls.size() == 2) {
+        t.assert_equal("first HY3 tool name", "test_function_name", msg.tool_calls[0].name);
+        t.assert_equal("second HY3 tool name", "test_function_name", msg.tool_calls[1].name);
+        t.assert_equal("first HY3 argument", "first", json::parse(msg.tool_calls[0].arguments).value("param1", ""));
+        t.assert_equal("second HY3 argument", "second", json::parse(msg.tool_calls[1].arguments).value("param1", ""));
+    }
 }
 
 // ============================================================================
