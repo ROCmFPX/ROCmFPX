@@ -8032,6 +8032,16 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_Q8_0_ROCMFPX:
             result = rocmfpx_quantize_fp8(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix);
             break;
+        case GGML_TYPE_TURBO3_0:
+            GGML_ASSERT(n_per_row % 128 == 0);
+            quantize_row_turbo3_0_ref(src + start, (block_turbo3_0 *) ((char *) dst + start_row * row_size), n);
+            result = nrows * row_size;
+            break;
+        case GGML_TYPE_TURBO4_0:
+            GGML_ASSERT(n_per_row % 128 == 0);
+            quantize_row_turbo4_0_ref(src + start, (block_turbo4_0 *) ((char *) dst + start_row * row_size), n);
+            result = nrows * row_size;
+            break;
         case GGML_TYPE_Q4_1:    result = quantize_q4_1   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q5_0:    result = quantize_q5_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q5_1:    result = quantize_q5_1   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

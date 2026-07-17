@@ -815,7 +815,9 @@ void ggml_vec_dot_turbo3_0(int n, float * GGML_RESTRICT s, size_t bs,
     const block_turbo3_0 *x = (const block_turbo3_0 *)vx;
     const float *y = (const float *)vy;
 
-    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by);
+    GGML_ASSERT(n % TURBO_HEAD_DIM == 0);
+    GGML_ASSERT(nrc == 1);
 
     // Dequantize x into temp buffer (includes inverse FWHT + norm scaling),
     // then compute dot product with y.
@@ -854,7 +856,9 @@ void ggml_vec_dot_turbo4_0(int n, float * GGML_RESTRICT s, size_t bs,
     const block_turbo4_0 *x = (const block_turbo4_0 *)vx;
     const float *y = (const float *)vy;
 
-    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by);
+    GGML_ASSERT(n % TURBO_HEAD_DIM == 0);
+    GGML_ASSERT(nrc == 1);
 
     // Dequantize x into temp buffer (includes inverse FWHT + norm scaling),
     // then compute dot product with y.

@@ -45,6 +45,18 @@ typedef void (* fattn_kernel_t)(
 typedef float (*vec_dot_KQ_t)(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds);
 
+#ifdef GGML_USE_HIP
+bool ggml_cuda_fattn_kv_batched(
+    ggml_backend_cuda_context & ctx,
+    ggml_tensor * dst,
+    fattn_kernel_t fattn_kernel,
+    int nwarps,
+    size_t nbytes_shared,
+    int warp_size,
+    int ncols1,
+    int ncols2);
+#endif
+
 template <int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_f16(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds_v) {
@@ -288,6 +300,83 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
 
     return sum;
 }
+
+#ifdef GGML_USE_HIP
+// TurboQuant K cache values are stored in the normalized FWHT domain. The VEC
+// kernel applies the same H128 transform to Q before calling these helpers, so
+// only packed centroid dequantization is needed here.
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo3_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int k_KQ = k_KQ_0 + (threadIdx.x % nthreads)*cpy_ne + k_KQ_1;
+            const int elem = 2*k_KQ;
+
+            float2 kv;
+            dequantize_turbo3_0(K_c, elem / QK_TURBO3, (elem % QK_TURBO3) / 2, kv);
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const half2 qv = ((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            const half2 kv_h = __float22half2_rn(kv);
+            ggml_cuda_mad(sum, __half22float2(kv_h), __half22float2(qv));
+#else
+            const float2 qv = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            sum += kv.x*qv.x + kv.y*qv.y;
+#endif // V_DOT2_F32_F16_AVAILABLE
+        }
+    }
+
+    return sum;
+}
+
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo4_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int k_KQ = k_KQ_0 + (threadIdx.x % nthreads)*cpy_ne + k_KQ_1;
+            const int elem = 2*k_KQ;
+
+            float2 kv;
+            dequantize_turbo4_0(K_c, elem / QK_TURBO4, (elem % QK_TURBO4) / 2, kv);
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const half2 qv = ((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            const half2 kv_h = __float22half2_rn(kv);
+            ggml_cuda_mad(sum, __half22float2(kv_h), __half22float2(qv));
+#else
+            const float2 qv = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            sum += kv.x*qv.x + kv.y*qv.y;
+#endif // V_DOT2_F32_F16_AVAILABLE
+        }
+    }
+
+    return sum;
+}
+#endif // GGML_USE_HIP
 
 template<int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_rocmfp4(
@@ -1077,9 +1166,17 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_TURBO3_0) {
+#ifdef GGML_USE_HIP
+        return vec_dot_fattn_vec_KQ_turbo3_0<D, nthreads>;
+#else
         return vec_dot_fattn_vec_KQ_f16<D, nthreads>;
+#endif
     } else if constexpr (type_K == GGML_TYPE_TURBO4_0) {
+#ifdef GGML_USE_HIP
+        return vec_dot_fattn_vec_KQ_turbo4_0<D, nthreads>;
+#else
         return vec_dot_fattn_vec_KQ_f16<D, nthreads>;
+#endif
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;
@@ -1417,7 +1514,8 @@ static __global__ void flash_attn_combine_results(
 template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
-    const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const bool stream_k, const int warp_size = WARP_SIZE
+    const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const bool stream_k, const int warp_size = WARP_SIZE,
+    const bool allow_kv_batching = false
 ) {
     constexpr int ncols = ncols1 * ncols2;
 
@@ -1446,6 +1544,15 @@ void launch_fattn(
     const int id  = ggml_cuda_get_device();
     const int cc  = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
+
+#ifdef GGML_USE_HIP
+    if (allow_kv_batching && ggml_cuda_fattn_kv_batched(
+            ctx, dst, fattn_kernel, nwarps, nbytes_shared, warp_size, ncols1, ncols2)) {
+        return;
+    }
+#else
+    GGML_UNUSED(allow_kv_batching);
+#endif
 
 #ifdef GGML_USE_HIP
     // HIP/ROCm: f16 dequant temp buffers for quantized KV need different
