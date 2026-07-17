@@ -263,13 +263,17 @@ def test_disk_save_failure_opens_breaker_and_preserves_idle_slot(tmp_path):
     run_dirs = list((tmp_path / ".llama-prompt-cache-v1").glob("run-*"))
     assert len(run_dirs) == 1
 
-    # Remove directory write permission so the first target temp cannot be
-    # created. The slot must remain live because no durable cache exists.
-    run_dirs[0].chmod(0o500)
+    # Block the first target temporary path with a directory so opening it as
+    # a state file fails on every platform. Windows chmod does not provide
+    # POSIX directory write protection.
+    blocked_tmp = run_dirs[0] / "state-1-target.bin.tmp"
+    blocked_tmp.mkdir()
     try:
         complete("This request forces an idle-slot save failure.", 1)
+        assert not blocked_tmp.exists()
     finally:
-        run_dirs[0].chmod(0o700)
+        if blocked_tmp.exists():
+            blocked_tmp.rmdir()
 
     failed = log.drain()
     assert "prompt cache disk writes disabled:" in failed
@@ -300,16 +304,13 @@ def test_failed_corrupt_entry_removal_keeps_conservative_accounting(tmp_path):
     assert len(run_dirs) == 1
     target_files = list(run_dirs[0].glob("state-*-target.bin"))
     assert target_files
-    with target_files[0].open("r+b") as f:
-        f.truncate(max(1, accounted // 2))
-
-    # Prevent quarantine cleanup. The entry must remain fully accounted and
-    # unusable rather than being reported as freed after unlink failure.
-    run_dirs[0].chmod(0o500)
-    try:
-        restored = complete(LONG_PROMPT)
-    finally:
-        run_dirs[0].chmod(0o700)
+    # Replace the state file with a non-empty directory. This is both a size
+    # mismatch and a removal failure on every platform, so the entry must stay
+    # fully accounted and unusable rather than being reported as freed.
+    target_files[0].unlink()
+    target_files[0].mkdir()
+    (target_files[0] / "removal-blocker").write_text("keep", encoding="utf-8")
+    restored = complete(LONG_PROMPT)
 
     rejected = log.drain()
     assert "reason=size-mismatch" in rejected
