@@ -146,6 +146,7 @@ def test_disk_only_parse_restore_and_owned_cleanup(tmp_path):
     assert not list(owned[0].glob("*.tmp"))
 
     server.stop()
+    assert "prompt cache disk cleanup:" in log.drain()
     assert not list(namespace.glob("run-*"))
     assert not list(namespace.glob(".deleting-run-*"))
 

@@ -293,8 +293,6 @@ int main(int argc, char ** argv) {
             SRV_ERR("%s", "exiting due to HTTP server error\n");
             return 1;
         }
-        ctx_http.is_ready.store(true);
-
         shutdown_handler = [&](int) {
             ctx_http.stop();
         };
@@ -334,8 +332,6 @@ int main(int argc, char ** argv) {
         }
 
         routes.update_meta(ctx_server);
-        ctx_http.is_ready.store(true);
-
         SRV_INF("%s", "model loaded\n");
 
         shutdown_handler = [&](int) {
@@ -354,10 +350,15 @@ int main(int argc, char ** argv) {
     sigaction(SIGTERM, &sigint_action, NULL);
 #elif defined (_WIN32)
     auto console_ctrl_handler = +[](DWORD ctrl_type) -> BOOL {
-        return (ctrl_type == CTRL_C_EVENT) ? (signal_handler(SIGINT), true) : false;
+        return (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT)
+            ? (signal_handler(SIGINT), true)
+            : false;
     };
     SetConsoleCtrlHandler(reinterpret_cast<PHANDLER_ROUTINE>(console_ctrl_handler), true);
 #endif
+
+    // Report readiness only after graceful shutdown handling is installed.
+    ctx_http.is_ready.store(true);
 
     if (is_router_server) {
         SRV_INF("router server is listening on %s\n", ctx_http.listening_address.c_str());

@@ -5,6 +5,7 @@
 
 import subprocess
 import os
+import signal
 
 TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmp")
 import re
@@ -272,9 +273,9 @@ class ServerProcess:
 
         flags = 0
         if "nt" == os.name:
-            flags |= subprocess.DETACHED_PROCESS
+            # Keep the child in this console so CTRL_BREAK can request a
+            # graceful shutdown of its dedicated process group.
             flags |= subprocess.CREATE_NEW_PROCESS_GROUP
-            flags |= subprocess.CREATE_NO_WINDOW
 
         if self.log_path:
             self._log = open(self.log_path, "w")
@@ -320,7 +321,16 @@ class ServerProcess:
             server_instances.remove(self)
         if self.process:
             print(f"Stopping server with pid={self.process.pid}")
-            self.process.terminate()
+            if os.name == "nt":
+                # Popen.terminate() calls TerminateProcess on Windows, which
+                # bypasses llama-server's cleanup and C++ destructors.
+                try:
+                    self.process.send_signal(signal.CTRL_BREAK_EVENT)
+                except OSError as e:
+                    print(f"Could not signal server process group gracefully: {e}")
+                    self.process.terminate()
+            else:
+                self.process.terminate()
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
