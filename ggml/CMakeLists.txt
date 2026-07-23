@@ -205,7 +205,14 @@ set   (GGML_CUDA_PEER_MAX_BATCH_SIZE "128" CACHE STRING
 option(GGML_CUDA_NO_PEER_COPY               "ggml: do not use peer to peer copies"            OFF)
 option(GGML_CUDA_NO_VMM                     "ggml: do not try to use CUDA VMM"                OFF)
 option(GGML_CUDA_FA                         "ggml: compile ggml FlashAttention CUDA kernels"  ON)
-option(GGML_CUDA_FA_ALL_QUANTS              "ggml: compile all quants for FlashAttention"     OFF)
+# ROCmFPX default deviates from upstream (OFF): with this off, ggml_cuda_get_best_fattn_kernel()
+# returns NONE for any mismatched K/V cache type pair (e.g. ctk=f16,ctv=q8_0) on CUDA/HIP, and
+# ggml silently falls back to unfused O(n^2) attention instead of erroring. At short context this
+# is just slow; at long context it is catastrophic (confirmed: a 131K-token prompt on ROCm0 with
+# ctk=f16/ctv=q8_0 never finished a single pass in 4.5+ hours with this OFF; fully fixed and
+# verified correct with it ON -- see PR discussion for benchmark numbers). Costs more build time
+# and a larger binary; override with -DGGML_CUDA_FA_ALL_QUANTS=OFF if you never mix KV cache types.
+option(GGML_CUDA_FA_ALL_QUANTS              "ggml: compile all quants for FlashAttention"     ON)
 option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
 option(GGML_CUDA_NCCL                       "ggml: use NVIDIA Collective Comm. Library"       ON)
 set   (GGML_CUDA_COMPRESSION_MODE "size" CACHE STRING
