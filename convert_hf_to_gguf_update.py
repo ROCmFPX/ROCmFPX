@@ -156,6 +156,7 @@ models = [
     {"name": "kanana2",          "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/kakaocorp/kanana-2-30b-a3b-instruct-2601", },
     {"name": "f2llmv2",          "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/codefuse-ai/F2LLM-v2-4B", },
     {"name": "sarvam-moe",       "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/sarvamai/sarvam-30b", },
+    {"name": "laguna",           "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/poolside/Laguna-XS.2", },
 ]
 
 # some models are known to be broken upstream, so we will skip them as exceptions
