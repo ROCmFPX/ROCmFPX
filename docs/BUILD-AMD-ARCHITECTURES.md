@@ -47,12 +47,18 @@ Then match your GPU to this table:
 | RDNA2 | RX 6700/6800/6900 | `gfx1030`–`gfx1037` | `gfx1030` | `HSA_OVERRIDE_GFX_VERSION=10.3.0` |
 | RDNA3 | RX 7600, RX 7900 XTX/XT/GRE, RX 7800 XT | `gfx1100`–`gfx1102` | `gfx1100` | `HSA_OVERRIDE_GFX_VERSION=11.0.0` |
 | RDNA3.5 | Strix Halo, Ryzen AI MAX+ | `gfx1150`, `gfx1151` | `gfx1151` | `HSA_OVERRIDE_GFX_VERSION=11.5.1` |
-| RDNA4 | RX 9070 XT/GRE | `gfx1200`, `gfx1201` | `gfx1200` | use native `gfx` when ROCm supports it |
+| RDNA4 | RX 9060 XT (Navi 44) | `gfx1200` | `gfx1200` | use native `gfx` when ROCm supports it |
+| RDNA4 | RX 9070 / 9070 XT / AI PRO R9700 (Navi 48) | `gfx1201` | `gfx1201` | must be built as `gfx1201`, see below |
 
 **Tips**
 
 - Sub-variants usually map to the nearest base target (`gfx1035` → `gfx1030`,
   `gfx1102` → `gfx1100`).
+- **RDNA4 is the exception: `gfx1201` is not interchangeable with `gfx1200`.** A
+  `gfx1200` build on a `gfx1201` card links and loads a model, then segfaults or
+  hangs with no error message (issues #18 and #37). The build scripts detect the
+  installed GPU and pick the matching target, and they check the emitted code
+  objects afterwards, so this now fails loudly instead of silently.
 - Published benchmark numbers and regression guards assume **Strix Halo /
   `gfx1151`**.
 - Vega 20 / `gfx906` is an experimental community target. It is not RDNA/CDNA,
@@ -69,12 +75,27 @@ You do not need separate full build scripts for each architecture.
 | Script | Target | Notes |
 |---|---|---|
 | `scripts/build-strix-rocmfp4-mtp.sh` | `gfx1151` | Validated default; includes regression-test binaries |
-| `scripts/build-rdna2.sh` | `gfx1030` | RX 6000 class |
-| `scripts/build-rdna3.sh` | `gfx1100` | RX 7000 class, including RX 7600-class cards |
-| `scripts/build-rdna4.sh` | `gfx1200` | RX 9000 class; requires ROCm support for `gfx1200` device libraries |
+| `scripts/build-rdna2.sh` | `gfx1030` default | RX 6000 class; uses the installed RDNA2 target if it differs |
+| `scripts/build-rdna3.sh` | `gfx1100` default | RX 7000 class; uses the installed RDNA3/3.5 target if it differs |
+| `scripts/build-rdna4.sh` | `gfx1200` default | RX 9000 class; uses `gfx1201` automatically on Navi 48 cards |
 | `scripts/build-gfx906.sh` | `gfx906` | Experimental Vega 20 / MI50 / MI60 community target |
 | `scripts/build-rocmfp4.sh` | any `gfx` | Generic — set `CMAKE_HIP_ARCHITECTURES` yourself |
 | `build-hip.bat` | `gfx1030` | Windows + ROCm 7.x |
+
+Every wrapper honours `CMAKE_HIP_ARCHITECTURES`, so an explicit target always wins:
+
+```bash
+CMAKE_HIP_ARCHITECTURES=gfx1201 scripts/build-rdna4.sh
+```
+
+Two safeguards apply to all of them:
+
+- Changing target reuses nothing: if the build directory was configured for a
+  different `gfx`, it is removed first, because CMake updates the cache while
+  object files for the old target can survive. Set `ROCMFPX_KEEP_STALE_BUILD=1`
+  to keep the directory instead.
+- After the build, the emitted code objects are compared against the requested
+  target and the build fails if they disagree.
 
 Generic example (any single target):
 
@@ -149,8 +170,15 @@ HSA_OVERRIDE_GFX_VERSION=11.0.0 ./build-rdna3/bin/llama-cli -m model.gguf -dev R
 env JOBS=16 scripts/build-rdna4.sh
 ```
 
-Requires a ROCm version with `gfx1200` device libraries. If HIP is not ready yet,
-use the [Vulkan-only path](#vulkan-only-no-hip-arch-needed).
+On a Navi 48 card (RX 9070, 9070 XT, AI PRO R9700) this builds `gfx1201`
+automatically; on Navi 44 (RX 9060 XT) it builds `gfx1200`. Force one with:
+
+```bash
+CMAKE_HIP_ARCHITECTURES=gfx1201 env JOBS=16 scripts/build-rdna4.sh
+```
+
+Requires a ROCm version with device libraries for the target you build. If HIP is
+not ready yet, use the [Vulkan-only path](#vulkan-only-no-hip-arch-needed).
 
 ### Vega 20 / gfx906 — Linux Experimental
 

@@ -25,6 +25,7 @@ HIP_EXTRA_FLAGS="${CMAKE_HIP_FLAGS:-}"
 ROCMFP4_DECODE_TUNE="${ROCMFP4_DECODE_TUNE:-stable}"
 DECODE_TUNE_PROFILE="${ROCMFPX_DECODE_TUNE:-$ROCMFP4_DECODE_TUNE}"
 source "$ROOT/scripts/rocmfp4-decode-tune-flags.sh"
+source "$ROOT/scripts/rocmfpx-hip-arch.sh"
 
 if [[ -z "${CMAKE_HIP_ARCHITECTURES:-}" ]]; then
     echo "Using default CMAKE_HIP_ARCHITECTURES=${HIP_ARCH}" >&2
@@ -52,6 +53,8 @@ if [[ -n "$tune_flags" ]]; then
     echo "Decode tuning profile: $DECODE_TUNE_PROFILE"
 fi
 
+rocmfpx_reset_stale_build_dir "$BUILD_DIR" "$HIP_ARCH"
+
 cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DGGML_HIP=ON \
@@ -77,6 +80,8 @@ cmake --build "$BUILD_DIR" -j "$JOBS" --target \
     test-backend-ops \
     test-quantize-fns \
     test-quantize-perf
+
+rocmfpx_verify_hip_arch "$BUILD_DIR" "$HIP_ARCH"
 
 echo "Built for ${HIP_ARCH}:"
 echo "  $BUILD_DIR/bin/llama-cli"
