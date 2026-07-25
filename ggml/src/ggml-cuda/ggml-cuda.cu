@@ -823,6 +823,44 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+#if defined(GGML_USE_HIP)
+// A host->device copy that sources pageable, file-backed pages (an mmap'ed GGUF) can wedge
+// the ROCm SDMA path: the copy is queued but never signals completion, so the runtime spins
+// in hsa_signal_wait forever with the GPU idle. It only shows up once enough is in flight --
+// a 58 GiB model on gfx1151 stalls past ~30 GiB uploaded, a 17 GiB one never does. Stage such
+// copies through a pinned bounce buffer so the DMA engine only ever sees resident pages.
+#define GGML_CUDA_H2D_STAGE_THRESHOLD (1ull << 20)
+#define GGML_CUDA_H2D_STAGE_CHUNK     (32ull << 20)
+
+static bool ggml_cuda_memcpy_h2d_staged(void * dst, const void * src, size_t size, cudaStream_t stream) {
+    static std::mutex mutex;
+    static void *     staging = nullptr;
+    static bool       unavailable = false;
+
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (staging == nullptr) {
+        if (unavailable) {
+            return false;
+        }
+        if (cudaMallocHost(&staging, GGML_CUDA_H2D_STAGE_CHUNK) != cudaSuccess) {
+            (void) cudaGetLastError();
+            unavailable = true;
+            return false;
+        }
+    }
+
+    for (size_t off = 0; off < size; off += GGML_CUDA_H2D_STAGE_CHUNK) {
+        const size_t chunk = std::min<size_t>(GGML_CUDA_H2D_STAGE_CHUNK, size - off);
+        memcpy(staging, (const char *) src + off, chunk);
+        CUDA_CHECK(cudaMemcpyAsync((char *) dst + off, staging, chunk, cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+
+    return true;
+}
+#endif // defined(GGML_USE_HIP)
+
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
@@ -834,6 +872,12 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
         ggml_cuda_rocmfpx_fp6_expand_blocks(expanded.data(), (const uint8_t *) data, nblocks);
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + ggml_cuda_tensor_offset(tensor, offset), expanded.data(), expanded_size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     } else {
+#if defined(GGML_USE_HIP)
+        if (size >= GGML_CUDA_H2D_STAGE_THRESHOLD &&
+            ggml_cuda_memcpy_h2d_staged((char *) tensor->data + offset, data, size, cudaStreamPerThread)) {
+            return;
+        }
+#endif // defined(GGML_USE_HIP)
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     }
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
