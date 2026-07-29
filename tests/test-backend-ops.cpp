@@ -8522,6 +8522,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // gpt-oss issue with Vulkan mmq_id
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_MXFP4, GGML_TYPE_F32, 32, 2, false, 2880, 32, 2880));
 
+    // ROCmFP2 decode shapes that cross the AMD k >= 2048 threshold for
+    // backend-internal Q8_1 staging in the dense and routed vector paths.
+    for (int n : {1, 2, 4, 8}) {
+        test_cases.emplace_back(new test_mul_mat(
+                GGML_TYPE_Q2_0_ROCMFPX, GGML_TYPE_F32, 64, n, 2048, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat_id(
+                GGML_TYPE_Q2_0_ROCMFPX, GGML_TYPE_F32, 8, 2, false, 64, n, 2048));
+    }
+
     // HY3 exact routed-expert shapes for the native ROCmFPX low-bit kernels:
     // 192 experts, top-8, 4096 hidden, 1536 intermediate. Generic IQ/K types
     // use the standard correctness matrices below; their full tensors take

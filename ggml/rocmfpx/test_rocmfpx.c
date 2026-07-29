@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 
 static void fill_row(float * x, int n) {
@@ -123,6 +124,40 @@ static void check_weighted_imatrix_fp8(void) {
     assert(weighted_err < plain_err);
 }
 
+static void check_fp2_swar_codebook(void) {
+    static const int codebook[4] = {-4, -1, 1, 4};
+
+    for (uint32_t packed = 0; packed <= UINT8_MAX; ++packed) {
+        // Keep this arithmetic identical to rocmfpx_vq_fp2_pack4() in the
+        // Vulkan Q8_1 shader so every possible packed byte is covered.
+        uint32_t codes = (packed | (packed << 12u)) & 0x000f000fu;
+        codes = (codes | (codes << 6u)) & 0x03030303u;
+        const uint32_t high = (codes >> 1u) & 0x01010101u;
+        const uint32_t lanes = 0xfcfcfcfcu + 3u * codes - high - (high << 8u);
+
+        for (int lane = 0; lane < 4; ++lane) {
+            const int got_u8 = (int) ((lanes >> (8 * lane)) & 0xffu);
+            const int got = got_u8 >= 128 ? got_u8 - 256 : got_u8;
+            const int expected = codebook[(packed >> (2 * lane)) & 3u];
+            assert(got == expected);
+        }
+
+        block_rocmfp2 block = {{0}, {0x40, 0x40}};
+        float dequantized[QK_ROCMFP2];
+        for (int i = 0; i < QS_ROCMFP2; ++i) {
+            block.qs[i] = (uint8_t) packed;
+        }
+        rocmfpx_dequantize_row_fp2(&block, dequantized, QK_ROCMFP2);
+
+        for (int i = 0; i < QK_ROCMFP2; ++i) {
+            const int expected = codebook[(packed >> (2 * (i % 4))) & 3u];
+            assert(dequantized[i] == (float) expected);
+        }
+    }
+
+    printf("ROCmFP2 Vulkan SWAR: all 256 packed bytes match {-4,-1,1,4}\n");
+}
+
 int main(void) {
     enum { N = 64 };
 
@@ -172,6 +207,7 @@ int main(void) {
     check_weighted_imatrix_fp3();
     check_weighted_imatrix_fp6();
     check_weighted_imatrix_fp8();
+    check_fp2_swar_codebook();
 
     return 0;
 }

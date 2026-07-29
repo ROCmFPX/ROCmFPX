@@ -527,6 +527,31 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP2)
+int rocmfpx_fp2_decode_code(uint code) {
+    return int(kvalues_rocmfpx_fp2_const[code & 3u]);
+}
+
+float rocmfpx_fp2_dequant(uint ib, uint idx, uint a_offset) {
+    const uint packed = uint(data_a[a_offset + ib].qs[idx >> 2u]);
+    const uint code = (packed >> (2u * (idx & 3u))) & 3u;
+    const float d = ue4m3_to_fp32(data_a[a_offset + ib].e[idx >= 16u ? 1u : 0u]);
+    return float(rocmfpx_fp2_decode_code(code)) * d;
+}
+
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(rocmfpx_fp2_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp2_dequant(ib, iqs + 1u, a_offset));
+}
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(rocmfpx_fp2_dequant(ib, iqs + 0u, a_offset),
+                rocmfpx_fp2_dequant(ib, iqs + 1u, a_offset),
+                rocmfpx_fp2_dequant(ib, iqs + 2u, a_offset),
+                rocmfpx_fp2_dequant(ib, iqs + 3u, a_offset));
+}
+#endif
+
 #if defined(DATA_A_ROCMFPX_FP3)
 uint rocmfpx_fp3_get_bits(uint ib, uint bit_pos, uint a_offset) {
     uint code = 0u;
