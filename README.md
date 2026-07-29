@@ -9,6 +9,30 @@ Vulkan kernels.
 > hardware, drivers, model, prompt, and quantization recipe; use BF16/F16 sources
 > for quality comparisons.
 
+## Disclosure
+
+**#AD #AMDAI**
+
+A huge thank you to AMD for providing the hardware that powers the ongoing
+development of ROCmFPX.
+
+The development system provided by AMD includes:
+
+- AMD Ryzen™ Threadripper™ 9980X
+- AMD Radeon™ AI PRO R9700 GPU
+- 128 GB ECC DDR5 Memory
+- 2 TB NVMe SSD
+
+This hardware enables me to continue developing, optimizing, benchmarking, and
+testing ROCmFPX for the community. AMD provided this hardware as part of a
+creator partnership. All development, benchmarks, code, testing, documentation,
+and opinions shared in this repository are my own.
+
+Thank you, AMD, for supporting the continued advancement of open AI development
+on Radeon hardware.
+
+**#AD #AMDAI**
+
 ## Developer Update — ROCmFP2 Lands On Main (July 2026)
 
 ROCmFP2 is now available on the canonical `main` branch as
