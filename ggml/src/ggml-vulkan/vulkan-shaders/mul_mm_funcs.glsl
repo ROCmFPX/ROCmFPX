@@ -1,3 +1,15 @@
+#if defined(DATA_A_ROCMFPX_FP2)
+vec4 rocmfpx_mm_fp2_vec4(uint ib, uint idx) {
+    const uint packed = uint(data_a[ib].qs[idx >> 2u]);
+    const vec4 q = vec4(kvalues_rocmfpx_fp2_const[ packed        & 3u],
+                        kvalues_rocmfpx_fp2_const[(packed >> 2u) & 3u],
+                        kvalues_rocmfpx_fp2_const[(packed >> 4u) & 3u],
+                        kvalues_rocmfpx_fp2_const[(packed >> 6u) & 3u]);
+    const float d = ue4m3_to_fp32(data_a[ib].e[idx >= 16u ? 1u : 0u]);
+    return q * d;
+}
+#endif
+
 #if defined(DATA_A_ROCMFPX_FP3)
 int32_t rocmfpx_mm_fp3_pack4_window(uint ib, uint idx) {
     const uint bit_pos = idx * 3u;
@@ -164,6 +176,16 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const i8vec2 v0 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs])).xy; // vec4 used due to #12147
             const i8vec2 v1 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs + 1])).xy;
             const vec4 v = vec4(v0.x, v0.y, v1.x, v1.y) * d;
+
+            buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
+            buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
+#elif defined(DATA_A_ROCMFPX_FP2)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+
+            const uint ib = idx / 8;
+            const uint iqs = (idx & 0x07) * 4;
+            const vec4 v = rocmfpx_mm_fp2_vec4(ib, iqs);
 
             buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
             buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);

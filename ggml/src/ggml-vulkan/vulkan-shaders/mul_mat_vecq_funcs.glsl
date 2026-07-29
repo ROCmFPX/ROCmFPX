@@ -172,6 +172,37 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
 }
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP2)
+int32_t rocmfpx_vq_fp2_pack4(uint ib, uint group) {
+    const uint packed = uint(data_a[ib].qs[group]);
+
+    // Spread the four 2-bit codes into four byte lanes.
+    uint codes = (packed | (packed << 12u)) & 0x000f000fu;
+    codes = (codes | (codes << 6u)) & 0x03030303u;
+
+    // Map {0, 1, 2, 3} to the frozen {-4, -1, 1, 4} byte codebook.
+    // Positive lanes carry into the next byte during the packed addition;
+    // subtracting high << 8 cancels those carries without cross-lane borrow.
+    const uint high = (codes >> 1u) & 0x01010101u;
+    return int32_t(0xfcfcfcfcu + 3u * codes - high - (high << 8u));
+}
+
+FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+    const int32_t q_sum0 = dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 0u), cache_b_qs[0]) +
+                           dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 1u), cache_b_qs[1]) +
+                           dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 2u), cache_b_qs[2]) +
+                           dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 3u), cache_b_qs[3]);
+    const int32_t q_sum1 = dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 4u), cache_b_qs[4]) +
+                           dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 5u), cache_b_qs[5]) +
+                           dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 6u), cache_b_qs[6]) +
+                           dotPacked4x8EXT(rocmfpx_vq_fp2_pack4(ib_a, 7u), cache_b_qs[7]);
+
+    const FLOAT_TYPE d0 = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[0]));
+    const FLOAT_TYPE d1 = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[1]));
+    return FLOAT_TYPE(cache_b_ds.x * (d0 * float(q_sum0) + d1 * float(q_sum1)));
+}
+#endif
+
 #if defined(DATA_A_ROCMFPX_FP3)
 uint rocmfpx_vq_fp3_get_bits(uint ib, uint bit_pos) {
     uint code = 0u;
