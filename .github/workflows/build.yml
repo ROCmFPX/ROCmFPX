@@ -4,7 +4,7 @@ on:
   workflow_dispatch: # allows manual triggering
   push:
     branches:
-      - master
+      - main
     paths: [
       '.github/workflows/build.yml',
       '.github/workflows/build-cmake-pkg.yml',
@@ -73,7 +73,7 @@ jobs:
         with:
           key: macOS-latest-arm64
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build
         id: cmake_build
@@ -109,7 +109,7 @@ jobs:
         with:
           key: macOS-latest-x64
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build
         id: cmake_build
@@ -145,7 +145,7 @@ jobs:
         with:
           key: macOS-latest-arm64-webgpu
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Dawn Dependency
         id: dawn-depends
@@ -181,10 +181,9 @@ jobs:
             os: ubuntu-22.04
           - build: 'arm64'
             os: ubuntu-24.04-arm
-          - build: 's390x'
-            os: ubuntu-24.04-s390x
-          - build: 'ppc64le'
-            os: ubuntu-24.04-ppc64le
+          # Native IBM Z and Power jobs require the IBM Actions P/Z provider.
+          # Keep unavailable vendor labels out of generic PR CI until this
+          # repository completes provider onboarding.
 
     runs-on: ${{ matrix.os }}
 
@@ -194,12 +193,11 @@ jobs:
         uses: actions/checkout@v6
 
       - name: ccache
-        if: ${{ matrix.build != 's390x' && matrix.build != 'ppc64le' }}
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: ubuntu-cpu-${{ matrix.build }}
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build Dependencies
         id: build_depends
@@ -224,14 +222,6 @@ jobs:
           python3 -m pip install --upgrade pip setuptools
           pip3 install ./gguf-py
 
-      - name: Swap Endianness
-        id: endianness
-        if: ${{ matrix.build == 's390x' }}
-        run: |
-          for f in models/*.gguf; do
-            echo YES | python3 gguf-py/gguf/scripts/gguf_convert_endian.py $f big
-          done
-
       - name: Build
         id: cmake_build
         run: |
@@ -248,7 +238,6 @@ jobs:
 
       - name: Test llama2c conversion
         id: llama2c_test
-        if: ${{ matrix.build != 's390x' }}
         run: |
           cd build
           echo "Fetch tokenizer"
@@ -257,15 +246,6 @@ jobs:
           wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories260K/stories260K.bin
           ./bin/llama-convert-llama2c-to-ggml --copy-vocab-from-model ./tok512.bin --llama2c-model stories260K.bin --llama2c-output-model stories260K.gguf
           ./bin/llama-completion -m stories260K.gguf -p "One day, Lily met a Shoggoth" -n 500 -c 256
-
-      - name: Test llama2c (s390x)
-        id: llama2c_test_s390x
-        if: ${{ matrix.build == 's390x' }}
-        run: |
-          cd build
-          echo "Fetch llama2c big-endian model"
-          wget https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K-be.gguf
-          ./bin/llama-completion -m stories260K-be.gguf -p "One day, Lily met a Shoggoth" -n 500 -c 256
 
   android-arm64:
     runs-on: ubuntu-latest
@@ -283,7 +263,7 @@ jobs:
         with:
           key: android-arm64
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Set up JDK
         uses: actions/setup-java@v5
@@ -400,7 +380,7 @@ jobs:
         with:
           key: ubuntu-24-webgpu
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Dependencies
         id: depends
@@ -516,7 +496,7 @@ jobs:
         with:
           key: ubuntu-22-hip
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build with native CMake HIP support
         id: cmake_build
@@ -549,7 +529,7 @@ jobs:
         with:
           key: ubuntu-22-musa
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build with native CMake MUSA support
         id: cmake_build
@@ -598,7 +578,7 @@ jobs:
           key: windows-latest-${{ matrix.build }}
           variant: ccache
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Download OpenBLAS
         id: get_openblas
@@ -704,7 +684,7 @@ jobs:
           with:
             key: ubuntu-latest-cuda
             evict-old-files: 1d
-            save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+            save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
         - name: Build with CMake
           # TODO: Remove GGML_CUDA_CUB_3DOT2 flag once CCCL 3.2 is bundled within CTK and that CTK version is used in this project
@@ -738,7 +718,7 @@ jobs:
           key: windows-cuda-${{ matrix.cuda }}
           variant: ccache
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install Cuda Toolkit
         uses: ./.github/actions/windows-setup-cuda
@@ -819,7 +799,7 @@ jobs:
         with:
           key: ${{ github.job }}
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build
         id: cmake_build
@@ -840,78 +820,11 @@ jobs:
             -DGGML_RPC=ON
           cmake --build build -j ${env:NUMBER_OF_PROCESSORS}
 
-  ubuntu-cpu-riscv64-native:
-    runs-on: ubuntu-24.04-riscv
-
-    steps:
-      - name: Install dependencies
-        run: |
-          # Install necessary packages
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev
-
-          # Set gcc-14 and g++-14 as the default compilers
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
-
-          git lfs install
-
-      - name: Check environment
-        run: |
-          uname -a
-          gcc --version
-          g++ --version
-          ldd --version
-          cmake --version
-          rustc --version
-
-      - name: Clone
-        id: checkout
-        uses: actions/checkout@v6
-
-      - name: ccache
-        uses: ggml-org/ccache-action@afde29e5b5422e5da23cb1f639e8baecadeadfc3 # https://github.com/ggml-org/ccache-action/pull/1
-        with:
-          key: ubuntu-cpu-riscv64-native
-          evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-
-      - name: Build
-        id: cmake_build
-        run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_OPENMP=OFF \
-            -DLLAMA_BUILD_EXAMPLES=ON \
-            -DLLAMA_BUILD_TOOLS=ON \
-            -DLLAMA_BUILD_TESTS=ON \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DGGML_RPC=ON \
-            -DCMAKE_C_COMPILER=riscv64-linux-gnu-gcc-14 \
-            -DCMAKE_CXX_COMPILER=riscv64-linux-gnu-g++-14
-
-          time cmake --build build --config Release -j $(nproc)
-
-      - name: Test
-        id: cmake_test
-        run: |
-          cd build
-          ctest -L main --verbose --timeout 900
-
-      - name: Test llama2c conversion
-        id: llama2c_test
-        run: |
-          cd build
-          echo "Fetch tokenizer"
-          wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories260K/tok512.bin
-          echo "Fetch llama2c model"
-          wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories260K/stories260K.bin
-          ./bin/llama-convert-llama2c-to-ggml --copy-vocab-from-model ./tok512.bin --llama2c-model stories260K.bin --llama2c-output-model stories260K.gguf
-          ./bin/llama-completion -m stories260K.gguf -p "One day, Lily met a Shoggoth" -n 500 -c 256
+  # build-riscv.yml retains the path-scoped RISC-V sanitizer job. Full native
+  # release coverage is deferred until this repo has RISE authorization.
 
 # TODO: simplify the following workflows using a matrix
-# TODO: run lighter CI on PRs and the full CI only on master (if needed)
+# TODO: run lighter CI on PRs and the full CI only on main (if needed)
   ggml-ci-x64-cpu-low-perf:
     runs-on: ubuntu-22.04
 
@@ -925,7 +838,7 @@ jobs:
         with:
           key: ggml-ci-x64-cpu-low-perf
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Dependencies
         id: depends
@@ -951,7 +864,7 @@ jobs:
         with:
           key: ggml-ci-arm64-cpu-low-perf
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Dependencies
         id: depends
@@ -977,7 +890,7 @@ jobs:
         with:
           key: ggml-ci-x64-cpu-high-perf
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Dependencies
         id: depends
@@ -1003,7 +916,7 @@ jobs:
         with:
           key: ggml-ci-arm64-cpu-high-perf
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Dependencies
         id: depends
@@ -1029,7 +942,7 @@ jobs:
         with:
           key: ggml-ci-arm64-cpu-high-perf-sve
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Dependencies
         id: depends
@@ -1055,7 +968,7 @@ jobs:
          with:
            key: ggml-ci-arm64-cpu-kleidiai
            evict-old-files: 1d
-           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
        - name: Dependencies
          id: depends
@@ -1068,50 +981,6 @@ jobs:
          run: |
            GG_BUILD_KLEIDIAI=1 GG_BUILD_EXTRA_TESTS_0=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt
 
-  ggml-ci-arm64-cpu-kleidiai-graviton4:
-     runs-on: ah-ubuntu_22_04-c8g_8x
-
-     steps:
-       - name: Clone
-         id: checkout
-         uses: actions/checkout@v6
-
-       - name: Dependencies
-         id: depends
-         run: |
-           set -euxo pipefail
-           sudo apt-get update
-           sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
-           apt-get install -y \
-            build-essential \
-            python3-venv \
-            gpg \
-            wget \
-            time \
-            git-lfs
-
-           git lfs install
-
-           # install the latest cmake
-           sudo install -d /usr/share/keyrings
-           wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-           echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' \
-            | sudo tee /etc/apt/sources.list.d/kitware.list
-           sudo apt-get update
-           sudo apt-get install -y cmake
-
-       - name: ccache
-         uses: ggml-org/ccache-action@v1.2.21
-         with:
-           key: ggml-ci-arm64-cpu-kleidiai-graviton4
-           evict-old-files: 1d
-           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-
-       - name: Test
-         id: ggml-ci
-         run: |
-           GG_BUILD_KLEIDIAI=1 \
-           GG_BUILD_EXTRA_TESTS_0=1 \
-           bash ./ci/run.sh ./tmp/results ./tmp/mnt
+  # The generic ARM64 KleidiAI job above uses an official GitHub runner.
+  # Exact Graviton4 coverage requires the private Arm runner provider and
+  # should be restored only after that provider is authorized for this repo.
