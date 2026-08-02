@@ -494,9 +494,73 @@ class DeepseekV32Model(DeepseekV2Model):
 @ModelBase.register("DeepseekV4ForCausalLM")
 class DeepseekV4Model(TextModel):
     model_arch = gguf.MODEL_ARCH.DEEPSEEK4
+    supports_mtp_export = True
+
+    _dsv4_main_layers: int | None = None
+    _dsv4_nextn_layers: int = 0
+
+    def index_tensors(self, remote_hf_model_id: str | None = None) -> dict[str, Callable[[], Tensor]]:
+        type(self)._dsv4_main_layers = self.hparams["num_hidden_layers"]
+        type(self)._dsv4_nextn_layers = self.hparams.get("num_nextn_predict_layers", 0)
+        return super().index_tensors(remote_hf_model_id=remote_hf_model_id)
+
+    @classmethod
+    def filter_tensors(cls, item: tuple[str, Callable[[], Tensor]]) -> tuple[str, Callable[[], Tensor]] | None:
+        name, gen = item
+        if name.startswith("mtp."):
+            # The ROCmFPX converter also supports embedding MTP layers in a
+            # target-model fixture.  Keep that path intact and only perform
+            # upstream's standalone-draft rewrite for --mtp.
+            if not cls.mtp_only:
+                return super().filter_tensors(item)
+
+            assert cls._dsv4_main_layers is not None
+            parts = name.split(".", 2)
+            if len(parts) < 3 or not parts[1].isdecimal():
+                raise ValueError(f"Unexpected DeepSeek-V4 MTP tensor {name!r}")
+
+            mtp_idx = int(parts[1])
+            if mtp_idx >= cls._dsv4_nextn_layers:
+                raise ValueError(f"Unexpected DeepSeek-V4 MTP layer {mtp_idx}")
+
+            bid = cls._dsv4_main_layers + mtp_idx
+            suffix = parts[2]
+            if suffix in {"hc_head_fn", "hc_head_base", "hc_head_scale"}:
+                name = suffix
+            elif suffix in (
+                "e_proj.weight", "e_proj.scale",
+                "h_proj.weight", "h_proj.scale",
+            ):
+                name = f"layers.{bid}.nextn.{suffix}"
+            elif suffix == "enorm.weight":
+                name = f"layers.{bid}.nextn.enorm.weight"
+            elif suffix == "hnorm.weight":
+                name = f"layers.{bid}.nextn.hnorm.weight"
+            elif suffix == "norm.weight":
+                name = f"layers.{bid}.nextn.shared_head_norm.weight"
+            else:
+                name = f"layers.{bid}.{suffix}"
+            return name, gen
+
+        if cls.mtp_only:
+            keep = name in (
+                "embed.weight",
+                "norm.weight",
+                "head.weight",
+                "head.scale",
+            )
+            if not keep:
+                return None
+
+        return super().filter_tensors((name, gen))
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        if self.mtp_only and self.deepseek4_include_mtp:
+            raise ValueError("--mtp and --deepseek4-include-mtp are mutually exclusive")
+        if self.mtp_only and self.deepseek4_max_layers is not None:
+            raise ValueError("--mtp cannot be combined with --deepseek4-max-layers")
 
         with open(self.dir_model / "config.json", "r", encoding="utf-8") as config_file:
             raw_hparams = json.load(config_file)
@@ -536,11 +600,12 @@ class DeepseekV4Model(TextModel):
 
         self._deepseek4_mtp_layers = (
             int(self.hparams.get("num_nextn_predict_layers", 0))
-            if self.deepseek4_include_mtp
+            if self.deepseek4_include_mtp or self.mtp_only
             else 0
         )
-        if self.deepseek4_include_mtp and self._deepseek4_mtp_layers <= 0:
-            raise ValueError("--deepseek4-include-mtp requested but the checkpoint contains no MTP layers")
+        if (self.deepseek4_include_mtp or self.mtp_only) and self._deepseek4_mtp_layers <= 0:
+            option = "--mtp" if self.mtp_only else "--deepseek4-include-mtp"
+            raise ValueError(f"{option} requested but the checkpoint contains no MTP layers")
 
         self.block_count = self._deepseek4_main_block_count + self._deepseek4_mtp_layers
         self.hparams["num_hidden_layers"] = self.block_count
@@ -605,6 +670,7 @@ class DeepseekV4Model(TextModel):
         self.gguf_writer.add_hyper_connection_count(hparams["hc_mult"])
         self.gguf_writer.add_hyper_connection_sinkhorn_iters(hparams["hc_sinkhorn_iters"])
         self.gguf_writer.add_hyper_connection_eps(hparams["hc_eps"])
+        self.gguf_writer.add_embedding_length_out(hparams["hidden_size"] * hparams["hc_mult"])
 
     @staticmethod
     def _strip_model_prefix(name: str) -> str:
@@ -842,6 +908,28 @@ class DeepseekV4Model(TextModel):
         for name in consumed:
             self.model_tensors.pop(name, None)
 
+        # Upstream's standalone DeepSeek-V4 MTP format concatenates e_proj and
+        # h_proj into the single matrix consumed by the MTP graph.  The fork's
+        # embedded-fixture mode deliberately retains its separate E/H tensors.
+        if self.mtp_only:
+            for bid in range(self._deepseek4_main_block_count, self.block_count):
+                e_name = f"layers.{bid}.nextn.e_proj.weight"
+                h_name = f"layers.{bid}.nextn.h_proj.weight"
+                if e_name not in self.model_tensors and h_name not in self.model_tensors:
+                    continue
+                if e_name not in self.model_tensors or h_name not in self.model_tensors:
+                    raise ValueError(f"Missing DeepSeek-V4 MTP e/h projection pair for block {bid}")
+
+                e_proj = self.model_tensors.pop(e_name)
+                h_proj = self.model_tensors.pop(h_name)
+                eh_name = f"layers.{bid}.nextn.eh_proj.weight"
+                self.model_tensors[eh_name] = (
+                    lambda e_proj=e_proj, h_proj=h_proj: torch.cat(
+                        (LazyTorchTensor.to_eager(e_proj()), LazyTorchTensor.to_eager(h_proj())),
+                        dim=1,
+                    ).contiguous()
+                )
+
         super().prepare_tensors()
 
     def map_tensor_name(self, name: str, try_suffixes: Sequence[str] = (".weight", ".bias")) -> str:
@@ -901,8 +989,11 @@ class DeepseekV4Model(TextModel):
             "ffn.experts.w2.weight":                (gguf.MODEL_TENSOR.FFN_DOWN_EXP, ".weight"),
             "nextn.e_proj.weight":                  (gguf.MODEL_TENSOR.NEXTN_E_PROJ, ".weight"),
             "nextn.h_proj.weight":                  (gguf.MODEL_TENSOR.NEXTN_H_PROJ, ".weight"),
+            "nextn.eh_proj.weight":                 (gguf.MODEL_TENSOR.NEXTN_EH_PROJ, ".weight"),
+            "nextn.embed_tokens.weight":            (gguf.MODEL_TENSOR.NEXTN_EMBED_TOKENS, ".weight"),
             "nextn.enorm.weight":                   (gguf.MODEL_TENSOR.NEXTN_ENORM, ".weight"),
             "nextn.hnorm.weight":                   (gguf.MODEL_TENSOR.NEXTN_HNORM, ".weight"),
+            "nextn.shared_head_head.weight":        (gguf.MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD, ".weight"),
             "nextn.shared_head_norm.weight":        (gguf.MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM, ".weight"),
             "nextn.hc_head_base.weight":            (gguf.MODEL_TENSOR.NEXTN_HC_HEAD_BASE, ".weight"),
             "nextn.hc_head_fn.weight":              (gguf.MODEL_TENSOR.NEXTN_HC_HEAD_FN, ".weight"),
@@ -912,6 +1003,24 @@ class DeepseekV4Model(TextModel):
             tensor, suffix = layer_level[rest]
             return self.format_tensor_name(tensor, bid, suffix=suffix)
         return super().map_tensor_name(name, try_suffixes)
+
+    def tensor_force_quant(self, name: str, new_name: str, bid: int | None, n_dims: int) -> gguf.GGMLQuantizationType | bool:
+        if new_name.endswith(".nextn.eh_proj.weight"):
+            return gguf.GGMLQuantizationType.Q8_0
+        return super().tensor_force_quant(name, new_name, bid, n_dims)
+
+    def prepare_metadata(self, vocab_only: bool):
+        from_dir = self.fname_out.is_dir()
+        super().prepare_metadata(vocab_only=vocab_only)
+
+        if not self.mtp_only or not from_dir:
+            return
+
+        output_type: str = self.ftype.name.partition("_")[2]
+        fname_default: str = gguf.naming_convention(
+            self.metadata.name, self.metadata.basename, self.metadata.finetune,
+            self.metadata.version, size_label=None, output_type=output_type, model_type=None)
+        self.fname_out = self.fname_out.parent / f"mtp-{fname_default}.gguf"
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid

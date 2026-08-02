@@ -1155,6 +1155,10 @@ struct llama_model_dflash : public llama_model_base {
         ggml_tensor * build_inp_embd_enc() const;
     };
 
+    struct graph_dsv4 : public llm_graph_context {
+        graph_dsv4(const llama_model & model, const llm_graph_params & params);
+    };
+
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
