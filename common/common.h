@@ -347,6 +347,7 @@ struct common_params_speculative_ngram_cache {
 struct common_params_speculative {
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
     bool mtp_strict = true;
+    bool mtp_strict_qwen = false;
 
     // used by Simple, MTP, Eagle3, etc. - all methods that require some kind of draft model
     common_params_speculative_draft draft;
@@ -366,8 +367,7 @@ struct common_params_speculative {
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
             return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
         });
-
-        return needs_rs_seq ? draft.n_max : 0u;
+        return needs_rs_seq ? (uint32_t) std::max<int32_t>(0, draft.n_max) : 0u;
     }
 };
 
