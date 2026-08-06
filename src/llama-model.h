@@ -570,6 +570,10 @@ struct llama_model {
     struct ggml_tensor * output_hc_fn    = nullptr;
     struct ggml_tensor * output_hc_scale = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
+    struct ggml_tensor * aux_norm_enc    = nullptr;
+    // dflash.decoder_arch == "laguna": enables the laguna-specific draft behaviors
+    // (enc.aux_norm, attention output gate, normed KV injection input).
+    bool decoder_laguna = false;
     struct ggml_tensor * nextn_proj_pre  = nullptr;
     struct ggml_tensor * nextn_proj_post = nullptr;
 
