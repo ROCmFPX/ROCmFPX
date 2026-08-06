@@ -75,6 +75,15 @@ struct server_slot {
     common_prompt_checkpoint spec_ckpt;
     bool spec_is_replay = false;
 
+    // livelock guard (issue #58): consecutive speculative checkpoint restores at the
+    // same position. When the context cannot apply partial draft acceptance the draft
+    // is truncated and the checkpoint replayed; if the replay reproduces the same
+    // rejection, the slot spins forever without advancing pos_next.
+    llama_pos spec_replay_pos   = -1;
+    int       spec_replay_stall = 0;
+    // one-shot: suppress drafting for the next iteration so a plain decode can advance
+    bool      spec_skip_draft   = false;
+
     // speculative-impl state (e.g. MTP boundary hidden rows) snapshotted together with
     // spec_ckpt, so that a checkpoint restore can also rewind the draft bookkeeping
     std::vector<uint8_t> spec_state;
@@ -223,6 +232,10 @@ struct server_slot {
         SLT_DBG(*this, "%s", "\n");
 
         spec_is_replay = false;
+
+        spec_replay_pos   = -1;
+        spec_replay_stall = 0;
+        spec_skip_draft   = false;
 
         n_prompt_tokens_cache = 0;
 
@@ -2441,6 +2454,15 @@ private:
 
                 int n_draft_max = slot.get_n_draft_max();
 
+                // livelock guard (issue #58), second half: skip drafting for exactly
+                // one iteration after a stalled replay. Combined with the cleared
+                // spec_draft this makes update_batch() take the plain decode path,
+                // which advances pos_next and breaks the loop.
+                if (slot.spec_skip_draft) {
+                    slot.spec_skip_draft = false;
+                    n_draft_max = 0;
+                }
+
                 if (strict_qwen_mtp_verification) {
                     // Dense-attention KV width is padded in 256-cell blocks.
                     // A verification batch that straddles a block makes its
@@ -3471,6 +3493,14 @@ private:
 
                             SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
 
+                            // track repeated restores at the same position (see #58)
+                            if (slot.spec_replay_pos == ckpt.pos_max) {
+                                slot.spec_replay_stall++;
+                            } else {
+                                slot.spec_replay_pos   = ckpt.pos_max;
+                                slot.spec_replay_stall = 1;
+                            }
+
                             {
                                 const bool restored_tgt = ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                                 if (!restored_tgt) {
@@ -3506,6 +3536,25 @@ private:
                             // the restored KV; the replayed batch re-runs process() from here
                             if (!slot.spec_state.empty()) {
                                 common_speculative_set_state(spec.get(), slot.id, slot.spec_state);
+                            }
+
+                            // livelock guard (issue #58): this checkpoint position has
+                            // already been restored without the slot advancing, so
+                            // replaying the same draft would reproduce the same partial
+                            // rejection indefinitely. Drop the draft; with spec_draft
+                            // empty the next iteration decodes a single token without
+                            // speculation, which always makes forward progress. A plain
+                            // decode is exactly what runs with --spec-type none, so this
+                            // cannot change the generated output.
+                            if (slot.spec_replay_stall >= 2) {
+                                SLT_WRN(slot, "speculative replay stalled at pos %d (%d consecutive checkpoint restores) - dropping draft, decoding without speculation\n",
+                                        slot.spec_replay_pos, slot.spec_replay_stall);
+                                slot.spec_draft.clear();
+                                slot.spec_i_batch.clear();
+                                slot.spec_is_replay    = false;
+                                slot.spec_replay_stall = 0;
+                                slot.spec_replay_pos   = -1;
+                                slot.spec_skip_draft   = true;
                             }
 
                             continue;
