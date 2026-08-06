@@ -105,7 +105,7 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader & ml) {
     const int64_t n_embd_inp = hparams.n_embd_inp_enc();
 
     // DSpark adds a Markov bias and a per-position confidence head to DFlash.
-    const struct ggml_tensor * markov_meta = ml->get_tensor_meta("markov_w1.weight");
+    const struct ggml_tensor * markov_meta = ml.get_tensor_meta("markov_w1.weight");
     if (markov_meta) {
         const int64_t dspark_markov_rank = markov_meta->ne[0];
 
