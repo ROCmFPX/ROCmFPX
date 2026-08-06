@@ -74,6 +74,10 @@ struct server_slot {
     std::vector<int32_t> spec_i_batch;
     common_prompt_checkpoint spec_ckpt;
 
+    // speculative-impl state (e.g. MTP boundary hidden rows) snapshotted together with
+    // spec_ckpt, so that a checkpoint restore can also rewind the draft bookkeeping
+    std::vector<uint8_t> spec_state;
+
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
     std::unique_ptr<const server_task> task;
@@ -231,6 +235,7 @@ struct server_slot {
             spec_draft.clear();
             spec_i_batch.clear();
             spec_ckpt.clear();
+            spec_state.clear();
         }
         generated_tokens.clear();
         generated_token_probs.clear();
@@ -2418,6 +2423,13 @@ private:
                                 llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id),
                                 llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id));
 
+                        // snapshot the speculative-impl state (MTP boundary rows) at the
+                        // same point as the KV checkpoint, so both can be rewound together
+                        if (common_speculative_state_required(spec.get())) {
+                            slot.spec_state.clear();
+                            common_speculative_get_state(spec.get(), slot.id, slot.spec_state);
+                        }
+
                         if (use_ckpt_dft) {
                             slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                         }
@@ -3420,6 +3432,12 @@ private:
 
                             slot.prompt.tokens.keep_first(ckpt.n_tokens);
                             slot.smpl = std::move(smpl_save);
+
+                            // rewind the speculative-impl state (MTP boundary rows) to match
+                            // the restored KV; the replayed batch re-runs process() from here
+                            if (!slot.spec_state.empty()) {
+                                common_speculative_set_state(spec.get(), slot.id, slot.spec_state);
+                            }
 
                             continue;
                         }
