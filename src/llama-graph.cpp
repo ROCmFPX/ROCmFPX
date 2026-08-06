@@ -1388,8 +1388,8 @@ ggml_tensor * llm_graph_context::build_ffn(
     switch (type_op) {
         case LLM_FFN_SILU:
             if (gate && type_gate == LLM_FFN_PAR) {
-                // Step35: HF clamps gate (after SiLU) and up before multiplication
-                if (arch == LLM_ARCH_STEP35 && il >= 0) {
+                // Step35/BailingMoeV3: HF clamps gate (after SiLU) and up before multiplication
+                if ((arch == LLM_ARCH_STEP35 || arch == LLM_ARCH_BAILINGMOE3) && il >= 0) {
                     const float limit = hparams.swiglu_clamp_shexp[il];
                     constexpr float eps = 1e-6f;
                     if (limit > eps) {
@@ -1800,8 +1800,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     }
                 }
 
-                // Step35: per-layer clamp for routed experts
-                if (arch == LLM_ARCH_STEP35 && il >= 0) {
+                // Step35/BailingMoeV3: per-layer clamp for routed experts
+                if ((arch == LLM_ARCH_STEP35 || arch == LLM_ARCH_BAILINGMOE3) && il >= 0) {
                     const float limit = hparams.swiglu_clamp_exp[il];
                     constexpr float eps = 1e-6f;
                     if (limit > eps) {
