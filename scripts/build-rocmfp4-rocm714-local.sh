@@ -66,12 +66,19 @@ echo "Using clang++: $CLANGXX"
 # ── Configure ────────────────────────────────────────────────────────
 echo "Configuring build..."
 
+# ggml-hip's CMakeLists falls back to $ENV{ROCM_PATH} / /opt/rocm when this is
+# unset, which pulls in a second, mismatched HIP runtime alongside the local
+# toolchain at link time. Pin it so only $ROCM_LOCAL_PATH is ever resolved.
+export ROCM_PATH="$ROCM_LOCAL_PATH"
+export HIP_PATH="$ROCM_LOCAL_PATH"
+
 cmake -S "$ROOT" -B "$BUILD_DIR" \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER="$CLANG" \
     -DCMAKE_CXX_COMPILER="$CLANGXX" \
     -DCMAKE_CXX_FLAGS="-I${ROCM_LOCAL_PATH}/include" \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DGGML_HIP=ON \
     -DGGML_HIP_FORCE_MMQ=ON \
     -DGGML_HIP_ROCWMMA_FATTN=OFF \
@@ -162,11 +169,6 @@ else
     echo "patchelf was not available; set LD_LIBRARY_PATH at runtime:"
     echo "  LD_LIBRARY_PATH=${ROCM_LOCAL_PATH}/lib/llvm/lib:${ROCM_LOCAL_PATH}/lib:${ROCM_LOCAL_PATH}/lib/rocm_sysdeps/lib $BUILD_DIR/bin/llama-cli -m model.gguf -dev ROCm0 -ngl 999"
 fi
-
-# ── Verify ───────────────────────────────────────────────────────────
-echo ""
-echo "Verification:"
-ldd "$BUILD_DIR/bin/llama-cli" 2>/dev/null | grep -E "not found|libomp|libamdhip|librocblas|libhipblas" | head -10 || echo "  (no issues)"
 
 # ── Verify ───────────────────────────────────────────────────────────
 echo ""

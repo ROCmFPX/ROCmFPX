@@ -171,6 +171,11 @@ llama_model_laguna::graph::graph(const llama_model & model, const llm_graph_para
     const float kq_scale = 1.0f / sqrtf(float(n_embd_head));
 
     for (int il = 0; il < n_layer; ++il) {
+        // publish the layer input so DFlash/EAGLE3-style extraction can read it
+        // (mirrors qwen35moe.cpp / llama.cpp / gemma4.cpp; required by
+        //  llm_graph_result::set_outputs -> GGML_ASSERT(t_layer_inp[il] != nullptr))
+        res->t_layer_inp[il] = inpL;
+
         const bool    is_swa_il   = hparams.is_swa(il);
         const int64_t n_head_il   = hparams.n_head(il);
         const int64_t n_head_kv_il = hparams.n_head_kv(il);

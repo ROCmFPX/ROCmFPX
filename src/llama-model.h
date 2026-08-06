@@ -126,6 +126,7 @@ enum llm_type {
     LLM_TYPE_48B_A3B, // Kimi Linear
     LLM_TYPE_80B_A3B, // Qwen3 Next
     LLM_TYPE_100B_A6B,
+    LLM_TYPE_124B_A5B, // Ling 3.0 flash
     LLM_TYPE_102B_A12B, // Solar-Open
     LLM_TYPE_106B_A12B, // GLM-4.5-Air
     LLM_TYPE_120B_A12B, // Nemotron 3 Super
@@ -493,6 +494,8 @@ struct llama_layer {
     struct ggml_tensor * ssm_f_a    = nullptr;
     struct ggml_tensor * ssm_f_b    = nullptr;
     struct ggml_tensor * ssm_beta   = nullptr;
+    struct ggml_tensor * ssm_f      = nullptr;  // bailingmoe3 (full-rank)
+    struct ggml_tensor * ssm_g      = nullptr;  // bailingmoe3 (full-rank)
     struct ggml_tensor * ssm_g_a    = nullptr;
     struct ggml_tensor * ssm_g_b    = nullptr;
     struct ggml_tensor * ssm_o_norm = nullptr;
@@ -570,6 +573,10 @@ struct llama_model {
     struct ggml_tensor * output_hc_fn    = nullptr;
     struct ggml_tensor * output_hc_scale = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
+    struct ggml_tensor * aux_norm_enc    = nullptr;
+    // dflash.decoder_arch == "laguna": enables the laguna-specific draft behaviors
+    // (enc.aux_norm, attention output gate, normed KV injection input).
+    bool decoder_laguna = false;
     struct ggml_tensor * nextn_proj_pre  = nullptr;
     struct ggml_tensor * nextn_proj_post = nullptr;
 

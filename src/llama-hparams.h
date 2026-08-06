@@ -155,6 +155,8 @@ struct llama_hparams {
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
 
+    float    kda_gate_lower_bound = 0.0f;   // bailingmoe3: safe-gate lower bound
+
     // for hybrid state space models
     std::array<bool, LLAMA_MAX_LAYERS> recurrent_layer_arr;
 
