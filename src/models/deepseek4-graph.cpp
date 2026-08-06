@@ -925,6 +925,19 @@ static void dsv4_prepare_concat_cache_inputs(
     }
 }
 
+// Mean over the hyper-connection streams: [n_embd, n_hc, n_tokens]
+// -> [n_embd, n_tokens]. DSpark consumes these target-layer inputs.
+static ggml_tensor * dsv4_hc_mean(ggml_context * ctx, ggml_tensor * x) {
+    const int64_t n_hc = x->ne[1];
+
+    ggml_tensor * acc = ggml_view_2d(ctx, x, x->ne[0], x->ne[2], x->nb[2], 0);
+    for (int64_t ihc = 1; ihc < n_hc; ++ihc) {
+        acc = ggml_add(ctx, acc, ggml_view_2d(ctx, x, x->ne[0], x->ne[2], x->nb[2], ihc * x->nb[1]));
+    }
+
+    return ggml_scale(ctx, acc, 1.0f / n_hc);
+}
+
 } // namespace
 
 llm_build_deepseek4::llm_build_deepseek4(const llama_model & model, const llm_graph_params & params) :
@@ -1012,6 +1025,12 @@ llm_build_deepseek4::llm_build_deepseek4(const llama_model & model, const llm_gr
     const int il_begin = is_mtp ? n_main_layers : 0;
     const int il_end   = is_mtp ? n_layer : n_main_layers;
     for (int il = il_begin; il < il_end; ++il) {
+        if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
+            res->t_layer_inp[il] = dsv4_hc_mean(ctx0, inpL);
+            cb(res->t_layer_inp[il], "layer_inp", il);
+            ggml_build_forward_expand(gf, res->t_layer_inp[il]);
+        }
+
         const auto & layer = model.layers[il];
         const uint32_t compress_ratio = hparams.attn_compress_ratio[il];
         const dsv4_rope_cfg rope_cfg = dsv4_make_rope_cfg(hparams, cparams, compress_ratio);
@@ -1436,6 +1455,13 @@ llm_build_deepseek4::llm_build_deepseek4(const llama_model & model, const llm_gr
         inpL = dsv4_hc_post(ctx0, cur, residual, mix.post, mix.comb, n_embd, n_hc, n_tokens);
         cb(inpL, "hc_ffn_post", il);
     }
+
+    if ((size_t) il_end < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il_end]) {
+        res->t_layer_inp[il_end] = dsv4_hc_mean(ctx0, inpL);
+        cb(res->t_layer_inp[il_end], "layer_inp", il_end);
+        ggml_build_forward_expand(gf, res->t_layer_inp[il_end]);
+    }
+
     if (cparams.embeddings_pre_norm) {
         res->t_h_pre_norm = inpL;
         cb(res->t_h_pre_norm, "h_pre_norm", -1);
