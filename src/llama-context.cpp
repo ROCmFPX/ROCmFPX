@@ -78,8 +78,9 @@ llama_context::llama_context(
     cparams.no_perf                 = params.no_perf;
     cparams.warmup                  = false;
 
-    cparams.embeddings_layer_inp.resize(hparams.n_layer, false);
-    embd_layer_inp.resize(hparams.n_layer);
+    // +1: id n_layer() taps the output of the last layer ("input" of the head)
+    cparams.embeddings_layer_inp.resize(hparams.n_layer + 1, false);
+    embd_layer_inp.resize(hparams.n_layer + 1);
 
     cparams.ctx_type     = params.ctx_type;
     cparams.pooling_type = params.pooling_type;
@@ -1212,7 +1213,7 @@ void llama_context::set_mtp_source(llama_context * src) {
 void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
     LLAMA_LOG_DEBUG("%s: lid = %d, enable = %d\n", __func__, lid, enable);
 
-    GGML_ASSERT(lid < model.hparams.n_layer);
+    GGML_ASSERT(lid <= model.hparams.n_layer);
 
     cparams.embeddings_layer_inp[lid] = enable;
 
@@ -2351,6 +2352,7 @@ void llama_context::extract_layer_inputs(const llm_graph_result * res, size_t to
 void llama_context::output_reorder() {
     const uint64_t n_vocab = model.vocab.n_tokens();
     const uint64_t n_embd  = model.hparams.n_embd;
+    const uint64_t n_embd_out = model.hparams.n_embd_out();
     const uint64_t n_embd_pre_norm = model.n_embd_pre_norm();
 
     for (size_t s = 0; s < output_swaps.size(); ++s) {
@@ -2364,8 +2366,8 @@ void llama_context::output_reorder() {
         }
 
         if (embd.size > 0) {
-            for (uint64_t k = 0; k < n_embd; k++) {
-                std::swap(embd.data[i0*n_embd + k], embd.data[i1*n_embd + k]);
+            for (uint64_t k = 0; k < n_embd_out; k++) {
+                std::swap(embd.data[i0*n_embd_out + k], embd.data[i1*n_embd_out + k]);
             }
         }
 
@@ -2421,7 +2423,12 @@ void llama_context::output_reorder() {
 //
 
 uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
-    if (model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_KIMI_LINEAR || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE || model.arch == LLM_ARCH_BAILINGMOE3) {
+    if (model.arch == LLM_ARCH_QWEN3NEXT ||
+        model.arch == LLM_ARCH_KIMI_LINEAR ||
+        model.arch == LLM_ARCH_QWEN35 ||
+        model.arch == LLM_ARCH_QWEN35MOE ||
+        model.arch == LLM_ARCH_BAILINGMOE3 ||
+        (model.arch == LLM_ARCH_DFLASH && model.hparams.n_hc > 1)) {
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
     if (model.arch == LLM_ARCH_DEEPSEEK4) {
