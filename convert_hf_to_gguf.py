@@ -1555,6 +1555,18 @@ class TextModel(ModelBase):
         if chkhsh == "169bf0296a13c4d9b7672313f749eb36501d931022de052aad6e36f2bf34dd51":
             # ref: https://huggingface.co/LiquidAI/LFM2-Tokenizer
             res = "lfm2"
+        if chkhsh == "1695bc99c38f06ed8a7ab6d3e066ff571f9c5f8759e6eeba60afd0f221e2e858":
+            # ref: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct
+            res = "lfm2"
+        if chkhsh == "9e454714343b69b99b71795c1d27a68c2a1d15dab111f4d353109f966af29da7":
+            # ref: https://huggingface.co/LiquidAI/LFM2.5-8B-A1B
+            res = "lfm2"
+        if chkhsh == "5d5192db33764da7bf8147f23ca2c0f4e74fb549a2ecb9dc39eff533a5a267cc":
+            # ref: https://huggingface.co/LiquidAI/LFM2.5-8B-A1B (current tokenizer rev)
+            res = "lfm2"
+        if chkhsh == "87ab4b1536216e11d7a9b700bf6f8266d2742f26f436e8b557385f39cc891750":
+            # ref: https://huggingface.co/reaperdoesntknow/LFM2.5-8B-A1B-Opus-Distil
+            res = "lfm2"
         if chkhsh == "2085e1638f6c377a0aa4ead21b27bb4cb941bf800df86ed391011769c1758dfb":
             # ref: https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-32B
             res = "exaone4"
