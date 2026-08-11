@@ -228,6 +228,53 @@ ROCmFPX is not a K/V-cache-only compression trick. It is a set of actual GGUF
 model-weight tensor formats with CPU reference paths plus ROCm/HIP and Vulkan
 kernel coverage.
 
+## Community Builds
+
+Models published by the community using ROCmFPX / ROCmFP4. Listed to help people
+find a build already quantised for their hardware, and to show the range of
+architectures the formats have been exercised on.
+
+Sizes are the total of all GGUF files in each repository (some ship several quant
+variants, a speculative drafter, or a vision projector, so this is not the download
+size of a single model file). Compiled from Hugging Face repository metadata; no
+build here has been benchmarked or endorsed by this project. Capped at three entries
+per publisher to keep the list representative.
+
+| Repository | Total GGUF size |
+|---|---|
+| [`christopher-kapic/AEON-Ultimate-ROCmFP4-Strix-Halo-GGUF`](https://huggingface.co/christopher-kapic/AEON-Ultimate-ROCmFP4-Strix-Halo-GGUF) | 72.3 GiB |
+| [`jcbtc/chadrock-35b-ace-saber-rocmfp4-mtp`](https://huggingface.co/jcbtc/chadrock-35b-ace-saber-rocmfp4-mtp) | 47.0 GiB |
+| [`Lucebox/DeepSeek-V4-Flash-0731-ROCmFP3`](https://huggingface.co/Lucebox/DeepSeek-V4-Flash-0731-ROCmFP3) | 186.8 GiB |
+| [`Geometric-AI/DeepSeek-V4-Flash-0731-ROCmFP3-MIX`](https://huggingface.co/Geometric-AI/DeepSeek-V4-Flash-0731-ROCmFP3-MIX) | 186.8 GiB |
+| [`cafonez/Escha-W2-35B-A3B-ROCmFP2`](https://huggingface.co/cafonez/Escha-W2-35B-A3B-ROCmFP2) | 12.2 GiB |
+| [`raulvidis/KAT-Coder-V2.5-Dev-ROCmFP4-STRIX-MTP-GGUF`](https://huggingface.co/raulvidis/KAT-Coder-V2.5-Dev-ROCmFP4-STRIX-MTP-GGUF) | 18.2 GiB |
+| [`jcbtc/Laguna-S-2.1-Chadrock-ROCmFP4-StrixKVSpine-V4-GGUF`](https://huggingface.co/jcbtc/Laguna-S-2.1-Chadrock-ROCmFP4-StrixKVSpine-V4-GGUF) | 60.9 GiB |
+| [`kingjones777/Laguna-S-2.1-ROCmFP4-STRIX_LEAN-GGUF`](https://huggingface.co/kingjones777/Laguna-S-2.1-ROCmFP4-STRIX_LEAN-GGUF) | 58.3 GiB |
+| [`kingjones777/Leanstral-1.5-119B-A6B-ROCmFP4-STRIX_LEAN-GGUF`](https://huggingface.co/kingjones777/Leanstral-1.5-119B-A6B-ROCmFP4-STRIX_LEAN-GGUF) | 59.0 GiB |
+| [`raulvidis/Ling-3.0-flash-ROCmFP4-STRIX-MTP-GGUF`](https://huggingface.co/raulvidis/Ling-3.0-flash-ROCmFP4-STRIX-MTP-GGUF) | 64.9 GiB |
+| [`christopher-kapic/MiMo-V2.5-ROCmFP4-GGUF`](https://huggingface.co/christopher-kapic/MiMo-V2.5-ROCmFP4-GGUF) | 433.4 GiB |
+| [`gsrunion/Ornith-1.0-35B-ROCmFP4-STRIX_LEAN-DFLASH-GGUF`](https://huggingface.co/gsrunion/Ornith-1.0-35B-ROCmFP4-STRIX_LEAN-DFLASH-GGUF) | 18.0 GiB |
+| [`gsrunion/Ornith-1.0-35B-ROCmFPX-GGUF`](https://huggingface.co/gsrunion/Ornith-1.0-35B-ROCmFPX-GGUF) | 98.6 GiB |
+| [`julianmb/Ornith-1.0-35B-ROCmFPX-StrixHalo`](https://huggingface.co/julianmb/Ornith-1.0-35B-ROCmFPX-StrixHalo) | 48.4 GiB |
+| [`vmlinux/Qwen3.5-122B-A10B-Heretic-ROCmFP4-iMatrix-GGUF`](https://huggingface.co/vmlinux/Qwen3.5-122B-A10B-Heretic-ROCmFP4-iMatrix-GGUF) | 62.8 GiB |
+| [`vmlinux/Qwen3.5-122B-A10B-ROCmFP4-iMatrix-GGUF`](https://huggingface.co/vmlinux/Qwen3.5-122B-A10B-ROCmFP4-iMatrix-GGUF) | 62.8 GiB |
+| [`lmcoleman/Qwen3.6-27B-Fable-Fusion-711-MTP-ROCmFPX-GGUF`](https://huggingface.co/lmcoleman/Qwen3.6-27B-Fable-Fusion-711-MTP-ROCmFPX-GGUF) | 69.2 GiB |
+| [`plunderstruck/Qwen3.6-27B-MTP-ROCmFP4-GGUF`](https://huggingface.co/plunderstruck/Qwen3.6-27B-MTP-ROCmFP4-GGUF) | 17.4 GiB |
+| [`philtheriver/Qwen3.6-27B-ROCmFPX`](https://huggingface.co/philtheriver/Qwen3.6-27B-ROCmFPX) | 85.5 GiB |
+| [`plunderstruck/Qwen3.6-35B-A3B-MTP-ROCmFP4-GGUF`](https://huggingface.co/plunderstruck/Qwen3.6-35B-A3B-MTP-ROCmFP4-GGUF) | 20.2 GiB |
+| [`gsrunion/Qwen3.6-35B-A3B-ROCmFP4-STRIX_LEAN-GGUF`](https://huggingface.co/gsrunion/Qwen3.6-35B-A3B-ROCmFP4-STRIX_LEAN-GGUF) | 18.6 GiB |
+| [`raulvidis/Qwen3.6-35B-A3B-ROCmFP4_FAST-GGUF`](https://huggingface.co/raulvidis/Qwen3.6-35B-A3B-ROCmFP4_FAST-GGUF) | 17.7 GiB |
+| [`plunderstruck/Qwen3.6-40B-Deckard-MTP-ROCmFP4-GGUF`](https://huggingface.co/plunderstruck/Qwen3.6-40B-Deckard-MTP-ROCmFP4-GGUF) | 22.4 GiB |
+| [`philtheriver/Qwopus3.6-27B-Coder-MTP-ROCmFPX`](https://huggingface.co/philtheriver/Qwopus3.6-27B-Coder-MTP-ROCmFPX) | 156.5 GiB |
+| [`jcbtc/qwopus3.6-27b-v2-chadrock-rocmfp4-mtp`](https://huggingface.co/jcbtc/qwopus3.6-27b-v2-chadrock-rocmfp4-mtp) | 13.8 GiB |
+| [`philtheriver/Qwopus3.6-27B-v2-MTP-ROCmFPX`](https://huggingface.co/philtheriver/Qwopus3.6-27B-v2-MTP-ROCmFPX) | 156.5 GiB |
+| [`lmcoleman/Tess-4-27B-ROCmFPX-GGUF`](https://huggingface.co/lmcoleman/Tess-4-27B-ROCmFPX-GGUF) | 160.9 GiB |
+| [`lmcoleman/ThinkingCap-Qwen3.6-27B-ROCmFPX-GGUF`](https://huggingface.co/lmcoleman/ThinkingCap-Qwen3.6-27B-ROCmFPX-GGUF) | 36.2 GiB |
+
+To add yours, open a PR editing this table. Please keep it to actual ROCmFPX /
+ROCmFP4 builds and use the `rocmfp4` or `strix-halo` tag on the model so it is
+discoverable on the Hub.
+
 ## Contributors And Credit
 
 This work builds on `llama.cpp`; upstream authors and contributors retain credit
