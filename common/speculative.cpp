@@ -1603,11 +1603,31 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 pending_h_prev_pos[seq_id] = -1;
                 h_boundary = pending_h[seq_id].data();
             } else {
-                LOG_ERR("%s: missing MTP boundary for seq_id=%d pos=%d (current=%d/%d previous=%d/%d)\n",
+                // The sequence advanced through positions this impl never observed, so no
+                // boundary h was ever captured for pos_needed. This happens with mtmd/vision
+                // chunks: process_chunk() decodes the image directly on ctx_tgt and ctx_dft
+                // (see server-context.cpp, "maybe we simply need to call
+                // common_speculative_process() on the mtmd batches"), so process() is never
+                // called for those positions and pending_h stays at the last text token.
+                //
+                // Failing here aborts the server on the first image. Resync instead: use a
+                // neutral boundary for this step -- the resulting draft is verified by the
+                // target like any other and simply gets rejected, so output stays correct --
+                // and let the capture at the end of this call record a valid pending_h so
+                // speculation resumes normally on the next step. Costs one rejected draft
+                // per image, not a crash.
+                LOG_WRN("%s: MTP boundary missing for seq_id=%d pos=%d (current=%d/%d previous=%d/%d); "
+                        "resyncing after a non-token batch (e.g. vision chunk)\n",
                         __func__, (int) seq_id, (int) pos_needed,
                         (int) pending_h_pos[seq_id], (int) pending_h_valid[seq_id],
                         (int) pending_h_prev_pos[seq_id], (int) pending_h_prev_valid[seq_id]);
-                return false;
+                std::fill(pending_h[seq_id].begin(), pending_h[seq_id].end(), 0.0f);
+                std::fill(pending_h_prev[seq_id].begin(), pending_h_prev[seq_id].end(), 0.0f);
+                pending_h_valid[seq_id]      = 0;
+                pending_h_prev_valid[seq_id] = 0;
+                pending_h_pos[seq_id]        = -1;
+                pending_h_prev_pos[seq_id]   = -1;
+                h_boundary = pending_h[seq_id].data();
             }
 
             set_h(i_batch_beg[seq_id], h_boundary);
