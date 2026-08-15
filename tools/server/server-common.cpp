@@ -1177,6 +1177,11 @@ json oaicompat_chat_params_parse(
     {
         int reasoning_budget = json_value(body, "thinking_budget_tokens", -1);
         if (reasoning_budget == -1) {
+            // vLLM name, used by pi-ai (openai-completions streamFn): per-request
+            // reasoning budget under the alternative field name
+            reasoning_budget = json_value(body, "thinking_token_budget", -1);
+        }
+        if (reasoning_budget == -1) {
             reasoning_budget = opt.reasoning_budget;
         }
 
