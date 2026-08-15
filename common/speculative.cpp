@@ -1696,12 +1696,17 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 pending_h_prev_pos[seq_id] = -1;
             }
 
+            // keep the last rows in the rollback ring at their contiguous
+            // positions, so a bounded trailing rollback can find any of them
+            for (int32_t i = 0; i < n_rows; ++i) {
+                ring_push(seq_id, batch_in.pos[i_batch_beg[seq_id] + i], h_seq + (size_t) i * n_embd);
+            }
+
             if (last_n_drafted[seq_id] == 0) {
                 const float * h_last = h_seq + (size_t) (n_rows - 1) * n_embd;
                 std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
                 pending_h_valid[seq_id] = 1;
                 pending_h_pos[seq_id] = pos_last;
-                ring_push(seq_id, pos_last, pending_h[seq_id].data());
                 continue;
             }
 
@@ -1719,7 +1724,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
             pending_h_valid[seq_id] = 1;
             pending_h_pos[seq_id] = pos_last;
-            ring_push(seq_id, pos_last, pending_h[seq_id].data());
         }
 
         return true;
@@ -1919,7 +1923,12 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         }
         pending_h_valid[seq_id] = 1;
         pending_h_pos[seq_id] = verify_pos_first[seq_id] + i_h;
-        ring_push(seq_id, pending_h_pos[seq_id], pending_h[seq_id].data());
+
+        // all verification rows are valid boundary candidates at their
+        // contiguous positions: keep them in the rollback ring
+        for (int32_t i = 0; i < n_rows; ++i) {
+            ring_push(seq_id, verify_pos_first[seq_id] + i, verify_h[seq_id].data() + (size_t) i * n_embd);
+        }
 
         if (i_h == 0) {
             if (process_boundary_valid[seq_id]) {

@@ -2831,8 +2831,8 @@ private:
                                             n_past, slot.prompt.n_tokens(), slot.task->n_tokens(), p0_rm);
                                 } else {
                                     SLT_INF(slot,
-                                            "prompt cache cold fallback: reason=spec-boundary-mismatch lcp=%d cached_tokens=%d request_tokens=%d\n",
-                                            n_past, slot.prompt.n_tokens(), slot.task->n_tokens());
+                                            "prompt cache cold fallback: reason=spec-boundary-mismatch lcp=%d cached_tokens=%d request_tokens=%d p0=%d\n",
+                                            n_past, slot.prompt.n_tokens(), slot.task->n_tokens(), p0_rm);
                                     n_past = 0;
                                     common_speculative_set_state(spec.get(), slot.id, {});
                                 }
