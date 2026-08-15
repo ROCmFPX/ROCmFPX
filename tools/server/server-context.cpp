@@ -153,11 +153,11 @@ struct server_slot {
         return prompt_cache.save(prompt, ctx_tgt, ctx_dft, id, state_spec);
     }
 
-    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
+    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens, bool spec_trailing_rm) {
         const bool spec_state_required = common_speculative_state_required(spec);
         bool cache_hit = false;
         uint64_t disk_entry_id = 0;
-        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id, spec_state_required, &cache_hit, &disk_entry_id);
+        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id, spec_state_required, spec_trailing_rm, &cache_hit, &disk_entry_id);
         if (res && cache_hit) {
             if (spec_state_required && prompt.data.spec.empty()) {
                 SLT_WRN(*this, "%s", "failed to load required speculative state from prompt cache\n");
@@ -1344,7 +1344,16 @@ private:
 
                 ret->prompt_save(*prompt_cache);
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                // dense KV or bounded RS recurrent state on both contexts allows salvaging
+                // cache entries whose tail diverges from the new prompt (spec-boundary)
+                const bool spec_trailing_rm =
+                    (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
+                     ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS) &&
+                    (!ctx_dft ||
+                     ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
+                     ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS);
+
+                if (!ret->prompt_load(*prompt_cache, task.tokens, spec_trailing_rm)) {
                     ret->prompt_clear(false);
                     SRV_INF("prompt cache cold fallback: slot=%d reason=target-draft-restore-rejected target_and_draft_cleared=true\n",
                             ret->id);
@@ -2789,16 +2798,39 @@ private:
                             }
 
                             // MTP carries only the endpoint and immediately preceding target hidden
-                            // boundaries. Arbitrary partial-prefix rollback cannot be reconstructed
-                            // from target/draft KV state, so reprocess cold instead of pairing a token
-                            // with the wrong hidden row. Full-prefix extension and the exact-hit
-                            // one-token replay below remain supported.
+                            // boundaries, so the speculative state is only valid at an exact cache
+                            // boundary. When the new prompt shares a strictly shorter prefix
+                            // (lcp < cached_tokens, e.g. a client re-sending a normalized
+                            // conversation), try to salvage the cache with a bounded trailing
+                            // rollback of the target and draft memory (dense KV or bounded RS
+                            // recurrent state, same primitive used by the context-shift path):
+                            // drop everything past the common prefix, discard the stale
+                            // speculative state and reprocess only the remaining tokens.
+                            // Full-prefix extension and the exact-hit one-token replay below
+                            // remain supported. If either memory cannot roll back, keep the
+                            // previous behavior and reprocess cold.
                             if (common_speculative_state_required(spec.get()) &&
                                 n_past > 0 && n_past < slot.prompt.n_tokens()) {
-                                SLT_INF(slot,
-                                        "prompt cache cold fallback: reason=spec-boundary-mismatch lcp=%d cached_tokens=%d request_tokens=%d\n",
-                                        n_past, slot.prompt.n_tokens(), slot.task->n_tokens());
-                                n_past = 0;
+                                const llama_pos p0_rm = slot.prompt.tokens.pos_next(n_past);
+
+                                bool rolled_back = llama_memory_seq_rm(llama_get_memory(ctx_tgt), slot.id, p0_rm, -1);
+
+                                if (rolled_back && ctx_dft) {
+                                    rolled_back = llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), slot.id, p0_rm, -1);
+                                }
+
+                                if (rolled_back) {
+                                    SLT_INF(slot,
+                                            "prompt cache trailing rollback: lcp=%d cached_tokens=%d request_tokens=%d p0=%d\n",
+                                            n_past, slot.prompt.n_tokens(), slot.task->n_tokens(), p0_rm);
+                                } else {
+                                    SLT_INF(slot,
+                                            "prompt cache cold fallback: reason=spec-boundary-mismatch lcp=%d cached_tokens=%d request_tokens=%d\n",
+                                            n_past, slot.prompt.n_tokens(), slot.task->n_tokens());
+                                    n_past = 0;
+                                }
+
+                                // the speculative state is tied to the exact cache boundary: discard it
                                 common_speculative_set_state(spec.get(), slot.id, {});
                             }
 
