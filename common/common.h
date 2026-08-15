@@ -1074,6 +1074,10 @@ struct common_prompt_checkpoint {
 
     std::vector<uint8_t> data_tgt;
     std::vector<uint8_t> data_dft;
+    // speculative-impl state (e.g. MTP boundary rows) coherent with the
+    // checkpoint position: captured right after the batch decoded so far,
+    // so the pending boundary sits at pos_max
+    std::vector<uint8_t> data_spec;
 
     llama_state_seq_storage * storage_tgt = nullptr;
     llama_state_seq_storage * storage_dft = nullptr;

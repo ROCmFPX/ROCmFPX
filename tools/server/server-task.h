@@ -712,7 +712,6 @@ struct server_prompt_cache {
               llama_context * ctx_drft,
                     int32_t   id_slot,
                        bool   spec_state_required,
-                       bool   spec_trailing_rm,
                        bool * cache_hit,
                    uint64_t * disk_entry_id);
 

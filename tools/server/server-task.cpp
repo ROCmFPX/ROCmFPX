@@ -2993,7 +2993,6 @@ bool server_prompt_cache::load(
               llama_context * ctx_dft,
                     int32_t   id_slot,
                        bool   spec_state_required,
-                       bool   spec_trailing_rm,
                        bool * cache_hit,
                    uint64_t * disk_entry_id) {
     if (cache_hit != nullptr) {
@@ -3007,31 +3006,26 @@ bool server_prompt_cache::load(
 
     // With speculative decoding, an entry whose token sequence extends past the
     // common prefix (lcp < cached_tokens, e.g. a client re-sending a normalized
-    // conversation) can still be salvaged when the target and draft memories
-    // support removing the diverging tail: the slot code then performs a bounded
-    // trailing rollback and reprocesses only the new tokens.
-    const auto spec_boundary_valid = [&](size_t cached_tokens, int lcp) {
+    // conversation) can still be salvaged when a context checkpoint within the
+    // common prefix carries a speculative boundary row coherent with its
+    // position: the slot code then restores that checkpoint and reprocesses
+    // only the tokens after it.
+    const auto spec_boundary_valid = [&](const std::list<common_prompt_checkpoint> & checkpoints, size_t cached_tokens, int lcp) {
         if (!spec_state_required || lcp == (int) cached_tokens) {
             return true;
         }
-        if (!spec_trailing_rm || lcp < 0 || cached_tokens <= (size_t) lcp) {
+        if (lcp < 0 || cached_tokens <= (size_t) lcp) {
             return false;
         }
-        const size_t delta = cached_tokens - (size_t) lcp;
-        // dense KV (n_rs_seq == 0) supports removing any tail; bounded RS state only up to the snapshot bound
-        uint32_t n_rs_min = UINT32_MAX;
-        if (const uint32_t n_rs = llama_n_rs_seq(ctx_tgt); n_rs > 0) {
-            n_rs_min = std::min(n_rs_min, n_rs);
-        }
-        if (ctx_dft) {
-            if (const uint32_t n_rs = llama_n_rs_seq(ctx_dft); n_rs > 0) {
-                n_rs_min = std::min(n_rs_min, n_rs);
+        for (const auto & cur : checkpoints) {
+            if (cur.n_tokens <= (int64_t) lcp && !cur.data_spec.empty()) {
+                return true;
             }
         }
-        return n_rs_min == UINT32_MAX || delta <= (size_t) n_rs_min;
+        return false;
     };
 
-    const bool base_boundary_valid = spec_boundary_valid(prompt.tokens.size(), lcp_best);
+    const bool base_boundary_valid = spec_boundary_valid(prompt.checkpoints, prompt.tokens.size(), lcp_best);
     float f_keep_best = base_boundary_valid && prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
     float sim_best    = base_boundary_valid ? float(lcp_best) / std::max<size_t>(1, tokens_new.size()) : -1.0f;
 
@@ -3053,7 +3047,7 @@ bool server_prompt_cache::load(
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int lcp_cur = it->tokens.get_common_prefix(tokens_new);
 
-        if (!spec_boundary_valid(it->tokens.size(), lcp_cur)) {
+        if (!spec_boundary_valid(it->checkpoints, it->tokens.size(), lcp_cur)) {
             SRV_INF("prompt cache skip: reason=spec-boundary-mismatch source=ram lcp=%d cached_tokens=%zu request_tokens=%zu spec_bytes=%zu\n",
                     lcp_cur, it->tokens.size(), tokens_new.size(), it->data.spec.size());
             continue;
@@ -3093,7 +3087,10 @@ bool server_prompt_cache::load(
 
         const int lcp_cur = it->tokens.get_common_prefix(tokens_new);
 
-        if (!spec_boundary_valid(it->tokens.size(), lcp_cur)) {
+        // disk states restore without live checkpoints, so the exact-prefix
+        // rule still applies there
+        if (spec_state_required &&
+            lcp_cur != (int) it->tokens.size()) {
             SRV_INF("prompt cache skip: reason=spec-boundary-mismatch source=disk entry=%" PRIu64 " lcp=%d cached_tokens=%zu request_tokens=%zu spec_bytes=%zu\n",
                     it->id, lcp_cur, it->tokens.size(), tokens_new.size(), it->spec.size());
             continue;
