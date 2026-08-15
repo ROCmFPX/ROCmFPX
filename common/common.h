@@ -1075,6 +1075,10 @@ struct common_prompt_checkpoint {
     std::vector<uint8_t> data_tgt;
     std::vector<uint8_t> data_dft;
 
+    // speculative-impl state at the checkpoint position (e.g. MTP boundary rows),
+    // so a checkpoint restore can also rewind the draft bookkeeping
+    std::vector<uint8_t> data_spec;
+
     llama_state_seq_storage * storage_tgt = nullptr;
     llama_state_seq_storage * storage_dft = nullptr;
 
