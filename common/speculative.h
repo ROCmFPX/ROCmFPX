@@ -73,6 +73,12 @@ bool common_speculative_get_state(common_speculative * spec, llama_seq_id seq_id
 bool common_speculative_set_state(common_speculative * spec, llama_seq_id seq_id, const std::vector<uint8_t> & data);
 bool common_speculative_state_required(const common_speculative * spec);
 
+// (optional) rewind the internal state to a previously seen position, so that
+// processing can resume from there after the target/draft memories rolled back
+// (bounded prompt-cache boundary salvage). Returns false when the position is
+// not recoverable.
+bool common_speculative_rollback_state(common_speculative * spec, llama_seq_id seq_id, llama_pos pos);
+
 // rebase per-sequence positions after the corresponding target/draft contexts shift
 void common_speculative_shift_state(common_speculative * spec, llama_seq_id seq_id, llama_pos delta);
 

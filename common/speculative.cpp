@@ -183,6 +183,10 @@ struct common_speculative_impl {
     virtual bool state_required() const { return false; }
     virtual void shift_state(llama_seq_id /*seq_id*/, llama_pos /*delta*/) {}
 
+    // (optional) rewind the per-seq state to a previously seen position after a
+    // bounded memory rollback; see common_speculative_rollback_state
+    virtual bool rollback_state(llama_seq_id /*seq_id*/, llama_pos /*pos*/) { return false; }
+
     // true if this implementation requires the target context to extract post-norm embeddings
     virtual bool need_embd() const = 0;
 
@@ -1371,6 +1375,16 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
     std::vector<int>                i_last;
     std::vector<std::vector<float>> chain_h;
 
+    // Ring of the most recent boundary h-rows per seq, so that a bounded
+    // memory rollback (prompt-cache boundary salvage, see the server) can
+    // rewind pending_h to any of the last RING_N positions without a full
+    // cold reprocessing.
+    static constexpr uint32_t RING_N = 8;
+    std::vector<std::vector<float>> ring_h;      // [n_seq][RING_N * n_embd]
+    std::vector<std::vector<llama_pos>> ring_pos; // [n_seq][RING_N]
+    std::vector<uint32_t> ring_len;              // [n_seq]
+    std::vector<uint32_t> ring_head;             // [n_seq] next write slot
+
     common_speculative_state_draft_mtp(const common_params_speculative & params, uint32_t n_seq)
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
         , params(params.draft)
@@ -1455,6 +1469,11 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         pending_h_prev_valid.assign(n_seq, 0);
         pending_h_pos.assign(n_seq, -1);
         pending_h_prev_pos.assign(n_seq, -1);
+
+        ring_h.assign(n_seq, std::vector<float>((size_t) RING_N * n_embd, 0.0f));
+        ring_pos.assign(n_seq, std::vector<llama_pos>(RING_N, -1));
+        ring_len.assign(n_seq, 0);
+        ring_head.assign(n_seq, 0);
 
         process_boundary_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
         process_boundary_valid.assign(n_seq, 0);
@@ -1682,6 +1701,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
                 pending_h_valid[seq_id] = 1;
                 pending_h_pos[seq_id] = pos_last;
+                ring_push(seq_id, pos_last, pending_h[seq_id].data());
                 continue;
             }
 
@@ -1699,6 +1719,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             std::memcpy(pending_h[seq_id].data(), h_last, row_bytes);
             pending_h_valid[seq_id] = 1;
             pending_h_pos[seq_id] = pos_last;
+            ring_push(seq_id, pos_last, pending_h[seq_id].data());
         }
 
         return true;
@@ -1898,6 +1919,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         }
         pending_h_valid[seq_id] = 1;
         pending_h_pos[seq_id] = verify_pos_first[seq_id] + i_h;
+        ring_push(seq_id, pending_h_pos[seq_id], pending_h[seq_id].data());
 
         if (i_h == 0) {
             if (process_boundary_valid[seq_id]) {
@@ -1918,10 +1940,80 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
     }
 
     static constexpr uint32_t MTP_STATE_MAGIC       = 0x3250544d; // "MTP2" in little-endian byte order
-    static constexpr uint16_t MTP_STATE_VERSION     = 2;
+    static constexpr uint16_t MTP_STATE_VERSION     = 3;
     static constexpr uint16_t MTP_STATE_CURRENT     = 1u << 0;
     static constexpr uint16_t MTP_STATE_PREVIOUS    = 1u << 1;
     static constexpr size_t   MTP_STATE_HEADER      = sizeof(uint32_t) + 2*sizeof(uint16_t) + sizeof(uint32_t) + 2*sizeof(llama_pos);
+
+    void ring_push(llama_seq_id seq_id, llama_pos pos, const float * row) {
+        const size_t row_bytes = (size_t) n_embd * sizeof(float);
+
+        std::memcpy(ring_h[seq_id].data() + (size_t) ring_head[seq_id] * n_embd, row, row_bytes);
+        ring_pos[seq_id][ring_head[seq_id]] = pos;
+        ring_head[seq_id] = (ring_head[seq_id] + 1) % RING_N;
+        ring_len[seq_id] = std::min(ring_len[seq_id] + 1, RING_N);
+    }
+
+    const float * ring_get(llama_seq_id seq_id, llama_pos pos) const {
+        for (uint32_t i = 0; i < ring_len[seq_id]; ++i) {
+            const uint32_t idx = (ring_head[seq_id] + RING_N - 1 - i) % RING_N;
+            if (ring_pos[seq_id][idx] == pos) {
+                return ring_h[seq_id].data() + (size_t) idx * n_embd;
+            }
+        }
+        return nullptr;
+    }
+
+    bool rollback_state(llama_seq_id seq_id, llama_pos pos) override {
+        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq || pos < 0) {
+            return false;
+        }
+
+        const float * row = ring_get(seq_id, pos);
+        if (row == nullptr) {
+            return false;
+        }
+
+        const size_t row_bytes = (size_t) n_embd * sizeof(float);
+
+        std::memcpy(pending_h[seq_id].data(), row, row_bytes);
+        pending_h_valid[seq_id] = 1;
+        pending_h_pos[seq_id] = pos;
+
+        if (pos >= 1) {
+            if (const float * prev = ring_get(seq_id, pos - 1)) {
+                std::memcpy(pending_h_prev[seq_id].data(), prev, row_bytes);
+                pending_h_prev_valid[seq_id] = 1;
+                pending_h_prev_pos[seq_id] = pos - 1;
+            } else {
+                std::fill(pending_h_prev[seq_id].begin(), pending_h_prev[seq_id].end(), 0.0f);
+                pending_h_prev_valid[seq_id] = 0;
+                pending_h_prev_pos[seq_id] = -1;
+            }
+        } else {
+            std::fill(pending_h_prev[seq_id].begin(), pending_h_prev[seq_id].end(), 0.0f);
+            pending_h_prev_valid[seq_id] = 0;
+            pending_h_prev_pos[seq_id] = -1;
+        }
+
+        // generation-time bookkeeping refers to positions beyond the rollback point
+        process_boundary_valid[seq_id] = 0;
+        process_boundary_pos[seq_id] = -1;
+        verify_h[seq_id].clear();
+        verify_h_rows[seq_id] = 0;
+        verify_pos_first[seq_id] = -1;
+        last_n_drafted[seq_id] = 0;
+
+        // drop ring entries beyond the rollback point: their rows belong to
+        // tokens that are about to be reprocessed with new content
+        for (uint32_t i = 0; i < RING_N; ++i) {
+            if (ring_pos[seq_id][i] > pos) {
+                ring_pos[seq_id][i] = -1;
+            }
+        }
+
+        return true;
+    }
 
     void reset_seq_state(llama_seq_id seq_id) {
         if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
@@ -1940,6 +2032,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         verify_h[seq_id].clear();
         verify_h_rows[seq_id] = 0;
         verify_pos_first[seq_id] = -1;
+
+        std::fill(ring_pos[seq_id].begin(), ring_pos[seq_id].end(), -1);
+        ring_len[seq_id] = 0;
+        ring_head[seq_id] = 0;
         last_n_drafted[seq_id] = 0;
         drafting[seq_id] = 0;
         i_last[seq_id] = -1;
@@ -1958,7 +2054,19 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             (pending_h_prev_valid[seq_id] ? MTP_STATE_PREVIOUS : 0);
         const uint32_t width = (uint32_t) n_embd;
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
-        data.resize(MTP_STATE_HEADER + 2*row_bytes);
+
+        // ring entries, oldest first
+        std::vector<std::pair<llama_pos, const float *>> ring_entries;
+        for (uint32_t i = 0; i < ring_len[seq_id]; ++i) {
+            const uint32_t idx = (ring_head[seq_id] + RING_N - (ring_len[seq_id] - i)) % RING_N;
+            if (ring_pos[seq_id][idx] >= 0) {
+                ring_entries.emplace_back(ring_pos[seq_id][idx], ring_h[seq_id].data() + (size_t) idx * n_embd);
+            }
+        }
+
+        const uint32_t ring_count = (uint32_t) ring_entries.size();
+
+        data.resize(MTP_STATE_HEADER + 2*row_bytes + sizeof(uint32_t) + (size_t) ring_count * (sizeof(llama_pos) + row_bytes));
 
         size_t off = 0;
         std::memcpy(data.data() + off, &MTP_STATE_MAGIC,   sizeof(MTP_STATE_MAGIC));   off += sizeof(MTP_STATE_MAGIC);
@@ -1968,7 +2076,13 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         std::memcpy(data.data() + off, &pending_h_pos[seq_id],      sizeof(llama_pos)); off += sizeof(llama_pos);
         std::memcpy(data.data() + off, &pending_h_prev_pos[seq_id], sizeof(llama_pos)); off += sizeof(llama_pos);
         std::memcpy(data.data() + off, pending_h[seq_id].data(), row_bytes); off += row_bytes;
-        std::memcpy(data.data() + off, pending_h_prev[seq_id].data(), row_bytes);
+        std::memcpy(data.data() + off, pending_h_prev[seq_id].data(), row_bytes); off += row_bytes;
+
+        std::memcpy(data.data() + off, &ring_count, sizeof(ring_count)); off += sizeof(ring_count);
+        for (const auto & entry : ring_entries) {
+            std::memcpy(data.data() + off, &entry.first, sizeof(llama_pos)); off += sizeof(llama_pos);
+            std::memcpy(data.data() + off, entry.second, row_bytes); off += row_bytes;
+        }
         return true;
     }
 
@@ -2001,16 +2115,37 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             (flags & MTP_STATE_CURRENT) == 0 || (flags & ~(MTP_STATE_CURRENT | MTP_STATE_PREVIOUS)) != 0 ||
             width != (uint32_t) n_embd || pos_current < 0 ||
             ((flags & MTP_STATE_PREVIOUS) != 0 && pos_previous < 0) ||
-            data.size() != MTP_STATE_HEADER + 2*row_bytes) {
+            data.size() < MTP_STATE_HEADER + 2*row_bytes + sizeof(uint32_t)) {
             return false;
         }
 
         std::memcpy(pending_h[seq_id].data(), data.data() + off, row_bytes); off += row_bytes;
-        std::memcpy(pending_h_prev[seq_id].data(), data.data() + off, row_bytes);
+        std::memcpy(pending_h_prev[seq_id].data(), data.data() + off, row_bytes); off += row_bytes;
         pending_h_valid[seq_id] = 1;
         pending_h_prev_valid[seq_id] = (flags & MTP_STATE_PREVIOUS) != 0;
         pending_h_pos[seq_id] = pos_current;
         pending_h_prev_pos[seq_id] = pending_h_prev_valid[seq_id] ? pos_previous : -1;
+
+        // v3: trailing ring of recent boundary rows, oldest first
+        uint32_t ring_count = 0;
+        std::memcpy(&ring_count, data.data() + off, sizeof(ring_count)); off += sizeof(ring_count);
+
+        if (ring_count > RING_N ||
+            data.size() != off + (size_t) ring_count * (sizeof(llama_pos) + row_bytes)) {
+            return false;
+        }
+
+        ring_len[seq_id] = 0;
+        ring_head[seq_id] = 0;
+        for (uint32_t i = 0; i < ring_count; ++i) {
+            llama_pos pos = -1;
+            std::memcpy(&pos, data.data() + off, sizeof(pos)); off += sizeof(pos);
+            std::memcpy(ring_h[seq_id].data() + (size_t) i * n_embd, data.data() + off, row_bytes); off += row_bytes;
+
+            ring_pos[seq_id][i] = pos;
+            ring_len[seq_id] = i + 1;
+        }
+        ring_head[seq_id] = ring_count % RING_N;
         return true;
     }
 
@@ -2034,6 +2169,11 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         }
         if (verify_h_rows[seq_id] > 0 && verify_pos_first[seq_id] >= 0) {
             verify_pos_first[seq_id] += delta;
+        }
+        for (auto & p : ring_pos[seq_id]) {
+            if (p >= 0) {
+                p += delta;
+            }
         }
     }
 
@@ -2954,6 +3094,21 @@ bool common_speculative_state_required(const common_speculative * spec) {
     }
 
     return false;
+}
+
+bool common_speculative_rollback_state(common_speculative * spec, llama_seq_id seq_id, llama_pos pos) {
+    if (spec == nullptr) {
+        return false;
+    }
+
+    bool ok = true;
+
+    for (auto & impl : spec->impls) {
+        const bool rolled = impl->rollback_state(seq_id, pos);
+        ok = ok && (!impl->state_required() || rolled);
+    }
+
+    return ok;
 }
 
 void common_speculative_shift_state(common_speculative * spec, llama_seq_id seq_id, llama_pos delta) {
