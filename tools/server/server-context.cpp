@@ -2517,18 +2517,7 @@ private:
                         common_speculative_get_draft_params(spec.get(), slot.id) = {
                             /* .drafting = */ true,
                             /* .n_max    = */ std::min(n_draft_max, sd.n_max),
-                            // NOTE: every consumer of this field treats it as a *position*
-                            // (batch positions, llama_memory_seq_rm bounds, and the MTP
-                            // boundary compare `pos_needed = n_past - 1`), not as a KV token
-                            // count. Those are the same number for text-only prompts, but
-                            // diverge under M-RoPE: an image chunk occupies n_tokens KV slots
-                            // while advancing position by only n_pos. Feeding the token count
-                            // here left the MTP boundary permanently offset by
-                            // (n_tokens - n_pos) after any image, so draft() disabled itself
-                            // for the rest of the sequence. pos_next() returns the same value
-                            // as n_tokens() when there is no media, so this is a no-op for
-                            // text-only models.
-                            /* .n_past   = */ slot.prompt.tokens.pos_next(),
+                            /* .n_past   = */ slot.prompt.n_tokens(),
                             /* .id_last  = */ slot.sampled,
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
