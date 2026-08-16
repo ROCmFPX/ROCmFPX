@@ -1217,6 +1217,15 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
 
         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: return GGML_TYPE_MXFP4;
 
+        // Targeting NVFP4 on a checkpoint that is already partly NVFP4 (the
+        // ModelOpt W4A16_NVFP4 recipe quantizes MLPs + lm_head but leaves
+        // attention/GDN as FP8, which convert_hf_to_gguf.py materialises as
+        // BF16) leaves the existing NVFP4 tensors untouched -- the
+        // `cur_type != new_type` check below skips them, so they stay
+        // bit-exact -- and converts only the BF16 remainder. That turns a
+        // mixed 4-bit/BF16 export into a uniformly 4-bit model.
+        case LLAMA_FTYPE_MOSTLY_NVFP4: return GGML_TYPE_NVFP4;
+
         // K-quants
         case LLAMA_FTYPE_MOSTLY_Q2_K_S:
         case LLAMA_FTYPE_MOSTLY_Q2_K:    return GGML_TYPE_Q2_K;
