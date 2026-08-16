@@ -684,6 +684,9 @@ static ggml_tensor * dspark_apply_rope_tail(
         int             rope_type,
         float           freq_base,
         bool            inverse) {
+    GGML_UNUSED(n_head);
+    GGML_UNUSED(n_tokens);
+
     if (n_rot == n_embd_head) {
         return inverse
             ? ggml_rope_ext_back(ctx, x, inp_pos, nullptr, n_rot, rope_type, 0,
