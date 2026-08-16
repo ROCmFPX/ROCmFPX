@@ -1769,7 +1769,13 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
             last_n_drafted[seq_id] = 0;
 
-            const llama_pos pos_needed = dp.n_past - 1;
+            // Draft positions must be in the target's RoPE space. They coincide
+            // with n_past for text-only prompts; after an image chunk they do not,
+            // and using n_past left pos_needed permanently offset so drafting was
+            // disabled for the rest of the sequence.
+            const llama_pos p_next = dp.pos_next >= 0 ? dp.pos_next : dp.n_past;
+
+            const llama_pos pos_needed = p_next - 1;
             if (!pending_h_valid[seq_id] || pending_h_pos[seq_id] != pos_needed) {
                 LOG_WRN("%s: disabling MTP draft for seq_id=%d: boundary pos=%d/%d, needed=%d\n",
                         __func__, (int) seq_id, (int) pending_h_pos[seq_id],
@@ -1782,7 +1788,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             drafting[seq_id] = 1;
             common_sampler_reset(smpls[seq_id].get());
 
-            common_speculative_batch_add_one_seq(batch, dp.id_last, dp.n_past, seq_id, true);
+            common_speculative_batch_add_one_seq(batch, dp.id_last, p_next, seq_id, true);
             std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, pending_h[seq_id].data(), row_bytes);
 
             i_last[seq_id] = batch.n_tokens - 1;
@@ -1810,7 +1816,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 auto * mem_dft = llama_get_memory(ctx_dft);
                 for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
                     if (drafting[seq_id]) {
-                        llama_memory_seq_rm(mem_dft, seq_id, dparams[seq_id].n_past, -1);
+                        llama_memory_seq_rm(mem_dft, seq_id, dparams[seq_id].pos_next >= 0 ? dparams[seq_id].pos_next : dparams[seq_id].n_past, -1);
                     }
                 }
                 llama_set_nextn_layer_offset(ctx_dft, i);
@@ -1881,17 +1887,17 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                     const int n_rows = (int) result.size() + 1; // id_last + tokens drafted so far
                     for (int t = 0; t < n_rows; ++t) {
                         const llama_token tok = (t == 0) ? dp.id_last : result[t - 1];
-                        common_speculative_batch_add_one_seq(batch, tok, dp.n_past + t, seq_id, t == n_rows - 1);
+                        common_speculative_batch_add_one_seq(batch, tok, (dp.pos_next >= 0 ? dp.pos_next : dp.n_past) + t, seq_id, t == n_rows - 1);
                         std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd,
                                     chain_h[seq_id].data() + (size_t) t * n_embd, row_bytes);
                     }
                 } else if (is_mem_shared) {
                     // note: with shared memory (e.g. Gemma4 assistants) we use the same position for all draft tokens
                     // ref: https://github.com/huggingface/transformers/blob/effde20942e3f82a1b97449f60b3a48c5ff96145/docs/source/en/model_doc/gemma4_assistant.md?plain=1#L36-L37
-                    common_speculative_batch_add_one_seq(batch, id, dp.n_past, seq_id, true);
+                    common_speculative_batch_add_one_seq(batch, id, dp.pos_next >= 0 ? dp.pos_next : dp.n_past, seq_id, true);
                     std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, h_row, row_bytes);
                 } else {
-                    common_speculative_batch_add_one_seq(batch, id, dp.n_past + i + 1, seq_id, true);
+                    common_speculative_batch_add_one_seq(batch, id, (dp.pos_next >= 0 ? dp.pos_next : dp.n_past) + i + 1, seq_id, true);
                     std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, h_row, row_bytes);
                 }
 
