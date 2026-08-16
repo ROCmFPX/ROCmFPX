@@ -505,7 +505,11 @@ task_params server_task::params_from_json_cmpl(
         }
         if (!end_tag.empty()) {
             params.sampling.reasoning_budget_end = common_tokenize(vocab, end_tag, false, true);
-            params.sampling.reasoning_budget_forced = common_tokenize(vocab, message + end_tag, false, true);
+            // il template re-renderizza un turno assistant passato come
+            // '<think>\n' + reasoning_content + '\n</think>\n\n': il '\n' prima dell'end tag
+            // deve far parte della sequenza forzata, altrimenti un turno tagliato dal budget
+            // non round-trippa nel resend del client e la prompt cache diverge alla chiusura
+            params.sampling.reasoning_budget_forced = common_tokenize(vocab, "\n" + message + end_tag, false, true);
 
             SRV_DBG("reasoning budget: tokens=%d, generation_prompt='%s', start=%zu toks, end=%zu toks, forced=%zu toks\n",
                 budget, params.sampling.generation_prompt.c_str(),
@@ -2993,6 +2997,7 @@ bool server_prompt_cache::load(
               llama_context * ctx_dft,
                     int32_t   id_slot,
                        bool   spec_state_required,
+                       bool   spec_trailing_rm,
                        bool * cache_hit,
                    uint64_t * disk_entry_id) {
     if (cache_hit != nullptr) {
@@ -3004,8 +3009,33 @@ bool server_prompt_cache::load(
 
     const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
 
-    const bool base_boundary_valid = !spec_state_required ||
-        lcp_best == (int) prompt.tokens.size();
+    // With speculative decoding, an entry whose token sequence extends past the
+    // common prefix (lcp < cached_tokens, e.g. a client re-sending a normalized
+    // conversation) can still be salvaged when the target and draft memories
+    // support removing the diverging tail: the slot code then performs a bounded
+    // trailing rollback and reprocesses only the new tokens.
+    const auto spec_boundary_valid = [&](size_t cached_tokens, int lcp) {
+        if (!spec_state_required || lcp == (int) cached_tokens) {
+            return true;
+        }
+        if (!spec_trailing_rm || lcp < 0 || cached_tokens <= (size_t) lcp) {
+            return false;
+        }
+        const size_t delta = cached_tokens - (size_t) lcp;
+        // dense KV (n_rs_seq == 0) supports removing any tail; bounded RS state only up to the snapshot bound
+        uint32_t n_rs_min = UINT32_MAX;
+        if (const uint32_t n_rs = llama_n_rs_seq(ctx_tgt); n_rs > 0) {
+            n_rs_min = std::min(n_rs_min, n_rs);
+        }
+        if (ctx_dft) {
+            if (const uint32_t n_rs = llama_n_rs_seq(ctx_dft); n_rs > 0) {
+                n_rs_min = std::min(n_rs_min, n_rs);
+            }
+        }
+        return n_rs_min == UINT32_MAX || delta <= (size_t) n_rs_min;
+    };
+
+    const bool base_boundary_valid = spec_boundary_valid(prompt.tokens.size(), lcp_best);
     float f_keep_best = base_boundary_valid && prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
     float sim_best    = base_boundary_valid ? float(lcp_best) / std::max<size_t>(1, tokens_new.size()) : -1.0f;
 
@@ -3027,8 +3057,7 @@ bool server_prompt_cache::load(
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int lcp_cur = it->tokens.get_common_prefix(tokens_new);
 
-        if (spec_state_required &&
-            lcp_cur != (int) it->tokens.size()) {
+        if (!spec_boundary_valid(it->tokens.size(), lcp_cur)) {
             SRV_INF("prompt cache skip: reason=spec-boundary-mismatch source=ram lcp=%d cached_tokens=%zu request_tokens=%zu spec_bytes=%zu\n",
                     lcp_cur, it->tokens.size(), tokens_new.size(), it->data.spec.size());
             continue;
@@ -3068,8 +3097,7 @@ bool server_prompt_cache::load(
 
         const int lcp_cur = it->tokens.get_common_prefix(tokens_new);
 
-        if (spec_state_required &&
-            lcp_cur != (int) it->tokens.size()) {
+        if (!spec_boundary_valid(it->tokens.size(), lcp_cur)) {
             SRV_INF("prompt cache skip: reason=spec-boundary-mismatch source=disk entry=%" PRIu64 " lcp=%d cached_tokens=%zu request_tokens=%zu spec_bytes=%zu\n",
                     it->id, lcp_cur, it->tokens.size(), tokens_new.size(), it->spec.size());
             continue;
