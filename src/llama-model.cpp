@@ -1427,10 +1427,22 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         // checkpoints quantize lm_head too (it is one of the 193 W4A16_NVFP4
         // tensors in the qwen3_5 family recipe), so those two tensors were left
         // over and load failed with "wrong number of tensors; expected N, got N-2".
-        if (!output_s && output) {
+        //
+        // Only ask for them when lm_head is itself a scale-carrying quant. The
+        // request must not be unconditional: callers that synthesize a model
+        // rather than read a file (llama_model_init_from_user, as used by
+        // test-llama-archs) materialize every tensor that is asked for, so an
+        // unconditional request invents a random lm_head scale for models that
+        // have none. That is not harmless - it multiplies the final logits by
+        // a small random scalar, which costs enough relative precision on the
+        // Vulkan and Meta backends to fail the NMSE check on gemma2/gemma3n.
+        // Add further types here if other quants grow lm_head scales.
+        const bool output_has_scales = output && output->type == GGML_TYPE_NVFP4;
+
+        if (!output_s && output_has_scales) {
             output_s = create_tensor(tn(LLM_TENSOR_OUTPUT, "scale"), {1}, TENSOR_NOT_REQUIRED);
         }
-        if (!output_in_s && output) {
+        if (!output_in_s && output_has_scales) {
             output_in_s = create_tensor(tn(LLM_TENSOR_OUTPUT, "input_scale"), {1}, TENSOR_NOT_REQUIRED);
         }
     }
