@@ -2534,6 +2534,10 @@ private:
                             /* .drafting = */ true,
                             /* .n_max    = */ std::min(n_draft_max, sd.n_max),
                             /* .n_past   = */ slot.prompt.n_tokens(),
+                            // M-RoPE-aware position for the draft-mtp boundary and
+                            // draft batch positions. Same value as n_tokens() when the
+                            // prompt has no media, so this is inert for text-only.
+                            /* .pos_next = */ slot.prompt.tokens.pos_next(),
                             /* .id_last  = */ slot.sampled,
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
