@@ -183,6 +183,7 @@ int main(int argc, char ** argv) {
                 /* .drafting   = */ true,
                 /* .n_max      = */ -1,
                 /* .n_past     = */ n_past,
+                /* .pos_next   = */ n_past, // no M-RoPE media here: position == token count
                 /* .id_last    = */ id_last,
                 /* .prompt     = */ &prompt_tgt,
                 /* .result     = */ &draft, // output
