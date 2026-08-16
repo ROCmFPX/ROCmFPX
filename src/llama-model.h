@@ -569,6 +569,12 @@ struct llama_model {
     struct ggml_tensor * output_norm_b   = nullptr;
     struct ggml_tensor * output          = nullptr;
     struct ggml_tensor * output_b        = nullptr;
+    // NVFP4/FP8 side-tensors for the lm_head. ModelOpt exports a per-tensor
+    // scale2 for every quantized tensor including lm_head, but the generic
+    // scale pass in load_tensors() only walks per-layer tensors, so these were
+    // left unclaimed and tripped done_getting_tensors().
+    struct ggml_tensor * output_s        = nullptr;
+    struct ggml_tensor * output_in_s     = nullptr;
     struct ggml_tensor * output_hc_base  = nullptr;
     struct ggml_tensor * output_hc_fn    = nullptr;
     struct ggml_tensor * output_hc_scale = nullptr;

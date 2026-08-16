@@ -1421,6 +1421,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 layer.ssm_beta_in_s = create_tensor(tn(LLM_TENSOR_SSM_BETA, "input_scale", i), {1}, TENSOR_NOT_REQUIRED);
             }
         }
+
+        // lm_head scales. The loop above is per-layer, so the non-layer output
+        // tensor never got its ".scale"/".input_scale" claimed. ModelOpt NVFP4
+        // checkpoints quantize lm_head too (it is one of the 193 W4A16_NVFP4
+        // tensors in the qwen3_5 family recipe), so those two tensors were left
+        // over and load failed with "wrong number of tensors; expected N, got N-2".
+        if (!output_s && output) {
+            output_s = create_tensor(tn(LLM_TENSOR_OUTPUT, "scale"), {1}, TENSOR_NOT_REQUIRED);
+        }
+        if (!output_in_s && output) {
+            output_in_s = create_tensor(tn(LLM_TENSOR_OUTPUT, "input_scale"), {1}, TENSOR_NOT_REQUIRED);
+        }
     }
 
     ml.done_getting_tensors();
