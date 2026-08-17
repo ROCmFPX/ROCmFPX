@@ -156,6 +156,7 @@ class ModelBase:
         self.model_name = model_name
         self.dir_model_card = dir_model  # overridden in convert_lora_to_gguf.py
         self._is_nvfp4 = False
+        self._ct_nvfp4_modules: set[str] = set()
         self._is_mxfp4 = False
         self._fp8_as_q8 = fp8_as_q8
         self._fp8_dequantized: set[str] = set()
@@ -306,6 +307,127 @@ class ModelBase:
             scale_vals = np.array(scales, dtype=np.float32)
             logger.info(f"  + {scale_name} (per-expert scale, shape [{len(scales)}])")
             self.gguf_writer.add_tensor(scale_name, scale_vals)
+
+    # ---- compressed-tensors mixed-precision support ------------------------
+    # Suffixes stripped to recover the module name that a group's targets and
+    # ignore regexes are written against. Longest first, so ".weight_scale"
+    # cannot truncate ".weight_global_scale".
+    _CT_PARAM_SUFFIXES = (
+        ".weight_global_scale", ".input_global_scale", ".weight_zero_point",
+        ".weight_scale_2", ".weight_packed", ".weight_shape", ".weight_scale",
+        ".input_scale", ".weight", ".bias",
+    )
+
+    @classmethod
+    def _ct_module_name(cls, key: str) -> str:
+        for suffix in cls._CT_PARAM_SUFFIXES:
+            if key.endswith(suffix):
+                return key[: -len(suffix)]
+        return key
+
+    @staticmethod
+    def _ct_matches(patterns, module: str) -> bool:
+        for pat in patterns or []:
+            if not isinstance(pat, str):
+                continue
+            if pat.startswith("re:"):
+                if re.match(pat[3:], module):
+                    return True
+            elif pat == module or module.endswith("." + pat):
+                return True
+        return False
+
+    def _ct_group_for(self, module: str, groups: dict, global_ignore: list):
+        """Resolve a module to its config group, honouring the top-level ignore
+        list and each group's own ignore list. None means unquantized."""
+        if self._ct_matches(global_ignore, module):
+            return None
+        for group in groups.values():
+            if self._ct_matches(group.get("ignore"), module):
+                continue
+            if self._ct_matches(group.get("targets"), module):
+                return group
+        return None
+
+    def _ct_normalize_nvfp4(self) -> bool:
+        """Rewrite compressed-tensors nvfp4-pack-quantized tensors into the
+        ModelOpt naming that _generate_nvfp4_tensors() already understands, so
+        they are repacked into GGML_TYPE_NVFP4 natively rather than being
+        dequantized and requantized. The packed layout already matches what
+        _nvfp4_pack() expects: nibble-packed uint8 weights plus E4M3 per-group
+        scales at group_size 16.
+
+        The two producers disagree on the global-scale convention:
+        compressed-tensors stores weight_global_scale as the RECIPROCAL of
+        ModelOpt's weight_scale_2. Verified numerically against
+        unsloth/Qwen3.8-27B-NVFP4 - multiplying by it yields max|W| ~2.0e6,
+        dividing yields ~0.049, which matches the surrounding weights - so it is
+        inverted here. Getting this backwards still loads and still emits text,
+        it is just numerically wrong, which is why it was measured rather than
+        assumed.
+        """
+        quant_config = self.hparams.get("quantization_config")
+        if not isinstance(quant_config, dict):
+            return False
+        if quant_config.get("quant_method") != "compressed-tensors":
+            return False
+        groups = quant_config.get("config_groups") or {}
+        global_ignore = quant_config.get("ignore") or []
+        nvfp4_groups = {
+            k: g for k, g in groups.items()
+            if (g.get("format") or quant_config.get("format")) == "nvfp4-pack-quantized"
+        }
+        if not nvfp4_groups:
+            return False
+
+        modules = sorted({
+            self._ct_module_name(k)
+            for k in self.model_tensors if k.endswith(".weight_packed")
+        })
+        converted = 0
+        for module in modules:
+            group = self._ct_group_for(module, nvfp4_groups, global_ignore)
+            if group is None:
+                continue
+            group_size = (group.get("weights") or {}).get("group_size") or 16
+            packed = self.model_tensors.get(module + ".weight_packed")
+            scale = self.model_tensors.get(module + ".weight_scale")
+            gscale = self.model_tensors.get(module + ".weight_global_scale")
+            if packed is None or scale is None or gscale is None:
+                continue
+            iscale = self.model_tensors.get(module + ".input_global_scale")
+
+            def _checked_packed(w=packed, s=scale, gs=group_size, mod=module):
+                wt = LazyTorchTensor.to_eager(w())
+                st = LazyTorchTensor.to_eager(s())
+                if wt.shape[0] != st.shape[0] or wt.shape[1] * 2 != st.shape[1] * gs:
+                    raise ValueError(
+                        f"{mod}: nvfp4 shape mismatch - weight_packed {tuple(wt.shape)} "
+                        f"implies {wt.shape[1] * 2} columns, but weight_scale "
+                        f"{tuple(st.shape)} at group_size {gs} implies {st.shape[1] * gs}"
+                    )
+                return wt
+
+            def _reciprocal(t=gscale):
+                return torch.reciprocal(LazyTorchTensor.to_eager(t()).float())
+
+            self.model_tensors[module + ".weight"] = _checked_packed
+            self.model_tensors[module + ".weight_scale_2"] = _reciprocal
+            if iscale is not None:
+                self.model_tensors[module + ".input_scale"] = (
+                    lambda t=iscale: torch.reciprocal(LazyTorchTensor.to_eager(t()).float())
+                )
+            for suffix in (".weight_packed", ".weight_global_scale", ".input_global_scale"):
+                self.model_tensors.pop(module + suffix, None)
+            self._ct_nvfp4_modules.add(module)
+            converted += 1
+
+        if converted:
+            logger.info(
+                f"compressed-tensors: normalised {converted} nvfp4-pack-quantized "
+                f"tensors to native NVFP4 (global scale inverted to ModelOpt convention)"
+            )
+        return converted > 0
 
     def dequant_model(self):
         # If all quantized tensors were already handled (e.g. pure NVFP4), skip
@@ -482,53 +604,81 @@ class ModelBase:
             elif quant_method == "compressed-tensors":
                 quant_format = quant_config["format"]
                 groups = quant_config["config_groups"]
-                if len(groups) > 1:
-                    raise NotImplementedError("Can't handle multiple config groups for compressed-tensors yet")
-                weight_config = tuple(groups.values())[0]["weights"]
+                global_ignore = quant_config.get("ignore") or []
 
-                if quant_format == "float-quantized" or quant_format == "int-quantized" or quant_format == "naive-quantized":
-                    block_size = weight_config.get("block_structure", None)
-                    strategy = weight_config.get("strategy")
-                    assert strategy == "channel" or strategy == "block"
-                    assert weight_config.get("group_size") is None  # didn't find a model using this yet
-                    is_fp8 = (
-                        quant_format == "float-quantized"
-                        and weight_config.get("type") == "float"
-                        and weight_config.get("num_bits") == 8
-                    )
-                    for name in self.model_tensors.keys():
-                        if name.endswith(".weight_scale"):
-                            weight_name = name.removesuffix("_scale")
-                            w = self.model_tensors[weight_name]
-                            s = self.model_tensors[name]
-                            self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
-                            tensors_to_remove.append(name)
-                            if self._fp8_as_q8 and is_fp8:
-                                self._fp8_dequantized.add(weight_name)
-                elif quant_format == "pack-quantized":
+                # A checkpoint may mix formats (format: "mixed-precision"). Unsloth's
+                # NVFP4 releases pair an FP8 group (attention, lm_head, last MLP layers)
+                # with an nvfp4-pack-quantized group (the other MLPs), so the first group
+                # is not the global weight format - every tensor is resolved against each
+                # group's targets/ignore rules, plus the top-level ignore list. NVFP4
+                # groups were already consumed natively by _generate_nvfp4_tensors(), via
+                # _ct_normalize_nvfp4(), so only the remaining groups are handled here.
+                for name in list(self.model_tensors.keys()):
+                    if not name.endswith(".weight_scale"):
+                        continue
+                    module = self._ct_module_name(name)
+                    group = self._ct_group_for(module, groups, global_ignore)
+                    if group is None:
+                        continue
+                    fmt = group.get("format") or quant_format
+                    weight_config = group.get("weights") or {}
+
+                    if fmt in ("float-quantized", "int-quantized", "naive-quantized"):
+                        # FP8 fallback: dequantized to BF16/F16 for compatibility. This is
+                        # NOT native FP8 - there is no gguf tensor type for "E4M3 weight
+                        # plus external per-channel scale", and no W8A8 activation path.
+                        block_size = weight_config.get("block_structure", None)
+                        weight_name = name.removesuffix("_scale")
+                        w = self.model_tensors.get(weight_name)
+                        if w is None:
+                            continue
+                        s = self.model_tensors[name]
+                        is_fp8 = (
+                            fmt == "float-quantized"
+                            and weight_config.get("type") == "float"
+                            and weight_config.get("num_bits") == 8
+                        )
+                        self.model_tensors[weight_name] = (
+                            lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
+                        )
+                        tensors_to_remove.append(name)
+                        if self._fp8_as_q8 and is_fp8:
+                            self._fp8_dequantized.add(weight_name)
+                    elif fmt == "nvfp4-pack-quantized":
+                        continue
+                    else:
+                        raise NotImplementedError(f"Quant format {fmt!r} for method {quant_method!r} is not yet supported")
+
+                # int pack-quantized keeps its own layout (weight_packed + weight_shape)
+                for name in list(self.model_tensors.keys()):
+                    if not name.endswith(".weight_packed"):
+                        continue
+                    module = self._ct_module_name(name)
+                    group = self._ct_group_for(module, groups, global_ignore)
+                    if group is None:
+                        continue
+                    if (group.get("format") or quant_format) != "pack-quantized":
+                        continue
+                    weight_config = group.get("weights") or {}
                     assert weight_config.get("strategy") == "group"
                     assert weight_config.get("type", "int") == "int"
                     num_bits = weight_config.get("num_bits")
                     group_size = weight_config.get("group_size")
                     assert isinstance(num_bits, int)
                     assert isinstance(group_size, int)
-                    for name in self.model_tensors.keys():
-                        if name.endswith(".weight_packed"):
-                            base_name = name.removesuffix("_packed")
-                            w = self.model_tensors[name]
-                            scale = self.model_tensors[base_name + "_scale"]
-                            shape = self.model_tensors[base_name + "_shape"]
-                            zero_point = self.model_tensors.get(base_name + "_zero_point", lambda: None)
-                            new_tensors[base_name] = (
-                                lambda w=w, scale=scale, shape=shape, zero_point=zero_point: dequant_packed(
-                                    w(), scale(), shape(), zero_point(), num_bits, group_size,
-                                )
-                            )
-                            tensors_to_remove += [base_name + n for n in ("_packed", "_shape", "_scale")]
-                            if (base_name + "_zero_point") in self.model_tensors:
-                                tensors_to_remove.append(base_name + "_zero_point")
-                else:
-                    raise NotImplementedError(f"Quant format {quant_format!r} for method {quant_method!r} is not yet supported")
+                    base_name = name.removesuffix("_packed")
+                    w = self.model_tensors[name]
+                    scale = self.model_tensors[base_name + "_scale"]
+                    shape = self.model_tensors[base_name + "_shape"]
+                    zero_point = self.model_tensors.get(base_name + "_zero_point", lambda: None)
+                    new_tensors[base_name] = (
+                        lambda w=w, scale=scale, shape=shape, zero_point=zero_point: dequant_packed(
+                            w(), scale(), shape(), zero_point(), num_bits, group_size,
+                        )
+                    )
+                    tensors_to_remove += [base_name + n for n in ("_packed", "_shape", "_scale")]
+                    if (base_name + "_zero_point") in self.model_tensors:
+                        tensors_to_remove.append(base_name + "_zero_point")
             elif quant_method == "modelopt":
                 # Mixed-precision ModelOpt models: NVFP4 tensors are handled by
                 # _generate_nvfp4_tensors; FP8 tensors have 1D weight_scale and
@@ -697,8 +847,14 @@ class ModelBase:
             weight = LazyTorchTensor.to_eager(self.model_tensors[name]())
             scale = LazyTorchTensor.to_eager(self.model_tensors[scale_name]())
 
-            # Skip non-NVFP4 tensors (e.g. FP8 with per-channel 1D scales)
+            # Skip non-NVFP4 tensors (e.g. FP8 with per-channel 1D scales).
+            # ndim alone is not enough for compressed-tensors: its FP8 scales are
+            # 2D (out, 1), not 1D, so they would reach _nvfp4_pack and blow up on
+            # the reshape. When a compressed-tensors checkpoint told us exactly
+            # which modules are NVFP4, trust that set instead of guessing.
             if scale.ndim < 2:
+                continue
+            if self._ct_nvfp4_modules and self._ct_module_name(name) not in self._ct_nvfp4_modules:
                 continue
 
             scale2 = LazyTorchTensor.to_eager(self.model_tensors.get(scale2_name, lambda: torch.tensor(1.0))())
@@ -796,6 +952,12 @@ class ModelBase:
         if quant_algo != "NVFP4":
             if any(v.get("quant_algo") == "NVFP4" for v in quant_layers.values() if isinstance(v, dict)):
                 quant_algo = "NVFP4"
+
+        # compressed-tensors mixed-precision checkpoints declare no quant_algo,
+        # so normalise their nvfp4 group into ModelOpt naming first and let the
+        # native NVFP4 path below claim it instead of falling through to dequant.
+        if self._ct_normalize_nvfp4():
+            quant_algo = "NVFP4"
 
         self._is_nvfp4 = quant_algo == "NVFP4"
         self._is_mxfp4 = quant_method == "mxfp4"
