@@ -38,10 +38,27 @@ static double nmse(const std::vector<float> & a, const std::vector<float> & b) {
     return mse_a_b / mse_a_0;
 }
 
+// Scale tensors are semantically multipliers/divisors, so they must be centred
+// on 1 rather than 0. Drawing them from N(0, 1e-2) like ordinary weights puts
+// them arbitrarily close to zero, and MPT divides by one of them
+// (ffn.act.scales, see llama-graph.cpp: ggml_div(cur, act_scales)). A near-zero
+// draw turned that division into inf, which propagated to NaN logits and failed
+// the roundtrip check, because NaN != NaN is always true. That made the test
+// flaky in a seed-dependent way: ~1 seed in 12 for mpt.
+static bool is_scale_tensor(const char * name) {
+    const std::string n = name;
+    const auto ends_with = [&n](const char * suffix) {
+        const std::string s = suffix;
+        return n.size() >= s.size() && n.compare(n.size() - s.size(), s.size(), s) == 0;
+    };
+    return ends_with(".scale") || ends_with(".scales") || ends_with(".input_scale");
+}
+
 static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
     std::hash<std::string> hasher;
     std::mt19937 gen(hasher(tensor->name) + *(const size_t *) userdata);
-    std::normal_distribution<float> dis(0.0f, 1.0e-2f);
+    const float mean = is_scale_tensor(tensor->name) ? 1.0f : 0.0f;
+    std::normal_distribution<float> dis(mean, 1.0e-2f);
 
     const int64_t ne = ggml_nelements(tensor);
     if (tensor->type == GGML_TYPE_F32) {
