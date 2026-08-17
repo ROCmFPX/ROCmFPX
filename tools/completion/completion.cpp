@@ -33,12 +33,16 @@
 #endif
 
 static llama_context           ** g_ctx;
-static llama_model             ** g_model;
+// Assigned but never read: the interrupt handler above only consumes g_ctx and
+// g_smpl. Kept (rather than deleted) to stay in step with upstream, which reads
+// these in its own handler. Marked so the ROCm clang build, which enables
+// -Wunused-but-set-global where gcc does not, still compiles with -Werror.
+static llama_model             ** g_model [[maybe_unused]];
 static common_sampler          ** g_smpl;
 static common_params            * g_params;
-static std::vector<llama_token> * g_input_tokens;
-static std::ostringstream       * g_output_ss;
-static std::vector<llama_token> * g_output_tokens;
+static std::vector<llama_token> * g_input_tokens [[maybe_unused]];
+static std::ostringstream       * g_output_ss [[maybe_unused]];
+static std::vector<llama_token> * g_output_tokens [[maybe_unused]];
 static bool is_interacting  = false;
 static bool need_insert_eot = false;
 
