@@ -125,6 +125,22 @@ if (GGML_HIP_NO_VMM)
     add_compile_definitions(GGML_HIP_NO_VMM)
 endif()
 
+if (GGML_HIP_ROCMI4_IU4_EXACT AND NOT GGML_HIP_ROCMI4_IU4_MMQ)
+    message(FATAL_ERROR "GGML_HIP_ROCMI4_IU4_EXACT requires GGML_HIP_ROCMI4_IU4_MMQ")
+endif()
+
+if (GGML_HIP_ROCMI4_IU4_MMQ)
+    add_compile_definitions(GGML_ROCMI4_IU4_MMQ=1)
+endif()
+
+if (GGML_HIP_ROCMFPX_IU4_MMQ)
+    add_compile_definitions(GGML_ROCMFPX_IU4_MMQ=1)
+endif()
+
+if (GGML_HIP_ROCMI4_IU4_EXACT)
+    add_compile_definitions(GGML_ROCMI4_IU4_EXACT=1)
+endif()
+
 if (GGML_HIP_ROCWMMA_FATTN)
     add_compile_definitions(GGML_HIP_ROCWMMA_FATTN)
 endif()
