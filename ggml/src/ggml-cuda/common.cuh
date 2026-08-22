@@ -1074,6 +1074,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0_ROCMFPX> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_Q4_0_ROCMI4> {
+    static constexpr int qk = QK_ROCMI4;
+    static constexpr int qr = QR_ROCMI4;
+    static constexpr int qi = QI_ROCMI4;
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_NVFP4> {
     static constexpr int qk = QK_NVFP4;
     static constexpr int qr = QR_NVFP4;
