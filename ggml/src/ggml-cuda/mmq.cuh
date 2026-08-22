@@ -335,7 +335,8 @@ static_assert(MMQ_MMA_TILE_X_K_FP4 == MMQ_MMA_TILE_X_K_Q8_1, "Wrong tile size fo
 static_assert(MMQ_MMA_TILE_X_K_NVFP4 % 8 == 4, "Wrong padding.");
 
 
-static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
+static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(
+        ggml_type type, [[maybe_unused]] const int cc) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_Q4_0:    return MMQ_MMA_TILE_X_K_Q8_0;
@@ -351,7 +352,7 @@ static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
                                 return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_Q4_0_ROCMI4:
 #if GGML_ROCMI4_IU4_MMQ
-                                return MMQ_MMA_TILE_X_K_ROCMI4;
+                                return GGML_CUDA_CC_IS_RDNA3(cc) ? MMQ_MMA_TILE_X_K_ROCMI4 : MMQ_MMA_TILE_X_K_Q8_0;
 #else
                                 return MMQ_MMA_TILE_X_K_Q8_0;
 #endif
@@ -4956,7 +4957,7 @@ struct mmq_args {
 template<ggml_type type>
 static size_t mmq_get_nbytes_shared(const int mmq_x, const int mmq_y, const int cc, const int warp_size, const int nwarps) {
     const tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(type, mmq_y);
-    const int mmq_tile_x_k = mmq_get_mma_tile_x_k(type);
+    const int mmq_tile_x_k = mmq_get_mma_tile_x_k(type, cc);
     const size_t nbs_ids = mmq_x*sizeof(int);
     const size_t nbs_x = (turing_mma_available(cc) || amd_mfma_available(cc) || amd_wmma_available(cc)) ? mmq_y*mmq_tile_x_k*sizeof(int) : txs.qs*sizeof(int) + txs.dm*sizeof(half2) + txs.sc*sizeof(int);
     const size_t nbs_y = mmq_x * (sizeof(block_q8_1_mmq));

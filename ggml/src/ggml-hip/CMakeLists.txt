@@ -131,10 +131,14 @@ endif()
 
 if (GGML_HIP_ROCMI4_IU4_MMQ)
     add_compile_definitions(GGML_ROCMI4_IU4_MMQ=1)
+    if (NOT GGML_HIP_ROCMI4_IU4_EXACT)
+        message(WARNING "GGML_HIP_ROCMI4_IU4_MMQ enables lossy W4A4 activation quantization on RDNA3")
+    endif()
 endif()
 
 if (GGML_HIP_ROCMFPX_IU4_MMQ)
     add_compile_definitions(GGML_ROCMFPX_IU4_MMQ=1)
+    message(WARNING "GGML_HIP_ROCMFPX_IU4_MMQ enables lossy W4A4 activation quantization on RDNA3")
 endif()
 
 if (GGML_HIP_ROCMI4_IU4_EXACT)
