@@ -220,6 +220,9 @@ static constexpr __device__ int get_mmq_x_max_device() {
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
 }
 
+// Keep the RDNA3.5 tile height in sync with mmq_get_nwarps_* below:
+// mmq_write_back_mma requires nwarps * tile_C::I == mmq_y. On gfx1151,
+// 64 rows and 4 warps reduce LDS staging stalls compared with 128/8.
 static int get_mmq_y_host(const int cc) {
     if (GGML_CUDA_CC_IS_RDNA3_5(cc)) {
         return 64;
@@ -414,6 +417,7 @@ static constexpr __device__ int mmq_get_granularity_device(const int /*mmq_x*/) 
 
 #if defined(GGML_USE_HIP)
 static int mmq_get_nwarps_host(const int cc, const int warp_size) {
+    // Coupled to get_mmq_y_* above.
     if (GGML_CUDA_CC_IS_RDNA3_5(cc)) {
         return 4;
     }
