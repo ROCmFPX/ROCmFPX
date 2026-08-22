@@ -268,10 +268,8 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
     }
 }
 
-// i4_grid: quantise activations onto the 4-bit grid and store them as c*16, so
-// that the MMQ kernel's per-byte >>4 recovers c losslessly. This moves the
-// rounding off the matmul critical path -- doing it in the inner loop costs
-// ~9 ALU ops per dword and wiped out the entire IU4 speedup.
+// i4_grid: quantize activations onto a signed 4-bit grid and store packed
+// nibbles for the experimental gfx1151 ROCmI4 W4A4 MMQ path.
 template <mmq_q8_1_ds_layout ds_layout, bool i4_grid = false>
 static __global__ void quantize_mmq_q8_1(
         const float * __restrict__ x, const int32_t * __restrict__ ids, void * __restrict__ vy,
@@ -423,20 +421,10 @@ void quantize_mmq_q8_1_cuda(
     const int64_t block_num_y = (ne0 + 4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) / (4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     const dim3 num_blocks(ne1, block_num_y, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-#if (GGML_ROCMI4_IU4_MMQ && !GGML_ROCMI4_IU4_EXACT) || GGML_ROCMFPX_IU4_MMQ
+#if GGML_ROCMI4_W4A4
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
-#endif
-#if GGML_ROCMI4_IU4_MMQ && !GGML_ROCMI4_IU4_EXACT
     // Native IU4 W4A4: activations go onto the 4-bit grid up front.
-    if (type_src0 == GGML_TYPE_Q4_0_ROCMI4 && GGML_CUDA_CC_IS_RDNA3(cc)) {
-        quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_D4, true>
-            <<<num_blocks, block_size, 0, stream>>>(x, ids, vy, ne00, s01, s02, s03, ne0, ne1, ne2);
-        return;
-    }
-#endif
-#if GGML_ROCMFPX_IU4_MMQ
-    if ((type_src0 == GGML_TYPE_Q3_0_ROCMFPX || type_src0 == GGML_TYPE_Q2_0_ROCMFPX) &&
-            GGML_CUDA_CC_IS_RDNA3(cc)) {
+    if (type_src0 == GGML_TYPE_Q4_0_ROCMI4 && GGML_CUDA_CC_IS_GFX1151(cc)) {
         quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_D4, true>
             <<<num_blocks, block_size, 0, stream>>>(x, ids, vy, ne00, s01, s02, s03, ne0, ne1, ne2);
         return;

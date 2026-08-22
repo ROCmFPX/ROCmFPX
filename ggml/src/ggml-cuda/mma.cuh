@@ -541,7 +541,6 @@ namespace ggml_cuda_mma {
             if (I == 16 && J == 16) return true;
             if (I == 16 && J == 8)  return true;
             if (I == 16 && J == 4)  return true;
-            if (I == 16 && J == 2)  return true;   // K=16 of packed IU4 nibbles
             if (I == 32 && J == 8)  return true;
             return false;
         }
@@ -796,20 +795,6 @@ namespace ggml_cuda_mma {
         GGML_UNUSED_VARS(t, xs0, stride);
         NO_DEVICE_CODE;
 #endif // TURING_MMA_AVAILABLE
-    }
-
-    // 16x2: one K=16 group of packed IU4 nibbles (2 dwords per lane).
-    template <typename T, data_layout dl>
-    static __device__ __forceinline__ void load_ldmatrix(
-            tile<16, 2, T, dl> & t, const T * __restrict__ xs0, const int stride) {
-#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
-        static_assert(dl == DATA_LAYOUT_I_MAJOR_MIRRORED, "bad data layout");
-        static_assert(sizeof(t.x) == 8, "bad ne");
-        ggml_cuda_memcpy_1<8>(t.x, xs0 + t.get_i(0)*stride);
-#else
-        GGML_UNUSED_VARS(t, xs0, stride);
-        NO_DEVICE_CODE;
-#endif
     }
 
     template <typename T, data_layout dl>
@@ -1469,36 +1454,14 @@ namespace ggml_cuda_mma {
 #endif // AMD_WMMA_AVAILABLE
     }
 
-    // Native RDNA3/RDNA3.5 4-bit tensor core, K=16 in a single instruction.
-    // Used by formats whose scales change every 16 elements (ROCmFPx FP2/FP3),
-    // where the K=32 form below cannot be used because the two halves need
-    // different scales applied to separate accumulators.
-    // NOTE: RDNA4 has v_wmma_i32_16x16x32_iu4 instead (double K, different
-    // builtin and a non-mirrored fragment layout), so it is deliberately not
-    // handled here -- RDNA4 falls back to the int8 WMMA path.
-    template <bool b_signed = true, data_layout dl_d = DATA_LAYOUT_I_MAJOR, data_layout dl_ab = DATA_LAYOUT_I_MAJOR>
-    static __device__ __forceinline__ void mma_iu4_k16(
-            tile<16, 16, int, dl_d> & D, const tile<16, 2, int, dl_ab> & A, const tile<16, 2, int, dl_ab> & B) {
-#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
-        using int32x8_t = __attribute__((__vector_size__(8 * sizeof(int)))) int;
-        using int32x2_t = __attribute__((__vector_size__(2 * sizeof(int)))) int;
-        int32x8_t * acc = (int32x8_t *) D.x;
-        int32x2_t * a_vec = (int32x2_t *) A.x;
-        int32x2_t * b_vec = (int32x2_t *) B.x;
-        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32(true, a_vec[0], b_signed, b_vec[0], acc[0], false);
-#else
-        GGML_UNUSED_VARS(D, A, B);
-        NO_DEVICE_CODE;
-#endif
-    }
-
-    // Native gfx1151 / RDNA3 4-bit tensor core: packed IU4, K=32 as two 16-wide WMMA steps.
+#if defined(GGML_ROCMI4_W4A4) && GGML_ROCMI4_W4A4
+    // Native gfx1151 4-bit tensor core: packed IU4, K=32 as two 16-wide WMMA steps.
     // b_signed selects how the B operand's nibbles are interpreted: signed [-8,+7]
     // or unsigned [0,15]. A is always signed (weight codes are two's complement).
     template <bool b_signed = true, data_layout dl_d = DATA_LAYOUT_I_MAJOR, data_layout dl_ab = DATA_LAYOUT_I_MAJOR>
     static __device__ __forceinline__ void mma_iu4(
             tile<16, 16, int, dl_d> & D, const tile<16, 4, int, dl_ab> & A, const tile<16, 4, int, dl_ab> & B) {
-#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
+#if defined(AMD_WMMA_AVAILABLE) && defined(__gfx1151__)
         using int32x8_t = __attribute__((__vector_size__(8 * sizeof(int)))) int;
         using int32x2_t = __attribute__((__vector_size__(2 * sizeof(int)))) int;
         int32x8_t * acc = (int32x8_t *) D.x;
@@ -1511,4 +1474,5 @@ namespace ggml_cuda_mma {
         NO_DEVICE_CODE;
 #endif
     }
+#endif // defined(GGML_ROCMI4_W4A4) && GGML_ROCMI4_W4A4
 }

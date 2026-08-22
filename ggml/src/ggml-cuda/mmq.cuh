@@ -10,78 +10,10 @@
 using namespace ggml_cuda_mma;
 
 #define MMQ_DP4A_MAX_BATCH_SIZE 64 // Max. batch size to use for dp4a MMQ kernels when FP16 tensor cores are available.
-// Use the native gfx1151 IU4 tensor core for Q4_0_ROCMI4 MMQ (W4A4).
-// Set to 0 to fall back to the int8 WMMA path for A/B comparison.
-// ---------------------------------------------------------------------------
-// Native IU4 tensor core for Q4_0_ROCMI4 (gfx1151 / RDNA3).
-//
-// v_wmma_i32_16x16x16_iu4 retires in HALF the cycles of the iu8 form for the
-// same 16x16x16 shape -- measured on gfx1151 at 110.6 TOPS vs 57.1 TOPS (the
-// f16 WMMA reference lands at 57.1 TFLOPS), i.e. AMD's documented 1024 vs 512
-// ops/clock/CU. ROCMI4 weight codes are already two's-complement [-8,+7], so
-// they are a native iu4 operand with no unpacking at all.
-//
-// Measured on Qwen3.8-27B-Q4_0_ROCMI4, gfx1151, -fa on:
-//
-//   mode                       pp512    vs base   PPL(27B)   PPL(0.6B)
-//   int8 WMMA (baseline)      462.2      1.00x     6.0183     24.2381
-//   IU4 exact (2 bit-planes)  360.5      0.78x        --      24.2381  (bit-exact)
-//   IU4 W4A4                  559.3      1.21x     6.3411     34.1116
-//
-// Across batch widths (t/s, baseline -> IU4 W4A4):
-//    32: 147 -> 239 (1.62x)   128: 431 -> 527 (1.22x)  2048: 455 -> 552 (1.21x)
-//    64: 341 -> 375 (1.10x)   512: 462 -> 559 (1.21x)
-//
-// rocprofv3 on pp512: total GPU kernel time 2252 -> 1834 ms, of which mul_mat_q
-// 1716 -> 1297 ms (1.32x on the kernel itself), still 70.7% of the total. Inside
-// mul_mat_q the achieved rate is ~43 TOPS against the 110.6 TOPS IU4 peak, i.e.
-// ~39%; the remainder is LDS/staging, not math. Occupancy is NOT the limiter --
-// capping mmq_x to 64 (which fits 3 workgroups/CU instead of 2) measured
-// identical (560.3 vs 561.0), so shrinking the y-tile would buy nothing.
-//
-// tg128 is unaffected either way (13.78 -> 13.80): decode runs through MMVQ,
-// which has no matrix-core path at all.
-//
-// Why exact mode loses: the split costs 2 IU4 ops per K=16, which at 2x rate is
-// only break-even against 1 iu8 op, while adding packing and register pressure.
-// And halving the matmul math only bought 1.17x end-to-end, which by Amdahl puts
-// MMQ matmul at roughly 28% of prefill time on this model -- the 2x ISA win
-// cannot be cashed in beyond that without attacking the other 72%.
-//
-// W4A4 costs +0.32 PPL on the 27B (+5.4%). That is the whole trade and it is why
-// this defaults OFF. QuaRot-style online Hadamard rotation is the standard fix
-// and should largely reclaim it; QuaRot reports <=0.47 PPL on Llama2-70B W4A4,
-// and we are at 0.32 with no rotation at all.
-//
-// NOTE on register pressure: mul_mat_q is compiled per mmq_x, and mmq_x is chosen
-// to equal the batch width. Spilling in any one instantiation collapses that
-// batch size specifically. Keeping tile_B at 4 registers (activations arrive
-// pre-packed from quantize) is what keeps mmq_x=48/64 under the 256-VGPR limit;
-// building it in-kernel from an 8-int tile spilled 136 words at mmq_x=64 and cost
-// 2.5x there. Do NOT "fix" that by disabling the j0 unroll -- that clears every
-// spill but collapses pp512 from 552 to 233.
-//
-// Pre-existing, unrelated to IU4: the int8 kernel spills 46 words at mmq_x=32,
-// which is why baseline pp32 (147) is far below pp48 (281). That affects every
-// quant type on this arch and is worth fixing separately.
-//
-// Set to 1 to enable. GGML_ROCMI4_IU4_EXACT=1 selects the bit-exact 2-plane
-// variant instead (correctness reference; slower than baseline).
-// ---------------------------------------------------------------------------
-// Native IU4 tensor core for the ROCmFPx FP2/FP3 formats. Their codebooks decode
-// to values inside signed 4 bits, so they keep their codebooks and still run on
-// v_wmma_i32_16x16x16_iu4. Same W4A4 activation trade as GGML_ROCMI4_IU4_MMQ.
-// RDNA3 / RDNA3.5 only; RDNA4 falls back to the int8 WMMA path.
-#ifndef GGML_ROCMFPX_IU4_MMQ
-#define GGML_ROCMFPX_IU4_MMQ 0
-#endif
-
-#ifndef GGML_ROCMI4_IU4_MMQ
-#define GGML_ROCMI4_IU4_MMQ 0
-#endif
-
-#ifndef GGML_ROCMI4_IU4_EXACT
-#define GGML_ROCMI4_IU4_EXACT 0
+// Experimental, lossy W4A4 prefill path for Q4_0_ROCMI4 on gfx1151.
+// Exact int8 MMQ remains the default and the fallback on every other target.
+#ifndef GGML_ROCMI4_W4A4
+#define GGML_ROCMI4_W4A4 0
 #endif
 
 #define MMQ_ITER_K             256
@@ -329,6 +261,7 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
 #define MMQ_MMA_TILE_X_K_Q6_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI6_K   + MMQ_TILE_NE_K/8 + 7)
 
 static_assert(MMQ_MMA_TILE_X_K_Q8_0 % 8 == 4, "Wrong padding.");
+static_assert(MMQ_MMA_TILE_X_K_ROCMI4 % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q8_1 % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q2_K % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q3_K % 8 == 4, "Wrong padding.");
@@ -352,10 +285,9 @@ static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(
         case GGML_TYPE_Q4_0_ROCMFP4:
                                 return MMQ_MMA_TILE_X_K_Q3_K;
         case GGML_TYPE_Q4_0_ROCMFP4_FAST:
-                                return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_Q4_0_ROCMI4:
-#if GGML_ROCMI4_IU4_MMQ
-                                return GGML_CUDA_CC_IS_RDNA3(cc) ? MMQ_MMA_TILE_X_K_ROCMI4 : MMQ_MMA_TILE_X_K_Q8_0;
+#if GGML_ROCMI4_W4A4
+                                return GGML_CUDA_CC_IS_GFX1151(cc) ? MMQ_MMA_TILE_X_K_ROCMI4 : MMQ_MMA_TILE_X_K_Q8_0;
 #else
                                 return MMQ_MMA_TILE_X_K_Q8_0;
 #endif
@@ -453,7 +385,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
     constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_Q8_0, mmq_y);
     int   * x_qs = (int   *)  x_tile;
     float * x_df = (float *) (x_qs + txs.qs);
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+#endif
 
     constexpr int blocks_per_iter = MMQ_ITER_K / QK1_0;
     constexpr int threads_per_row = blocks_per_iter * QI1_0;
@@ -1181,22 +1113,17 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 #pragma unroll
     for (int i0 = 0; i0 < mmq_y; i0 += nrows*nwarps) {
         int i = i0 + (nrows == 1 ? threadIdx.y : threadIdx.y*nrows + threadIdx.x/threads_per_row);
-
         if (need_check) {
             i = min(i, i_max);
         }
-
         const block_rocmi4 * bxi = (const block_rocmi4 *) x + kbx0 + i*stride + kbx;
-
-        const int aux_q4 = rocmfp4_get_qs_i32(bxi->qs, kqsx);
-        const int2 v = rocmi4_unpack_signed_nibbles(aux_q4);
+        const int2 v = rocmi4_unpack_signed_nibbles(rocmfp4_get_qs_i32(bxi->qs, kqsx));
         const int k0 = kbx * (2 * QI_ROCMI4) + kqsx;
-
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + k0 + 0]       = v.x;
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + k0]              = v.x;
         x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + k0 + QI_ROCMI4] = v.y;
 #else
-        x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + 0]       = v.x;
+        x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0]              = v.x;
         x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + QI_ROCMI4] = v.y;
 #endif
     }
@@ -1208,21 +1135,19 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 #pragma unroll
     for (int i0 = 0; i0 < mmq_y; i0 += nwarps * rows_per_warp) {
         int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
-
         if (need_check) {
             i = min(i, i_max);
         }
-
         const block_rocmi4 * bxi = (const block_rocmi4 *) x + kbx0 + i*stride + kbxd;
         const float d = rocmfpx_ue4m3_to_fp32_finite(bxi->e);
-
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*MMQ_MMA_TILE_X_K_Q8_0                 + kbxd] = d;
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + kbxd] = d;
 #else
         x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + kbxd] = d;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+#endif
     }
 }
+#if GGML_ROCMI4_W4A4
 // ---------------------------------------------------------------------------
 // Q4_0_ROCMI4 native IU4 path (gfx1151 / RDNA3 4-bit tensor core).
 //
@@ -1255,7 +1180,7 @@ static __device__ __forceinline__ int rocmi4_pack_hi(const int a, const int b) {
     return ((a >> 4) & 0x0F0F0F0F) | (((b >> 4) & 0x0F0F0F0F) << 4);
 }
 
-template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_rocmi4_iu4(
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_rocmi4_w4a4(
     const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
     constexpr int nwarps = mmq_get_nwarps_device();
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
@@ -1305,6 +1230,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         x_df[i*MMQ_MMA_TILE_X_K_ROCMI4 + kbxd] = rocmfpx_ue4m3_to_fp32_finite(bxi->e);
     }
 }
+#endif // GGML_ROCMI4_W4A4
 
 template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_rocmfpx_fp2(
     const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
@@ -1430,150 +1356,6 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }
-// FP2 codebook { -4, -1, 1, 4 } as signed 4-bit nibble patterns
-// (0xC, 0xF, 0x1, 0x4), selected by a single constant shift.
-static __device__ __forceinline__ int rocmfpx_fp2_nib(const int code) {
-    return (0x41FC >> (4*(code & 3))) & 0xF;
-}
-
-// 8 consecutive FP2 values from two packed bytes, in the same byte-interleaved
-// K-order the activation packer uses.
-static __device__ __forceinline__ int rocmfpx_pack8_fp2_iu4(const uint8_t b0, const uint8_t b1) {
-    int p = 0;
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        const int lo = rocmfpx_fp2_nib((b0 >> (2*i)) & 3);
-        const int hi = rocmfpx_fp2_nib((b1 >> (2*i)) & 3);
-        p |= (lo | (hi << 4)) << (8*i);
-    }
-    return p;
-}
-
-template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_rocmfpx_fp2_iu4(
-    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
-    constexpr int nwarps = mmq_get_nwarps_device();
-    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
-
-    int   * x_qs = (int   *)  x_tile;
-    float * x_df = (float *) (x_qs + MMQ_TILE_NE_K*2);
-
-    constexpr int threads_per_row = 32;
-    constexpr int nrows = warp_size / threads_per_row;
-    const int txi   = warp_size > threads_per_row ? threadIdx.x % threads_per_row : threadIdx.x;
-    const int kbx   = txi / 4;            // 32-value block (0..7)
-    const int byte0 = 2 * (txi % 4);      // first of the two bytes holding these 8 values
-
-#pragma unroll
-    for (int i0 = 0; i0 < mmq_y; i0 += nrows*nwarps) {
-        int i = i0 + (nrows == 1 ? threadIdx.y : threadIdx.y*nrows + threadIdx.x/threads_per_row);
-
-        if (need_check) {
-            i = min(i, i_max);
-        }
-
-        const block_rocmfp2 * bxi = (const block_rocmfp2 *) x + kbx0 + i*stride + kbx;
-
-        x_qs[i*MMQ_MMA_TILE_X_K_Q3_K + txi] = rocmfpx_pack8_fp2_iu4(bxi->qs[byte0], bxi->qs[byte0 + 1]);
-    }
-
-    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI_ROCMFP2;
-    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
-    const int kbxd = threadIdx.x % blocks_per_tile_x_row;
-
-#pragma unroll
-    for (int i0 = 0; i0 < mmq_y; i0 += nwarps * rows_per_warp) {
-        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
-
-        if (need_check) {
-            i = min(i, i_max);
-        }
-
-        const block_rocmfp2 * bxi = (const block_rocmfp2 *) x + kbx0 + i*stride + kbxd;
-
-        x_df[i*MMQ_MMA_TILE_X_K_Q3_K + 2*kbxd + 0] = rocmfpx_ue4m3_to_fp32_finite(bxi->e[0]);
-        x_df[i*MMQ_MMA_TILE_X_K_Q3_K + 2*kbxd + 1] = rocmfpx_ue4m3_to_fp32_finite(bxi->e[1]);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ROCmFPx FP2/FP3 on the native IU4 tensor core.
-//
-// Both formats decode to values that already fit signed 4 bits:
-//   FP2 -> { -4, -1, 1, 4 }        FP3 -> { 0, +-1, +-2, +-4 }
-// so unlike ROCMI4 they keep their codebooks and still become native iu4
-// operands -- the loader simply widens each 2/3-bit code to a nibble instead of
-// to an int8. That halves the LDS quantised region (32 ints instead of 64) and
-// lets the matmul run on v_wmma_i32_16x16x16_iu4 at 2x the iu8 rate.
-//
-// Both scale every 16 elements (e[2] per 32-value block), so the K=16 form
-// mma_iu4_k16 is used: one WMMA per scale group, one accumulator each.
-//
-// Nibble order within a packed dword matches the activation packer
-// (quantize_mmq_q8_1<.., i4_grid=true>): byte i holds value base+i in its low
-// nibble and value base+4+i in its high nibble, i.e. the K-permutation
-// [b+0, b+4, b+1, b+5, b+2, b+6, b+3, b+7]. Applied to both operands, so the
-// dot product is unchanged.
-// ---------------------------------------------------------------------------
-
-static __device__ __forceinline__ int rocmfpx_pack8_fp3_iu4(const uint8_t * qs, const int base) {
-    int p = 0;
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        const int lo = rocmfpx_decode_fp3_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + i    )*3, 3));
-        const int hi = rocmfpx_decode_fp3_code_vec_cuda(rocmfpx_get_bits_vec_cuda(qs, (base + i + 4)*3, 3));
-        p |= ((lo & 0xF) | ((hi & 0xF) << 4)) << (8*i);
-    }
-    return p;
-}
-
-template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_rocmfpx_fp3_iu4(
-    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
-    constexpr int nwarps = mmq_get_nwarps_device();
-    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
-
-    int   * x_qs = (int   *)  x_tile;
-    float * x_df = (float *) (x_qs + MMQ_TILE_NE_K*2);
-
-    // 32 packed dwords cover the 256-value tile row: thread txi builds dword txi
-    // from values 8*txi .. 8*txi+7.
-    constexpr int threads_per_row = 32;
-    constexpr int nrows = warp_size / threads_per_row;
-    const int txi   = warp_size > threads_per_row ? threadIdx.x % threads_per_row : threadIdx.x;
-    const int kbx   = txi / 4;        // which 32-value block (0..7)
-    const int vbase = 8 * (txi % 4);  // value offset inside that block
-
-#pragma unroll
-    for (int i0 = 0; i0 < mmq_y; i0 += nrows*nwarps) {
-        int i = i0 + (nrows == 1 ? threadIdx.y : threadIdx.y*nrows + threadIdx.x/threads_per_row);
-
-        if (need_check) {
-            i = min(i, i_max);
-        }
-
-        const block_rocmfp3 * bxi = (const block_rocmfp3 *) x + kbx0 + i*stride + kbx;
-
-        x_qs[i*MMQ_MMA_TILE_X_K_Q3_K + txi] = rocmfpx_pack8_fp3_iu4(bxi->qs, vbase);
-    }
-
-    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI_ROCMFP3;
-    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
-    const int kbxd = threadIdx.x % blocks_per_tile_x_row;
-
-#pragma unroll
-    for (int i0 = 0; i0 < mmq_y; i0 += nwarps * rows_per_warp) {
-        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
-
-        if (need_check) {
-            i = min(i, i_max);
-        }
-
-        const block_rocmfp3 * bxi = (const block_rocmfp3 *) x + kbx0 + i*stride + kbxd;
-
-        x_df[i*MMQ_MMA_TILE_X_K_Q3_K + 2*kbxd + 0] = rocmfpx_ue4m3_to_fp32_finite(bxi->e[0]);
-        x_df[i*MMQ_MMA_TILE_X_K_Q3_K + 2*kbxd + 1] = rocmfpx_ue4m3_to_fp32_finite(bxi->e[1]);
-    }
-}
-
 template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_rocmfpx_fp6(
     const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
     constexpr int nwarps = mmq_get_nwarps_device();
@@ -2370,74 +2152,6 @@ static __device__ __forceinline__ void vec_dot_q8_0_16_q8_1_dp4a(
     }
 }
 
-
-// IU4 counterpart of vec_dot_q8_0_16_q8_1_mma, for ROCmFPx FP2/FP3.
-// Weights arrive from LDS already packed as nibbles (load_tiles_rocmfpx_fp*_iu4)
-// and activations already on the 4-bit grid (quantize_mmq_q8_1<.., i4_grid>),
-// so this is a straight 2-dword load on each side and one IU4 WMMA per K=16
-// scale group -- half the cycles of the iu8 form for the same shape.
-template <int mmq_x, int mmq_y>
-static __device__ __forceinline__ void vec_dot_rocmfpx_iu4_mma(
-    const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
-#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
-    constexpr data_layout input_layout = get_input_data_layout();
-    typedef tile<16,  2, int, input_layout>        tile_A;   // K=16 packed nibbles
-    typedef tile<16,  2, int, input_layout>        tile_B;
-    typedef tile<16, 16, int, DATA_LAYOUT_J_MAJOR> tile_C;
-
-    constexpr int granularity = mmq_get_granularity_device(mmq_x);
-    constexpr int rows_per_warp = granularity;
-    constexpr int ntx = rows_per_warp/tile_C::I;
-
-    y += (threadIdx.y % ntx) * (tile_C::J*MMQ_TILE_Y_K);
-
-    const int   * x_qs = (const int   *) x;
-    const float * x_df = (const float *) x_qs + MMQ_TILE_NE_K*2;
-    const int   * y_qs = (const int   *) y + 4;
-    const float * y_df = (const float *) y;
-
-    const int i0 = (threadIdx.y / ntx) * rows_per_warp;
-
-    // k00/k01 are in int8-expanded dword units (4 values each); packed nibble
-    // dwords hold 8 values, hence the /2.
-    for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += 4) {
-        const int k0 = k00 + k01;
-        const int kp = k0 / 2;
-
-        tile_A A[ntx];
-#pragma unroll
-        for (int n = 0; n < ntx; ++n) {
-            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*MMQ_MMA_TILE_X_K_Q3_K + kp, MMQ_MMA_TILE_X_K_Q3_K);
-        }
-
-#pragma unroll
-        for (int j0 = 0; j0 < mmq_x; j0 += ntx*tile_C::J) {
-            tile_B B;
-            load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01/2, MMQ_TILE_Y_K);
-
-            const int j = j0 + tile_C::get_j(0);
-            const float dB = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
-
-#pragma unroll
-            for (int n = 0; n < ntx; ++n) {
-                tile_C C;
-                mma_iu4_k16<true>(C, A[n], B);
-
-#pragma unroll
-                for (int l = 0; l < tile_C::ne; ++l) {
-                    const int i = i0 + n*tile_C::I + tile_C::get_i(l);
-                    // *16 undoes the pre-divided activation scale (i4_grid)
-                    sum[(j0/tile_C::J + n)*tile_C::ne + l] +=
-                        (C.x[l]*16) * x_df[i*MMQ_MMA_TILE_X_K_Q3_K + k0/4] * dB;
-                }
-            }
-        }
-    }
-#else
-    GGML_UNUSED_VARS(x, y, sum, k00);
-    NO_DEVICE_CODE;
-#endif
-}
 
 // Used for Q3_K, IQ2_S, and IQ2_XS:
 template <int mmq_x, int mmq_y>
@@ -4295,17 +4009,19 @@ struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_0_ROCMFP4_FAST> {
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
+#if GGML_ROCMI4_W4A4
 template <int mmq_x, int mmq_y>
-static __device__ __forceinline__ void vec_dot_rocmi4_iu4_wmma(
+static __device__ __forceinline__ void vec_dot_rocmi4_w4a4_wmma(
     const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00);
+#endif
 
 template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_0_ROCMI4> {
     static constexpr int              vdr          = VDR_ROCMI4_Q8_1_MMQ;
-#if GGML_ROCMI4_IU4_MMQ && defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
-    // Native 4-bit tensor core: packed weights in LDS, activations truncated to 4 bits.
-    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_rocmi4_iu4<mmq_y, need_check>;
-    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_rocmi4_iu4_wmma<mmq_x, mmq_y>;
+#if GGML_ROCMI4_W4A4 && defined(AMD_WMMA_AVAILABLE) && defined(__gfx1151__)
+    // Native 4-bit tensor core with lossy 4-bit activation quantization.
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_rocmi4_w4a4<mmq_y, need_check>;
+    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_rocmi4_w4a4_wmma<mmq_x, mmq_y>;
 #else
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_rocmi4<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_D4>;
@@ -4316,26 +4032,16 @@ struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_0_ROCMI4> {
 template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q3_0_ROCMFPX> {
     static constexpr int              vdr          = VDR_ROCMFP3_Q8_1_MMQ;
-#if GGML_ROCMFPX_IU4_MMQ && defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
-    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_rocmfpx_fp3_iu4<mmq_y, need_check>;
-    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_rocmfpx_iu4_mma<mmq_x, mmq_y>;
-#else
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_rocmfpx_fp3<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_16_q8_1_mma<mmq_x, mmq_y>;
-#endif
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_16_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
 template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q2_0_ROCMFPX> {
     static constexpr int              vdr          = VDR_ROCMFP2_Q8_1_MMQ;
-#if GGML_ROCMFPX_IU4_MMQ && defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
-    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_rocmfpx_fp2_iu4<mmq_y, need_check>;
-    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_rocmfpx_iu4_mma<mmq_x, mmq_y>;
-#else
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_rocmfpx_fp2<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_16_q8_1_mma<mmq_x, mmq_y>;
-#endif
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_16_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
@@ -4499,7 +4205,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
 #if defined(BLACKWELL_MMA_AVAILABLE)
     // FP4 tile stores 8 blocks
-    constexpr int ne_block = (type == GGML_TYPE_MXFP4 || type == GGML_TYPE_Q4_0_ROCMFP4 || type == GGML_TYPE_Q4_0_ROCMFP4_FAST || type == GGML_TYPE_Q4_0_ROCMI4 || type == GGML_TYPE_NVFP4) ? QK_K : 4 * QK8_1;
+    constexpr int ne_block = (type == GGML_TYPE_MXFP4 || type == GGML_TYPE_Q4_0_ROCMFP4 || type == GGML_TYPE_Q4_0_ROCMFP4_FAST || type == GGML_TYPE_NVFP4) ? QK_K : 4 * QK8_1;
 #else
     constexpr int ne_block = 4 * QK8_1;
 #endif  // defined(BLACKWELL_MMA_AVAILABLE)
@@ -5177,57 +4883,17 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
     }
 }
 
-// Truncate an int8 activation to signed 4 bits. The >>4 is an arithmetic shift,
-// so the result is already two's-complement [-8,+7]; the factor of 16 this
-// drops is folded back into dB below.
-// High plane: a 32-bit >>4 then a 0x0F0F0F0F mask yields, for each byte, that
-// byte's high nibble -- for two's-complement int8 exactly the sign-preserving
-// int8>>4. Interpreted as SIGNED iu4. Same byte-interleaved K-order as the
-// weight packers above.
-static __device__ __forceinline__ int rocmi4_trunc4(const int a) {
-    return (a >> 4) & 0x0F0F0F0F;
-}
-
-// Round-to-nearest instead of truncating toward -inf. Plain >>4 biases every
-// activation by -7.5/16 LSB, which is systematic rather than noise and is far
-// more damaging than the 4-bit quantisation itself. Per byte: add one if the
-// discarded low nibble is >= 8, then clamp the single overflow case (hi==7,
-// which would wrap to -8). hi==15 wrapping to 0 is the correct rounding.
-static __device__ __forceinline__ int rocmi4_round4(const int a) {
-    const int lo    = a & 0x0F0F0F0F;
-    const int hi    = (a >> 4) & 0x0F0F0F0F;
-    const int carry = (lo >> 3) & 0x01010101;
-    int r = hi + carry;
-    const int ov = (~hi) & r & 0x08080808;   // bit3 went 0->1, i.e. hi was 7
-    return (r - (ov >> 3)) & 0x0F0F0F0F;
-}
-
-// Always truncate: in exact mode this is the high bit-plane, and in W4A4 mode the
-// activations were already placed on the 4-bit grid by quantize_mmq_q8_1<.., true>
-// so the shift is lossless. rocmi4_round4 is kept for reference/experiments.
-static __device__ __forceinline__ int rocmi4_pack_8xi8_to_i4(const int a, const int b) {
-    return rocmi4_trunc4(a) | (rocmi4_trunc4(b) << 4);
-}
-
-// Low plane: the bottom nibble of each byte, interpreted as UNSIGNED iu4.
-// int8 x == 16*(x>>4) + (x & 0xF) exactly, so hi/lo together reproduce the int8
-// dot product bit-for-bit.
-static __device__ __forceinline__ int rocmi4_pack_8xi8_to_i4_lo(const int a, const int b) {
-    return (a & 0x0F0F0F0F) | ((b & 0x0F0F0F0F) << 4);
-}
-
+#if GGML_ROCMI4_W4A4
 // W4A4 on the native 4-bit tensor core. Weights come from LDS already packed
-// (load_tiles_rocmi4_iu4); activations are the ordinary q8_1 tile truncated to
-// 4 bits here. Both operands are signed IU4, so v_wmma_i32_16x16x16_iu4 runs at
-// 2x the rate of the iu8 form for the same 16x16x16 shape.
+// (load_tiles_rocmi4_w4a4); activations arrive pre-packed on a signed 4-bit grid.
+// This is intentionally lossy and only compiled into gfx1151 device code.
 template <int mmq_x, int mmq_y>
-static __device__ __forceinline__ void vec_dot_rocmi4_iu4_wmma(
+static __device__ __forceinline__ void vec_dot_rocmi4_w4a4_wmma(
     const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
-#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
+#if defined(AMD_WMMA_AVAILABLE) && defined(__gfx1151__)
     constexpr data_layout input_layout = get_input_data_layout();
     typedef tile<16,  4, int, input_layout>        tile_A;  // 4 packed dwords == 32 nibbles == K=32
-    typedef tile<16,  8, int, input_layout>        tile_B8; // q8_1 activations, K=32 as int8
-    typedef tile<16,  4, int, input_layout>        tile_B;  // same 32 values, truncated to nibbles
+    typedef tile<16,  4, int, input_layout>        tile_B;
     typedef tile<16, 16, int, DATA_LAYOUT_J_MAJOR> tile_C;
 
     constexpr int granularity = mmq_get_granularity_device(mmq_x);
@@ -5259,25 +4925,8 @@ static __device__ __forceinline__ void vec_dot_rocmi4_iu4_wmma(
 
 #pragma unroll
         for (int j0 = 0; j0 < mmq_x; j0 += ntx*tile_C::J) {
-            tile_B Bhi;
-#if GGML_ROCMI4_IU4_EXACT
-            // Exact mode needs the raw int8 activations to split into planes.
-            tile_B Blo;
-            {
-                tile_B8 B8;
-                load_ldmatrix(B8, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
-#pragma unroll
-                for (int l = 0; l < Bhi.ne; ++l) {
-                    Bhi.x[l] = rocmi4_pack_8xi8_to_i4(B8.x[2*l], B8.x[2*l + 1]);
-                    Blo.x[l] = rocmi4_pack_8xi8_to_i4_lo(B8.x[2*l], B8.x[2*l + 1]);
-                }
-            }
-#else
-            // W4A4: quantize_mmq_q8_1<.., i4_grid=true> already wrote packed
-            // nibbles, so this is a direct 4-int load with no repacking at all.
-            // 8 nibbles per int => the packed index is k01/2.
-            load_ldmatrix(Bhi, y_qs + j0*MMQ_TILE_Y_K + k01/2, MMQ_TILE_Y_K);
-#endif
+            tile_B B;
+            load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01/2, MMQ_TILE_Y_K);
 
             const int j = j0 + tile_C::get_j(0);
             const float dB = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
@@ -5285,21 +4934,12 @@ static __device__ __forceinline__ void vec_dot_rocmi4_iu4_wmma(
 #pragma unroll
             for (int n = 0; n < ntx; ++n) {
                 tile_C C;
-                mma_iu4<true>(C, A[n], Bhi);
-#if GGML_ROCMI4_IU4_EXACT
-                // 16*hi + lo reconstructs the int8 activation exactly.
-                tile_C Cl;
-                mma_iu4<false>(Cl, A[n], Blo);
-#endif
+                mma_iu4<true>(C, A[n], B);
 #pragma unroll
                 for (int l = 0; l < tile_C::ne; ++l) {
                     const int i = i0 + n*tile_A::I + tile_C::get_i(l);
                     const float dA = x_df[i*MMQ_MMA_TILE_X_K_ROCMI4 + k0/QI8_0];
-#if GGML_ROCMI4_IU4_EXACT
-                    const int acc = C.x[l]*16 + Cl.x[l];
-#else
                     const int acc = C.x[l]*16;
-#endif
                     sum[(j0/tile_C::J + n)*tile_C::ne + l] += acc*dA*dB;
                 }
             }
@@ -5310,6 +4950,7 @@ static __device__ __forceinline__ void vec_dot_rocmi4_iu4_wmma(
     NO_DEVICE_CODE;
 #endif
 }
+#endif // GGML_ROCMI4_W4A4
 
 #define DECL_MMQ_CASE(type)                                                        \
     template void mul_mat_q_case<type>(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) \
