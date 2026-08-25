@@ -60,9 +60,9 @@ if ($null -ne $env:MTMD_DEVICE) {
 $env:ADSP_LIBRARY_PATH="$basedir\lib"
 
 & "$basedir\bin\llama-mtmd-cli.exe" `
-    --no-mmap -m $basedir\..\..\gguf\$model `
+    --load-mode none -m $basedir\..\..\gguf\$model `
     --mmproj $basedir\..\..\gguf\$mmproj `
     --image $basedir\..\..\gguf\$image `
     --poll 1000 -t 6 --cpu-mask 0xfc --cpu-strict 1 `
-    --ctx-size 8192 --ubatch-size 256 -fa on `
+    --ctx-size 8192 --ubatch-size 1024 -fa on `
     -ngl 99 --device $device -v $cli_opts
