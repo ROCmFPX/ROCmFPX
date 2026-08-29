@@ -6296,7 +6296,7 @@ static void ggml_compute_forward_dsv4_rope_tail_flt(
     }
 }
 
-void ggml_compute_forward_dsv4_rope_tail(
+static void ggml_compute_forward_dsv4_rope_tail(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
