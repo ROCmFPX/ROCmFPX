@@ -1,5 +1,7 @@
 #include "llama-model.h"
 
+#include "rocmfpx-plugin.h"
+
 #include "llama-arch.h"
 #include "llama-ext.h"
 #include "llama-hparams.h"
@@ -2707,6 +2709,10 @@ void llama_free_model(llama_model * model) {
 }
 
 void llama_model_free(llama_model * model) {
+    if (model && model->rocmfpx_plugin_model_id != 0) {
+        rocmfpx_plugins_model_close(model->rocmfpx_plugin_model_id);
+        model->rocmfpx_plugin_model_id = 0;
+    }
     delete model;
 }
 

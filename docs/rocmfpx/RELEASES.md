@@ -1,7 +1,7 @@
 # Release process
 
-ROCmFPX releases use SemVer tags (`vMAJOR.MINOR.PATCH`). Until the new FP5/FP7
-GPU paths and cross-generation matrix are complete, releases should carry a
+ROCmFPX releases use SemVer tags (`vMAJOR.MINOR.PATCH`). Until the FP5/FP7
+cross-generation hardware matrix is complete, releases should carry a
 pre-release suffix such as `v0.1.0-alpha.1`.
 
 Release gate:
@@ -24,6 +24,9 @@ version tags. The package remains private while this repository is private; its
 visibility must be changed deliberately when the project launches. Vulkan/HIP
 hardware qualification remains a signed release checklist because hosted CI
 does not prove AMD runtime behavior.
+
+The Linux archive includes `include/rocmfpx/rocmfpx-plugin.h` as the standalone
+plugin SDK header.
 
 Local image use:
 

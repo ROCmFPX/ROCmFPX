@@ -24,6 +24,8 @@ expected = {
     "TURBO4_0": (106, (32, 18)),
     "Q2_0_ROCMFPX": (107, (32, 10)),
     "Q4_0_ROCMI4": (108, (32, 17)),
+    "Q5_0_ROCMFPX": (109, (32, 22)),
+    "Q7_0_ROCMFPX": (110, (32, 30)),
 }
 for name, (value, size) in expected.items():
     qtype = getattr(gguf.GGMLQuantizationType, name)

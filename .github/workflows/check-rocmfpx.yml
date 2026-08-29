@@ -8,8 +8,24 @@ on:
       - experimental-rocmfpx-branch
     paths:
       - 'ggml/rocmfpx/**'
+      - 'ggml/include/ggml.h'
+      - 'ggml/src/ggml.c'
+      - 'ggml/src/ggml-cuda/**'
+      - 'ggml/src/ggml-vulkan/**'
+      - 'gguf-py/gguf/constants.py'
+      - 'gguf-py/gguf/quants.py'
+      - 'include/rocmfpx-plugin.h'
       - 'src/llama-quant.cpp'
+      - 'src/llama.cpp'
+      - 'src/llama-model.cpp'
+      - 'src/llama-model.h'
+      - 'src/models/qwen4exp.cpp'
+      - 'src/rocmfpx-plugin.cpp'
       - 'include/llama.h'
+      - 'tests/rocmfpx-test-plugin.c'
+      - 'tests/test-backend-ops.cpp'
+      - 'tests/test-llama-archs.cpp'
+      - 'tests/test-rocmfpx-plugin.cpp'
       - 'scripts/check-rocmfpx-*.sh'
       - 'scripts/check-rocmfp2-*.sh'
       - 'scripts/check-release-recipe-map.py'
@@ -20,8 +36,24 @@ on:
   pull_request:
     paths:
       - 'ggml/rocmfpx/**'
+      - 'ggml/include/ggml.h'
+      - 'ggml/src/ggml.c'
+      - 'ggml/src/ggml-cuda/**'
+      - 'ggml/src/ggml-vulkan/**'
+      - 'gguf-py/gguf/constants.py'
+      - 'gguf-py/gguf/quants.py'
+      - 'include/rocmfpx-plugin.h'
       - 'src/llama-quant.cpp'
+      - 'src/llama.cpp'
+      - 'src/llama-model.cpp'
+      - 'src/llama-model.h'
+      - 'src/models/qwen4exp.cpp'
+      - 'src/rocmfpx-plugin.cpp'
       - 'include/llama.h'
+      - 'tests/rocmfpx-test-plugin.c'
+      - 'tests/test-backend-ops.cpp'
+      - 'tests/test-llama-archs.cpp'
+      - 'tests/test-rocmfpx-plugin.cpp'
       - 'scripts/check-rocmfpx-*.sh'
       - 'scripts/check-rocmfp2-*.sh'
       - 'scripts/check-release-recipe-map.py'
@@ -69,7 +101,7 @@ jobs:
       - name: Build reference + backend ops
         run: |
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF
-          cmake --build build --target test-backend-ops -j 2
+          cmake --build build --target test-backend-ops test-rocmfpx-plugin test-llama-archs -j 2
 
       - name: Reference probe
         run: scripts/check-rocmfpx-reference.sh
@@ -80,3 +112,8 @@ jobs:
       - name: CPU ROCmFPX backend ops
         run: |
           ./build/bin/test-backend-ops test -o MUL_MAT,GET_ROWS,CPY,SET_ROWS -b CPU
+
+      - name: Plugin ABI and PLE model fixture
+        run: |
+          ctest --test-dir build --output-on-failure -R '^test-rocmfpx-plugin$'
+          ./build/bin/test-llama-archs -a qwen4exp

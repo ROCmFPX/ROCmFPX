@@ -24,6 +24,15 @@ int main(int argc, char ** argv) {
     REQUIRE((plugin->capabilities & ROCMFPX_PLUGIN_CAP_REPACK_CACHE) != 0);
     REQUIRE(rocmfpx_plugin_at(1) == nullptr);
 
+    const rocmfpx_plugin_model_v1 model = {
+        ROCMFPX_PLUGIN_ABI_VERSION, sizeof(rocmfpx_plugin_model_v1), 17,
+        "test-model.gguf", "test", 0, 0,
+        ROCMFPX_PLUGIN_MODEL_FEATURE_PLE | ROCMFPX_PLUGIN_MODEL_FEATURE_SSM,
+        1024, 256,
+    };
+    REQUIRE(rocmfpx_plugins_model_open(&model) == 1);
+    REQUIRE(rocmfpx_plugins_model_close(model.model_id) == 1);
+
     rocmfpx_plugins_shutdown();
     REQUIRE(rocmfpx_plugins_count() == 0);
     return 0;

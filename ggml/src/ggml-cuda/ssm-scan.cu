@@ -9,6 +9,8 @@ using namespace cub;
 
 #include "ssm-scan.cuh"
 
+#include <cstdlib>
+
 
 // Minimum number of tokens to use SSD (State Space Duality) matmul path instead of scan path.
 // For n_tok <= this threshold, the scan kernel is used (lower overhead for short sequences).
@@ -342,7 +344,7 @@ static void ssm_scan_f32_cuda(const float * src0, const float * src1, const floa
     }
 }
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#if !defined(GGML_USE_MUSA)
 // ============================================================================
 // SSD (State Space Duality) kernels for Mamba-2 prefill (n_tok > SSM_SSD_MIN_TOKENS)
 //
@@ -762,7 +764,7 @@ static void ssm_scan_ssd_f32_cuda(
         }
     }
 }
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#endif // !defined(GGML_USE_MUSA)
 
 void ggml_cuda_op_ssm_scan(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const struct ggml_tensor * src0 = dst->src[0];  // s
@@ -821,17 +823,24 @@ void ggml_cuda_op_ssm_scan(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     GGML_ASSERT(src5->nb[2] <= (size_t)INT_MAX);
     GGML_ASSERT(src5->nb[3] <= (size_t)INT_MAX);
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#if !defined(GGML_USE_MUSA)
     // Mamba-2 with scalar A per head: use SSD matmul path for long sequences.
-    // Requires NVIDIA Turing+ otherwise fallback to scan.
+    // Requires NVIDIA Turing+ or an AMD HIP device; otherwise fallback to scan.
     const bool is_mamba2 = (src3->nb[1] == sizeof(float));
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
-    const bool use_ssd = is_mamba2 && n_t > SSM_SSD_MIN_TOKENS
+    // gfx1151 measurements show that the BLAS setup cost is not recovered by
+    // a 256-token, single-group scan, while grouped 300-token and single-group
+    // 512-token shapes are substantially faster through SSD. Keep NVIDIA's
+    // established threshold and apply the measured AMD crossover separately.
+    const bool amd_ssd_profitable = !GGML_CUDA_CC_IS_GFX1151(cc) || ng > 1 || n_t >= 512;
+    static const bool ssd_enabled = std::getenv("GGML_CUDA_DISABLE_SSD") == nullptr;
+    const bool use_ssd = ssd_enabled && is_mamba2 && n_t > SSM_SSD_MIN_TOKENS
                       && K == 1
                       && n_t <= SSM_SSD_MAX_TOKENS
-                      && GGML_CUDA_CC_IS_NVIDIA(cc)
-                      && cc >= GGML_CUDA_CC_TURING
-                      && nr % 8 == 0;  // cuBLAS requires 8-element (16-byte) alignment
+                      && ((GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_TURING) ||
+                          GGML_CUDA_CC_IS_AMD(cc))
+                      && amd_ssd_profitable
+                      && nr % 8 == 0;  // BLAS requires 8-element (16-byte) alignment
 
     if (use_ssd) {
         // ssm_ssd_init_state_kernel uses flat linear indexing within each sequence,
@@ -851,7 +860,7 @@ void ggml_cuda_op_ssm_scan(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             s_off, nc, nr, nh, ng, n_t, n_s);
         return;
     }
-#endif
+#endif // !defined(GGML_USE_MUSA)
     ssm_scan_f32_cuda(src0_d, src1_d, src2_d, src3_d, src4_d, src5_d, src6_d, dst_d,
                       src0->nb[2], src0->nb[3], src1->nb[2], src1->nb[3], src2->nb[1], src2->nb[2],
                       src3->nb[1], src4->nb[2], src4->nb[3], src5->nb[2], src5->nb[3],

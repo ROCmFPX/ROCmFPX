@@ -1820,9 +1820,21 @@ struct block_rocmfpx_fp3
     uint8_t e[2];
 };
 
+struct block_rocmfpx_fp5
+{
+    uint8_t qs[20];
+    uint8_t e[2];
+};
+
 struct block_rocmfpx_fp6
 {
     uint8_t qs[24];
+    uint8_t e[2];
+};
+
+struct block_rocmfpx_fp7
+{
+    uint8_t qs[28];
     uint8_t e[2];
 };
 
@@ -1846,11 +1858,25 @@ struct block_rocmfpx_fp8
 #define A_TYPE block_rocmfpx_fp3
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP5)
+#define QUANT_K QUANT_K_ROCMFPX_FP8
+#define QUANT_R QUANT_R_ROCMFPX_FP8
+#define QUANT_AUXF 1
+#define A_TYPE block_rocmfpx_fp5
+#endif
+
 #if defined(DATA_A_ROCMFPX_FP6)
 #define QUANT_K QUANT_K_ROCMFPX_FP8
 #define QUANT_R QUANT_R_ROCMFPX_FP8
 #define QUANT_AUXF 1
 #define A_TYPE block_rocmfpx_fp6
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP7)
+#define QUANT_K QUANT_K_ROCMFPX_FP8
+#define QUANT_R QUANT_R_ROCMFPX_FP8
+#define QUANT_AUXF 1
+#define A_TYPE block_rocmfpx_fp7
 #endif
 
 #if defined(DATA_A_ROCMFPX_FP8)
@@ -1860,7 +1886,7 @@ struct block_rocmfpx_fp8
 #define A_TYPE block_rocmfpx_fp8
 #endif
 
-#if defined(DATA_A_ROCMFPX_FP2) || defined(DATA_A_ROCMFPX_FP3) || defined(DATA_A_ROCMFPX_FP6) || defined(DATA_A_ROCMFPX_FP8)
+#if defined(DATA_A_ROCMFPX_FP2) || defined(DATA_A_ROCMFPX_FP3) || defined(DATA_A_ROCMFPX_FP5) || defined(DATA_A_ROCMFPX_FP6) || defined(DATA_A_ROCMFPX_FP7) || defined(DATA_A_ROCMFPX_FP8)
 #define DATA_A_ROCMFPX_FAMILY
 #endif
 
@@ -2091,6 +2117,12 @@ float ue4m3_to_fp32(uint8_t x) {
 #endif
 
 #if defined(DATA_A_ROCMFPX_FAMILY)
+int rocmfpx_decode_linear_code(uint code, uint bits) {
+    const uint sign = 1u << (bits - 1u);
+    const int magnitude = int(code & (sign - 1u));
+    return (code & sign) != 0u ? -(magnitude == 0 ? int(sign) : magnitude) : magnitude;
+}
+
 const int8_t kvalues_rocmfpx_fp2_const[4] = {
     int8_t(-4), int8_t(-1), int8_t(1), int8_t(4)
 };

@@ -290,6 +290,56 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
 }
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP5)
+int32_t rocmfpx_vq_fp5_pack4(uint ib, uint base) {
+    i8vec4 values;
+    [[unroll]] for (uint lane = 0u; lane < 4u; ++lane) {
+        const uint ei = base + lane;
+        uint code = 0u;
+        [[unroll]] for (uint bit = 0u; bit < 5u; ++bit) {
+            const uint src_bit = ei * 5u + bit;
+            code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+        }
+        values[lane] = int8_t(rocmfpx_decode_linear_code(code, 5u));
+    }
+    return pack32(values);
+}
+
+FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+    const uint base = iqs * K_PER_ITER;
+    const int32_t q_sum = dotPacked4x8EXT(rocmfpx_vq_fp5_pack4(ib_a, base),      cache_b_qs[0]) +
+                          dotPacked4x8EXT(rocmfpx_vq_fp5_pack4(ib_a, base + 4u), cache_b_qs[1]);
+    const uint scale_idx = base < QUANT_K / 2u ? 0u : 1u;
+    const FLOAT_TYPE d = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[scale_idx]));
+    return FLOAT_TYPE(cache_b_ds.x * d * float(q_sum));
+}
+#endif
+
+#if defined(DATA_A_ROCMFPX_FP7)
+int32_t rocmfpx_vq_fp7_pack4(uint ib, uint base) {
+    i8vec4 values;
+    [[unroll]] for (uint lane = 0u; lane < 4u; ++lane) {
+        const uint ei = base + lane;
+        uint code = 0u;
+        [[unroll]] for (uint bit = 0u; bit < 7u; ++bit) {
+            const uint src_bit = ei * 7u + bit;
+            code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+        }
+        values[lane] = int8_t(rocmfpx_decode_linear_code(code, 7u));
+    }
+    return pack32(values);
+}
+
+FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+    const uint base = iqs * K_PER_ITER;
+    const int32_t q_sum = dotPacked4x8EXT(rocmfpx_vq_fp7_pack4(ib_a, base),      cache_b_qs[0]) +
+                          dotPacked4x8EXT(rocmfpx_vq_fp7_pack4(ib_a, base + 4u), cache_b_qs[1]);
+    const uint scale_idx = base < QUANT_K / 2u ? 0u : 1u;
+    const FLOAT_TYPE d = FLOAT_TYPE(ue4m3_to_fp32(data_a[ib_a].e[scale_idx]));
+    return FLOAT_TYPE(cache_b_ds.x * d * float(q_sum));
+}
+#endif
+
 #if defined(DATA_A_ROCMFPX_FP8)
 FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
     const uint base = iqs * K_PER_ITER;

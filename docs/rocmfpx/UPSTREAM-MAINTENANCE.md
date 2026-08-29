@@ -60,7 +60,7 @@ script and opens a pull request only when the merge and portable checks pass.
 
 Every upstream-sync pull request must preserve:
 
-1. Stable GGUF tensor IDs 100-108 and file-type IDs 100-119.
+1. Stable GGUF tensor IDs 100-110 and file-type IDs 100-124.
 2. CPU reference round trips for ROCmFPX, ROCmFP2, ROCmFP4, and ROCmI4.
 3. Successful `llama-quantize` and backend-op builds.
 4. Vulkan compilation and gfx1151 HIP compilation.

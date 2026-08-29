@@ -18,3 +18,8 @@ HIP target for that device. Release notes must name the OS, driver, ROCm/Vulkan
 versions, exact GPU, commit, model hash, and test matrix. Backend fallbacks must
 be visible in logs; a fallback result must not be reported as a native-kernel
 benchmark.
+
+HIP builds use the State Space Duality matmul path for profitable long Mamba-2
+prefills and retain the sequential scan as a fallback. Set
+`GGML_CUDA_DISABLE_SSD=1` before process start to force that fallback for an A/B
+or operational rollback; the environment setting is read once per process.

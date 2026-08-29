@@ -10165,6 +10165,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
 
+    // Long-sequence Mamba-2 shapes that select the SSD matmul path on capable
+    // CUDA/HIP devices. GGML_CUDA_DISABLE_SSD=1 provides a same-binary scan
+    // baseline for tuning and regression measurements.
+    test_cases.emplace_back(new test_ssm_scan(
+        GGML_TYPE_F32, 128, 80, 128, 1, 256, 1, false, 1, false));
+    test_cases.emplace_back(new test_ssm_scan(
+        GGML_TYPE_F32, 128, 64, 80, 8, 300, 2, false, 1, false));
+
     // SWIGLU at a 27B-class FFN width, fused [gate|up] vs split operands
     // note: same bytes either way, so a backend that indexes them differently shows it here
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {

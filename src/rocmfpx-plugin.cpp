@@ -1,5 +1,7 @@
 #include "rocmfpx-plugin.h"
 
+#include "ggml-backend.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -28,15 +30,49 @@ struct loaded_plugin {
 #endif
 };
 
-std::mutex g_mutex;
+std::recursive_mutex g_mutex;
 std::vector<loaded_plugin> g_plugins;
 std::unordered_set<std::string> g_paths;
+
+// Keep plugin code resident until every stack-owned llama_model has had a
+// chance to run its destructor. Several command-line tools call
+// llama_backend_free() before their model smart pointers leave scope.
+// Declaring this guard after the registry objects makes its destructor run
+// first, while the mutex and containers are still alive.
+struct plugin_manager_lifetime {
+    ~plugin_manager_lifetime() {
+        rocmfpx_plugins_shutdown();
+    }
+};
+
+plugin_manager_lifetime g_plugin_manager_lifetime;
 
 void host_log(int level, const char * message) {
     const char * label = level == ROCMFPX_PLUGIN_LOG_ERROR ? "error" :
                          level == ROCMFPX_PLUGIN_LOG_WARN  ? "warn"  :
                          level == ROCMFPX_PLUGIN_LOG_DEBUG ? "debug" : "info";
     fprintf(stderr, "rocmfpx-plugin: %s: %s\n", label, message ? message : "");
+}
+
+int host_backend_load(const char * path) {
+    if (!path || !*path) {
+        return -1;
+    }
+    ggml_backend_reg_t reg = ggml_backend_load(path);
+    return reg ? (int) ggml_backend_reg_dev_count(reg) : -1;
+}
+
+size_t host_backend_count() {
+    return ggml_backend_reg_count();
+}
+
+const char * host_backend_name(size_t index) {
+    ggml_backend_reg_t reg = index < ggml_backend_reg_count() ? ggml_backend_reg_get(index) : nullptr;
+    return reg ? ggml_backend_reg_name(reg) : nullptr;
+}
+
+bool has_model_callbacks(const rocmfpx_plugin_v1 * plugin) {
+    return plugin->struct_size >= offsetof(rocmfpx_plugin_v1, on_model_close) + sizeof(plugin->on_model_close);
 }
 
 bool is_library(const std::filesystem::path & path) {
@@ -81,10 +117,11 @@ int load_one(const std::filesystem::path & input) {
 
     const rocmfpx_plugin_host_v1 host = {
         ROCMFPX_PLUGIN_ABI_VERSION, sizeof(rocmfpx_plugin_host_v1), host_log,
+        key.c_str(), host_backend_load, host_backend_count, host_backend_name,
     };
     const rocmfpx_plugin_v1 * plugin = query(ROCMFPX_PLUGIN_ABI_VERSION, &host);
     if (!plugin || plugin->abi_version != ROCMFPX_PLUGIN_ABI_VERSION ||
-        plugin->struct_size < sizeof(rocmfpx_plugin_v1) || !plugin->name ||
+        plugin->struct_size < ROCMFPX_PLUGIN_V1_BASE_SIZE || !plugin->name ||
         (plugin->on_load && plugin->on_load() != 0)) {
         host_log(ROCMFPX_PLUGIN_LOG_WARN, ("rejected incompatible plugin " + key).c_str());
 #if defined(_WIN32)
@@ -108,7 +145,7 @@ int rocmfpx_plugins_load(const char * path_list) {
     if (!path_list || !*path_list) {
         return -1;
     }
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     int loaded = 0;
 #if defined(_WIN32)
     const char separator = ';';
@@ -147,17 +184,56 @@ int rocmfpx_plugins_load(const char * path_list) {
 }
 
 size_t rocmfpx_plugins_count(void) {
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     return g_plugins.size();
 }
 
 const rocmfpx_plugin_v1 * rocmfpx_plugin_at(size_t index) {
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     return index < g_plugins.size() ? g_plugins[index].descriptor : nullptr;
 }
 
+int rocmfpx_plugins_model_open(const rocmfpx_plugin_model_v1 * model) {
+    if (!model || model->abi_version != ROCMFPX_PLUGIN_ABI_VERSION ||
+        model->struct_size < sizeof(rocmfpx_plugin_model_v1) || model->model_id == 0) {
+        return -1;
+    }
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
+    int notified = 0;
+    for (const auto & loaded : g_plugins) {
+        const auto * plugin = loaded.descriptor;
+        if (has_model_callbacks(plugin) && plugin->on_model_open) {
+            if (plugin->on_model_open(model) == 0) {
+                notified++;
+            } else {
+                host_log(ROCMFPX_PLUGIN_LOG_WARN, ("model-open callback failed in " + std::string(plugin->name)).c_str());
+            }
+        }
+    }
+    return notified;
+}
+
+int rocmfpx_plugins_model_close(uint64_t model_id) {
+    if (model_id == 0) {
+        return -1;
+    }
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
+    int notified = 0;
+    for (auto it = g_plugins.rbegin(); it != g_plugins.rend(); ++it) {
+        const auto * plugin = it->descriptor;
+        if (has_model_callbacks(plugin) && plugin->on_model_close) {
+            if (plugin->on_model_close(model_id) == 0) {
+                notified++;
+            } else {
+                host_log(ROCMFPX_PLUGIN_LOG_WARN, ("model-close callback failed in " + std::string(plugin->name)).c_str());
+            }
+        }
+    }
+    return notified;
+}
+
 void rocmfpx_plugins_shutdown(void) {
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
     for (auto it = g_plugins.rbegin(); it != g_plugins.rend(); ++it) {
         if (it->descriptor->on_unload) {
             it->descriptor->on_unload();

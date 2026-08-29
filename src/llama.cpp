@@ -156,7 +156,6 @@ void llama_numa_init(enum ggml_numa_strategy numa) {
 }
 
 void llama_backend_free(void) {
-    rocmfpx_plugins_shutdown();
     ggml_quantize_free();
 }
 
@@ -373,12 +372,36 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
 
         if (params.vocab_only) {
             LLAMA_LOG_INFO("%s: vocab only - skipping tensors\n", __func__);
+            const std::string plugin_arch = model->arch_name();
+            const rocmfpx_plugin_model_v1 plugin_model = {
+                ROCMFPX_PLUGIN_ABI_VERSION, sizeof(rocmfpx_plugin_model_v1),
+                (uint64_t) (uintptr_t) model, fname.c_str(), plugin_arch.c_str(),
+                (uint32_t) model->ftype(), 0, 0, model->size(), model->n_elements(),
+            };
+            model->rocmfpx_plugin_model_id = plugin_model.model_id;
+            rocmfpx_plugins_model_open(&plugin_model);
             return {0, model_ptr.release()};
         }
 
         if (!model->load_tensors(ml)) {
             return {-2, nullptr};
         }
+
+        uint64_t plugin_features = 0;
+        if (model->hparams.ple_n_heads > 0) {
+            plugin_features |= ROCMFPX_PLUGIN_MODEL_FEATURE_PLE;
+        }
+        if (model->hparams.ssm_d_state > 0) {
+            plugin_features |= ROCMFPX_PLUGIN_MODEL_FEATURE_SSM;
+        }
+        const std::string plugin_arch = model->arch_name();
+        const rocmfpx_plugin_model_v1 plugin_model = {
+            ROCMFPX_PLUGIN_ABI_VERSION, sizeof(rocmfpx_plugin_model_v1),
+            (uint64_t) (uintptr_t) model, fname.c_str(), plugin_arch.c_str(),
+            (uint32_t) model->ftype(), 0, plugin_features, model->size(), model->n_elements(),
+        };
+        model->rocmfpx_plugin_model_id = plugin_model.model_id;
+        rocmfpx_plugins_model_open(&plugin_model);
 
         return {0, model_ptr.release()};
     } catch (const std::exception & err) {

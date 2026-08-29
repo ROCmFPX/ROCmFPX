@@ -12,15 +12,16 @@ and of ROCmFP3, ROCmFP4, ROCmFP6, and ROCmFP8.
 | ROCmFP2 | 2.50 bpw | frozen | yes | yes | yes |
 | ROCmFP3 | 3.50 bpw | frozen | yes | yes | yes |
 | ROCmFP4 | 4.25/4.50 bpw variants | frozen | yes | yes | yes |
-| ROCmFP5 | 5.50 bpw | new, version 1 | yes | fallback pending | fallback pending |
+| ROCmFP5 | 5.50 bpw | new, version 1 | yes | yes | yes |
 | ROCmFP6 | 6.50 bpw | frozen | yes | yes, packed-layout verified | yes |
-| ROCmFP7 | 7.50 bpw | new, version 1 | yes | fallback pending | fallback pending |
+| ROCmFP7 | 7.50 bpw | new, version 1 | yes | yes | yes |
 | ROCmFP8 | 8.25 bpw | frozen | yes | yes | yes |
 | NVFP4 | 4.50 bpw | upstream GGML | yes | backend-dependent | backend-dependent |
 
 “Yes” means a registered execution path exists; it is not a performance claim
-for every GPU. FP5 and FP7 deliberately start with a stable CPU reference
-implementation. GPU kernels must match it before those backends are advertised.
+for every GPU. FP5 and FP7 CPU, Vulkan, and HIP paths match the reference
+implementation on gfx1151. Other RDNA generations still require physical-device
+qualification.
 
 The base presets minimize size at the named format. `*_AGENT` presets for
 ROCmFP2/3/5/6/7/8 keep the same base format but promote sensitive embeddings,

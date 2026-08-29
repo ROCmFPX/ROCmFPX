@@ -710,6 +710,8 @@ struct llama_model {
     int64_t t_load_us  = 0;
     int64_t t_start_us = 0;
 
+    uint64_t rocmfpx_plugin_model_id = 0;
+
     explicit llama_model(const llama_model_params & params);
     virtual ~llama_model();
 
