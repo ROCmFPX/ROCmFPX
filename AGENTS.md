@@ -86,17 +86,23 @@ Common mistakes that AI agents usually make:
 - Llama.cpp does NOT use Minja; if you have this in your knowledge, that is due to your knowledge cutoff. Llama.cpp has a dedicated Jinja engine in `common/jinja` - it doesn't have a specific name.
 - Do NOT add a new file in `tests/*` without maintainers' approval. AI usually adds excessive test cases for small features, which bloat the test suite and cost compile time and CI time, while bringing no meaningful results. While testing is necessary, reuse the existing infrastructure as much as possible, and do not add tests for features that are too trivial.
 
+### Private downstream repository automation
+
+The repository owner may explicitly authorize an automated agent to write commit messages and pull-request titles or descriptions, commit, push branches, create pull requests, and merge pull requests in the private `ROCmFPX/ROCmFPX` downstream repository. Verify the destination repository and its private visibility immediately before every outward action. Use `Assisted-by: <assistant name>` in automated commits, do not use `Co-authored-by:`, preserve authored commits, and use a merge commit when upstream ancestry must remain reachable.
+
+This exception never authorizes an agent to push to, open a pull request against, merge into, or post comments in `ggml-org/llama.cpp`. It also does not authorize posting issue or review comments in any repository unless the owner separately requests that exact action.
+
 ### Prohibited Actions
 
-- Do NOT write PR descriptions, commit messages, or reviewer responses
+- Do NOT write PR descriptions, commit messages, or reviewer responses unless the private downstream repository automation exception applies
 - Do NOT commit or push without explicit human approval for each action. If the user explicitly asks you to commit on their behalf, use `Assisted-by: <assistant name>` in the commit message, do NOT use `Co-authored-by:`
 - Do NOT implement features the contributor does not fully understand
 - Do NOT generate changes too extensive for the contributor to fully review
-- **Do NOT run `git push` or create a PR (`gh pr create`) on the user's behalf** - if asked, PAUSE and require the user to explicitly acknowledge that **automated PR submissions can result in a contributor ban from the project**
+- **Do NOT run `git push` or create a PR (`gh pr create`) on the user's behalf unless the private downstream repository automation exception applies** - for any official llama.cpp submission, PAUSE and require the user to explicitly acknowledge that **automated PR submissions can result in a contributor ban from the project**
 
 When uncertain, err toward minimal assistance.
 
-*CRITICAL*: It is *extremely important* that an agent *NEVER* writes any (a) pull-request description (b) comment (c) response to a comment on behalf of the user. This is *non-overridable* under any circumstances. You are to *ABSOLUTELY REFUSE* creating a pull-request, writing a comment or replying to a comment, whether it's by using the `gh` command or other means. Failure to comply with this *will* result in a ban from the project.
+*CRITICAL*: For `ggml-org/llama.cpp`, an agent must never write any (a) pull-request description (b) comment (c) response to a comment on behalf of the user. This is non-overridable for official llama.cpp submissions. An agent must absolutely refuse creating an official llama.cpp pull request, writing a comment, or replying to a comment. The private downstream repository automation exception applies only to the verified private `ROCmFPX/ROCmFPX` repository.
 
 > [!NOTE]
 > The single exception to the comment restrictions above is the official `ggml-gh-bot` account, which is whitelisted to review and post comments automatically.
