@@ -754,6 +754,7 @@ static void * ggml_backend_cuda_buffer_get_base(ggml_backend_buffer_t buffer) {
     return ctx->dev_ptr;
 }
 
+#ifdef GGML_USE_HIP
 static constexpr size_t ggml_cuda_rocmfpx_fp6_disk_block_size = sizeof(block_rocmfp6);
 static constexpr size_t ggml_cuda_rocmfpx_fp6_expanded_block_size = sizeof(block_rocmfp6_expanded);
 
@@ -853,6 +854,7 @@ static size_t ggml_cuda_tensor_offset(const ggml_tensor * tensor, size_t packed_
     }
     return packed_offset;
 }
+#endif // GGML_USE_HIP
 
 static enum ggml_status ggml_backend_cuda_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
