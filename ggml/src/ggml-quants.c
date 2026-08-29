@@ -5904,6 +5904,13 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
                     return false;
                 }
             } break;
+        case GGML_TYPE_Q5_0_ROCMFPX:
+            {
+                if (!rocmfpx_validate_row_data_fp5(data, nbytes)) {
+                    fprintf(stderr, "%s: invalid ROCmFPx FP5 row data\n", __func__);
+                    return false;
+                }
+            } break;
         case GGML_TYPE_Q2_0_ROCMFPX:
             {
                 if (!rocmfpx_validate_row_data_fp2(data, nbytes)) {
@@ -5915,6 +5922,13 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
             {
                 if (!rocmfpx_validate_row_data_fp6(data, nbytes)) {
                     fprintf(stderr, "%s: invalid ROCmFPx FP6 row data\n", __func__);
+                    return false;
+                }
+            } break;
+        case GGML_TYPE_Q7_0_ROCMFPX:
+            {
+                if (!rocmfpx_validate_row_data_fp7(data, nbytes)) {
+                    fprintf(stderr, "%s: invalid ROCmFPx FP7 row data\n", __func__);
                     return false;
                 }
             } break;

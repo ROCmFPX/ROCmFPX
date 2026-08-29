@@ -723,6 +723,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) rocmfpx_dequantize_row_fp3,
         .from_float_ref           = (ggml_from_float_t) rocmfpx_quantize_row_fp3_ref,
     },
+    [GGML_TYPE_Q5_0_ROCMFPX] = {
+        .type_name                = "q5_0_rocmfpx",
+        .blck_size                = QK_ROCMFP5,
+        .type_size                = sizeof(block_rocmfp5),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) rocmfpx_dequantize_row_fp5,
+        .from_float_ref           = (ggml_from_float_t) rocmfpx_quantize_row_fp5_ref,
+    },
     [GGML_TYPE_Q2_0_ROCMFPX] = {
         .type_name                = "q2_0_rocmfpx",
         .blck_size                = QK_ROCMFP2,
@@ -738,6 +746,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) rocmfpx_dequantize_row_fp6,
         .from_float_ref           = (ggml_from_float_t) rocmfpx_quantize_row_fp6_ref,
+    },
+    [GGML_TYPE_Q7_0_ROCMFPX] = {
+        .type_name                = "q7_0_rocmfpx",
+        .blck_size                = QK_ROCMFP7,
+        .type_size                = sizeof(block_rocmfp7),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) rocmfpx_dequantize_row_fp7,
+        .from_float_ref           = (ggml_from_float_t) rocmfpx_quantize_row_fp7_ref,
     },
     [GGML_TYPE_Q8_0_ROCMFPX] = {
         .type_name                = "q8_0_rocmfpx",
@@ -1517,7 +1533,12 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
         case GGML_FTYPE_MOSTLY_Q3_0_ROCMFPX:
         case GGML_FTYPE_MOSTLY_Q3_0_ROCMFPX_AGENT:
             wtype = GGML_TYPE_Q3_0_ROCMFPX; break;
-        case GGML_FTYPE_MOSTLY_Q2_0_ROCMFPX: wtype = GGML_TYPE_Q2_0_ROCMFPX; break;
+        case GGML_FTYPE_MOSTLY_Q5_0_ROCMFPX:
+        case GGML_FTYPE_MOSTLY_Q5_0_ROCMFPX_AGENT:
+            wtype = GGML_TYPE_Q5_0_ROCMFPX; break;
+        case GGML_FTYPE_MOSTLY_Q2_0_ROCMFPX:
+        case GGML_FTYPE_MOSTLY_Q2_0_ROCMFPX_AGENT:
+            wtype = GGML_TYPE_Q2_0_ROCMFPX; break;
         case GGML_FTYPE_MOSTLY_Q6_0_ROCMFPX:
         case GGML_FTYPE_MOSTLY_Q6_0_ROCMFPX_AGENT:
         case GGML_FTYPE_MOSTLY_Q6_0_ROCMFPX_LEAN:
@@ -1526,6 +1547,9 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
         case GGML_FTYPE_MOSTLY_Q8_0_ROCMFPX:
         case GGML_FTYPE_MOSTLY_Q8_0_ROCMFPX_AGENT:
             wtype = GGML_TYPE_Q8_0_ROCMFPX; break;
+        case GGML_FTYPE_MOSTLY_Q7_0_ROCMFPX:
+        case GGML_FTYPE_MOSTLY_Q7_0_ROCMFPX_AGENT:
+            wtype = GGML_TYPE_Q7_0_ROCMFPX; break;
         case GGML_FTYPE_MOSTLY_Q4_0_ROCMI4:  wtype = GGML_TYPE_Q4_0_ROCMI4;  break;
         case GGML_FTYPE_MOSTLY_Q4_1:          wtype = GGML_TYPE_Q4_1;  break;
         case GGML_FTYPE_MOSTLY_Q1_0:          wtype = GGML_TYPE_Q1_0;  break;
@@ -8081,8 +8105,10 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_Q4_0_ROCMFP4:      result = rocmfp4_quantize_q4_0     (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q4_0_ROCMFP4_FAST: result = rocmfp4_quantize_q4_0_fast(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q3_0_ROCMFPX:      result = rocmfpx_quantize_fp3      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q5_0_ROCMFPX:      result = rocmfpx_quantize_fp5      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q2_0_ROCMFPX:      result = rocmfpx_quantize_fp2      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q6_0_ROCMFPX:      result = rocmfpx_quantize_fp6      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q7_0_ROCMFPX:      result = rocmfpx_quantize_fp7      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q8_0_ROCMFPX:      result = rocmfpx_quantize_fp8      (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q4_0_ROCMI4:       result = rocmfpx_quantize_i4       (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TURBO3_0:

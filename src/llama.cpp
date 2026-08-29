@@ -1,4 +1,5 @@
 #include "llama.h"
+#include "rocmfpx-plugin.h"
 
 #include "llama-impl.h"
 
@@ -131,6 +132,15 @@ void llama_backend_init(void) {
     if (!ggml_backend_reg_count()) {
         ggml_backend_load_all();
     }
+
+    // Plugins are opt-in: only an explicit path is loaded. This avoids silently
+    // executing libraries from the working directory while still allowing PLE
+    // and SSD sidecars to be dropped in without rebuilding llama.cpp.
+    if (const char * path = std::getenv("ROCMFPX_PLUGIN_PATH")) {
+        // The loader canonicalizes paths and suppresses duplicates, so repeated
+        // global initialization is safe.
+        rocmfpx_plugins_load(path);
+    }
 }
 
 void llama_numa_init(enum ggml_numa_strategy numa) {
@@ -146,6 +156,7 @@ void llama_numa_init(enum ggml_numa_strategy numa) {
 }
 
 void llama_backend_free(void) {
+    rocmfpx_plugins_shutdown();
     ggml_quantize_free();
 }
 
@@ -317,6 +328,8 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
     try {
         llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
             params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides);
+
+        ml.lazy_mode = params.lazy_mode;
 
         ml.print_info();
         std::unique_ptr<llama_model> model_ptr(llama_model_create(ml, params));
@@ -614,4 +627,3 @@ const char * llama_print_system_info(void) {
 
     return s.c_str();
 }
-

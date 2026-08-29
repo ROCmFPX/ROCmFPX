@@ -1822,14 +1822,8 @@ struct block_rocmfpx_fp3
 
 struct block_rocmfpx_fp6
 {
-    int8_t qs[32];
+    uint8_t qs[24];
     uint8_t e[2];
-};
-
-struct block_rocmfpx_fp6_packed16
-{
-    int16_t qs[16];
-    uint16_t e;
 };
 
 struct block_rocmfpx_fp8
@@ -1857,7 +1851,6 @@ struct block_rocmfpx_fp8
 #define QUANT_R QUANT_R_ROCMFPX_FP8
 #define QUANT_AUXF 1
 #define A_TYPE block_rocmfpx_fp6
-#define A_TYPE_PACKED16 block_rocmfpx_fp6_packed16
 #endif
 
 #if defined(DATA_A_ROCMFPX_FP8)

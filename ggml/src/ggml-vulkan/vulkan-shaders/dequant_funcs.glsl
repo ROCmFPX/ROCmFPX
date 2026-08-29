@@ -629,7 +629,8 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 #if defined(DATA_A_ROCMFPX_FP6)
 float rocmfpx_fp6_dequant(uint ib, uint idx, uint a_offset) {
     const float d = ue4m3_to_fp32(data_a[a_offset + ib].e[idx >= 16u ? 1u : 0u]);
-    return float(int(data_a[a_offset + ib].qs[idx])) * d;
+    const i8vec4 unpacked = unpack8(rocmfpx_fp6_pack4_qs(data_a[a_offset + ib].qs, idx & ~3u));
+    return float(unpacked[idx & 3u]) * d;
 }
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
