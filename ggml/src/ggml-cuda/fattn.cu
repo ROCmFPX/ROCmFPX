@@ -356,11 +356,11 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
 }
 
 // Best FlashAttention kernel for a specific GPU:
+#ifdef GGML_USE_HIP
 static bool ggml_type_is_turbo(ggml_type type) {
     return type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0;
 }
 
-#ifdef GGML_USE_HIP
 static bool ggml_cuda_fattn_turbo_vec_pair_supported(ggml_type type_k, ggml_type type_v) {
     const bool k_supported = type_k == GGML_TYPE_Q8_0 || ggml_type_is_turbo(type_k);
     const bool v_supported = type_v == GGML_TYPE_Q8_0 || ggml_type_is_turbo(type_v);

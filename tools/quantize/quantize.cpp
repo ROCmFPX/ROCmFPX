@@ -45,13 +45,18 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
     { "Q4_0_ROCMFP4_STRIX",    LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX,    " ~4.49 bpw ROCmFP4 Strix Halo attn-K/V quality recipe", },
     { "Q4_0_ROCMFP4_STRIX_LEAN", LLAMA_FTYPE_MOSTLY_Q4_0_ROCMFP4_STRIX_LEAN, " ~4.38 bpw ROCmFP4 Strix K/V + Q5_K token embeddings", },
     { "Q3_0_ROCMFPX",          LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX,          " 3.50 bpw ROCmFPx experimental, ROCm/Vulkan staging", },
+    { "Q5_0_ROCMFPX",          LLAMA_FTYPE_MOSTLY_Q5_0_ROCMFPX,          " 5.50 bpw ROCmFPx dual-scale signed linear", },
     { "Q2_0_ROCMFPX",          LLAMA_FTYPE_MOSTLY_Q2_0_ROCMFPX,          " 2.50 bpw ROCmFPx S40 codebook + dual UE4M3 scales", },
+    { "Q2_0_ROCMFPX_AGENT",    LLAMA_FTYPE_MOSTLY_Q2_0_ROCMFPX_AGENT,    " agent/tool-call coherent ROCmFPx Q2 routing", },
     { "Q6_0_ROCMFPX",          LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX,          " 6.50 bpw ROCmFPx experimental, ROCm/Vulkan staging", },
+    { "Q7_0_ROCMFPX",          LLAMA_FTYPE_MOSTLY_Q7_0_ROCMFPX,          " 7.50 bpw ROCmFPx dual-scale signed linear", },
     { "Q8_0_ROCMFPX",          LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX,          " 8.25 bpw ROCmFPx experimental, ROCm/Vulkan staging", },
     { "Q4_0_ROCMI4",           LLAMA_FTYPE_MOSTLY_Q4_0_ROCMI4,           " 4.25 bpw native signed-nibble 4-bit (no codebook)", },
     { "Q3_0_ROCMFPX_AGENT",    LLAMA_FTYPE_MOSTLY_Q3_0_ROCMFPX_AGENT,    " agent/tool-call coherent ROCmFPx Q3 routing", },
+    { "Q5_0_ROCMFPX_AGENT",    LLAMA_FTYPE_MOSTLY_Q5_0_ROCMFPX_AGENT,    " agent/tool-call coherent ROCmFPx Q5 routing", },
     { "Q6_0_ROCMFPX_AGENT",    LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX_AGENT,    " agent/tool-call coherent ROCmFPx Q6 routing", },
     { "Q8_0_ROCMFPX_AGENT",    LLAMA_FTYPE_MOSTLY_Q8_0_ROCMFPX_AGENT,    " agent/tool-call coherent ROCmFPx Q8 routing", },
+    { "Q7_0_ROCMFPX_AGENT",    LLAMA_FTYPE_MOSTLY_Q7_0_ROCMFPX_AGENT,    " agent/tool-call coherent ROCmFPx Q7 routing", },
     { "Q6_0_ROCMFPX_LEAN",     LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX_LEAN,     " size/speed-biased ROCmFPx Q6 routing", },
     { "Q6_0_ROCMFPX_AGENT_LEAN", LLAMA_FTYPE_MOSTLY_Q6_0_ROCMFPX_AGENT_LEAN, " agent ROCmFPx Q6 routing without Q8-heavy boosts", },
     { "Q4_1",     LLAMA_FTYPE_MOSTLY_Q4_1,     " 4.78G, +0.4511 ppl @ Llama-3-8B",  },
@@ -142,7 +147,7 @@ static bool try_parse_ftype(const std::string & ftype_str_in, llama_ftype & ftyp
 static void usage(const char * executable) {
     printf("usage: %s [--help] [--allow-requantize] [--leave-output-tensor] [--pure] [--imatrix] [--include-weights]\n", executable);
     printf("       [--exclude-weights] [--output-tensor-type] [--token-embedding-type] [--tensor-type] [--tensor-type-file]\n");
-    printf("       [--prune-layers] [--keep-split] [--override-kv] [--dry-run]\n");
+    printf("       [--prune-layers] [--keep-split] [--override-kv] [--dry-run] [--max-buffer-size]\n");
     printf("       model-f32.gguf [model-quant.gguf] type [nthreads]\n\n");
     printf("  --allow-requantize\n");
     printf("                                      allow requantizing tensors that have already been quantized\n");
@@ -181,7 +186,10 @@ static void usage(const char * executable) {
     printf("                                      WARNING: this is an advanced option, use with care.\n");
     printf("  --dry-run\n");
     printf("                                      calculate and show the final quantization size without performing quantization\n");
-    printf("                                      example: llama-quantize --dry-run model-f32.gguf Q4_K\n\n");
+    printf("                                      example: llama-quantize --dry-run model-f32.gguf Q4_K\n");
+    printf("  --max-buffer-size MiB\n");
+    printf("                                      max amount of tensor rows kept in memory while quantizing one tensor (default: 8192)\n");
+    printf("                                      lower it to quantize models with very large tensors on a machine with little RAM\n\n");
     printf("note: --include-weights and --exclude-weights cannot be used together\n\n");
     printf("-----------------------------------------------------------------------------\n");
     printf(" allowed quantization types\n");
@@ -487,6 +495,16 @@ int llama_quantize(int argc, char ** argv) {
             }
         } else if (strcmp(argv[arg_idx], "--keep-split") == 0) {
             params.keep_split = true;
+        } else if (strcmp(argv[arg_idx], "--max-buffer-size") == 0) {
+            if (arg_idx == argc-1) {
+                usage(argv[0]);
+            }
+            const int mib = atoi(argv[++arg_idx]);
+            if (mib <= 0) {
+                fprintf(stderr, "%s: invalid --max-buffer-size '%s'\n", __func__, argv[arg_idx]);
+                return 1;
+            }
+            params.max_buf_size = (size_t) mib * 1024 * 1024;
         } else {
             usage(argv[0]);
         }

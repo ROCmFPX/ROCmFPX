@@ -1,4 +1,5 @@
 #include "llama.h"
+#include "rocmfpx-plugin.h"
 
 #include "llama-impl.h"
 
@@ -130,6 +131,15 @@ void llama_backend_init(void) {
 
     if (!ggml_backend_reg_count()) {
         ggml_backend_load_all();
+    }
+
+    // Plugins are opt-in: only an explicit path is loaded. This avoids silently
+    // executing libraries from the working directory while still allowing PLE
+    // and SSD sidecars to be dropped in without rebuilding llama.cpp.
+    if (const char * path = std::getenv("ROCMFPX_PLUGIN_PATH")) {
+        // The loader canonicalizes paths and suppresses duplicates, so repeated
+        // global initialization is safe.
+        rocmfpx_plugins_load(path);
     }
 }
 
@@ -318,6 +328,8 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
             params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides);
 
+        ml.lazy_mode = params.lazy_mode;
+
         ml.print_info();
         std::unique_ptr<llama_model> model_ptr(llama_model_create(ml, params));
 
@@ -360,12 +372,36 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
 
         if (params.vocab_only) {
             LLAMA_LOG_INFO("%s: vocab only - skipping tensors\n", __func__);
+            const std::string plugin_arch = model->arch_name();
+            const rocmfpx_plugin_model_v1 plugin_model = {
+                ROCMFPX_PLUGIN_ABI_VERSION, sizeof(rocmfpx_plugin_model_v1),
+                (uint64_t) (uintptr_t) model, fname.c_str(), plugin_arch.c_str(),
+                (uint32_t) model->ftype(), 0, 0, model->size(), model->n_elements(),
+            };
+            model->rocmfpx_plugin_model_id = plugin_model.model_id;
+            rocmfpx_plugins_model_open(&plugin_model);
             return {0, model_ptr.release()};
         }
 
         if (!model->load_tensors(ml)) {
             return {-2, nullptr};
         }
+
+        uint64_t plugin_features = 0;
+        if (model->hparams.ple_n_heads > 0) {
+            plugin_features |= ROCMFPX_PLUGIN_MODEL_FEATURE_PLE;
+        }
+        if (model->hparams.ssm_d_state > 0) {
+            plugin_features |= ROCMFPX_PLUGIN_MODEL_FEATURE_SSM;
+        }
+        const std::string plugin_arch = model->arch_name();
+        const rocmfpx_plugin_model_v1 plugin_model = {
+            ROCMFPX_PLUGIN_ABI_VERSION, sizeof(rocmfpx_plugin_model_v1),
+            (uint64_t) (uintptr_t) model, fname.c_str(), plugin_arch.c_str(),
+            (uint32_t) model->ftype(), 0, plugin_features, model->size(), model->n_elements(),
+        };
+        model->rocmfpx_plugin_model_id = plugin_model.model_id;
+        rocmfpx_plugins_model_open(&plugin_model);
 
         return {0, model_ptr.release()};
     } catch (const std::exception & err) {
@@ -614,4 +650,3 @@ const char * llama_print_system_info(void) {
 
     return s.c_str();
 }
-

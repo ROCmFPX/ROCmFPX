@@ -75,7 +75,9 @@ const std::vector<std::string> type_names = {
     "rocmfp4_fast",
     "rocmfpx_fp2",
     "rocmfpx_fp3",
+    "rocmfpx_fp5",
     "rocmfpx_fp6",
+    "rocmfpx_fp7",
     "rocmfpx_fp8",
     "nvfp4",
     "tq2_0",
@@ -590,7 +592,8 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
     for (const auto& tname : type_names) {
         const bool rocmfpx_type = tname == "rocmfp4" || tname == "rocmfp4_fast" ||
                                   tname == "rocmfpx_fp2" || tname == "rocmfpx_fp3" ||
-                                  tname == "rocmfpx_fp6" || tname == "rocmfpx_fp8";
+                                  tname == "rocmfpx_fp5" || tname == "rocmfpx_fp6" ||
+                                  tname == "rocmfpx_fp7" || tname == "rocmfpx_fp8";
         if (rocmfpx_type && (coopmat || coopmat2)) {
             continue;
         }
@@ -598,7 +601,7 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
         std::string load_vec_quant = "2";
         if ((tname == "q1_0") || (tname == "q4_0") || (tname == "q4_1") || (tname == "q5_1") || (tname == "iq1_s") || (tname == "iq1_m") || (tname == "iq2_xxs") || (tname == "iq2_xs") || (tname == "iq2_s"))
             load_vec_quant = "8";
-        else if ((tname == "q2_0") || (tname == "q5_0") || (tname == "q8_0") || (tname == "q2_k") || (tname == "q4_k") || (tname == "q5_k") || (tname == "iq3_xxs") || (tname == "iq3_s") || (tname == "iq4_xs") || (tname == "iq4_nl") || (tname == "mxfp4") || (tname == "rocmfp4") || (tname == "rocmfp4_fast") || (tname == "rocmfpx_fp2") || (tname == "rocmfpx_fp3") || (tname == "rocmfpx_fp6") || (tname == "rocmfpx_fp8") || (tname == "nvfp4"))
+        else if ((tname == "q2_0") || (tname == "q5_0") || (tname == "q8_0") || (tname == "q2_k") || (tname == "q4_k") || (tname == "q5_k") || (tname == "iq3_xxs") || (tname == "iq3_s") || (tname == "iq4_xs") || (tname == "iq4_nl") || (tname == "mxfp4") || (tname == "rocmfp4") || (tname == "rocmfp4_fast") || (tname == "rocmfpx_fp2") || (tname == "rocmfpx_fp3") || (tname == "rocmfpx_fp5") || (tname == "rocmfpx_fp6") || (tname == "rocmfpx_fp7") || (tname == "rocmfpx_fp8") || (tname == "nvfp4"))
             load_vec_quant = "4";
 
         if (tname == "bf16") {
@@ -779,7 +782,8 @@ void process_shaders() {
         // mul mat vec with integer dot product
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
         if (is_legacy_quant(tname) || tname == "mxfp4" || tname == "rocmfp4" || tname == "rocmfp4_fast" ||
-            tname == "rocmfpx_fp2" || tname == "rocmfpx_fp3" || tname == "rocmfpx_fp6" || tname == "rocmfpx_fp8" ||
+            tname == "rocmfpx_fp2" || tname == "rocmfpx_fp3" || tname == "rocmfpx_fp5" || tname == "rocmfpx_fp6" ||
+            tname == "rocmfpx_fp7" || tname == "rocmfpx_fp8" ||
             is_k_quant(tname) || tname == "iq1_s" || tname == "iq1_m") {
             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}}));
             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}}));
@@ -1060,6 +1064,7 @@ void process_shaders() {
     string_to_spv("cumsum_multipass2_f32", "cumsum_multipass2.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"D_TYPE", "float"}}));
 
     string_to_spv("count_experts", "count_experts.comp", merge_maps(base_dict, {{"A_TYPE", "uint"}, {"D_TYPE", "uint"}}));
+    string_to_spv("count_experts_subgroup", "count_experts.comp", merge_maps(base_dict, {{"A_TYPE", "uint"}, {"D_TYPE", "uint"}, {"USE_SUBGROUPS", "1"}}));
 
     for (std::string dim_str : {"", "_3d"}) {
         for (bool bda : {false, true}) {
@@ -1089,6 +1094,12 @@ void process_shaders() {
     string_to_spv("rwkv_wkv6_f32", "wkv6.comp", merge_maps(base_dict, {{"A_TYPE", "float"}}));
 
     string_to_spv("gated_linear_attn_f32", "gla.comp", merge_maps(base_dict, {{"A_TYPE", "float"}}));
+
+    // Compile IQ4_NL support in so its shared LUT is available when K uses it.
+    // K quant type is selected at runtime via the FaTypeK spec constant.
+    std::map<std::string, std::string> li_dict = {{"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV4", "vec4"}, {"DATA_A_IQ4_NL", "1"}};
+    string_to_spv("lightning_indexer_f32", "lightning_indexer.comp", li_dict);
+    string_to_spv("lightning_indexer_subgroup_f32", "lightning_indexer.comp", merge_maps(li_dict, {{"USE_SUBGROUP_ADD", "1"}}));
 
     string_to_spv("rwkv_wkv7_f32", "wkv7.comp", merge_maps(base_dict, {{"A_TYPE", "float"}}));
 
@@ -1276,7 +1287,8 @@ void write_output_files() {
     for (const std::string& btype : btypes) {
     for (const auto& tname : type_names) {
         if (btype == "q8_1" && !is_legacy_quant(tname) && tname != "mxfp4" && tname != "rocmfp4" && tname != "rocmfp4_fast" &&
-            tname != "rocmfpx_fp2" && tname != "rocmfpx_fp3" && tname != "rocmfpx_fp6" && tname != "rocmfpx_fp8" &&
+            tname != "rocmfpx_fp2" && tname != "rocmfpx_fp3" && tname != "rocmfpx_fp5" && tname != "rocmfpx_fp6" &&
+            tname != "rocmfpx_fp7" && tname != "rocmfpx_fp8" &&
             !is_k_quant(tname) && tname != "iq1_s" && tname != "iq1_m") {
             continue;
         }

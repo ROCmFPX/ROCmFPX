@@ -441,7 +441,9 @@ extern "C" {
         GGML_TYPE_TURBO4_0          = 106, // TurboQuant 4-bit KV cache
         GGML_TYPE_Q2_0_ROCMFPX      = 107, // 2-bit S40 codebook + dual UE4M3 scales
         GGML_TYPE_Q4_0_ROCMI4       = 108, // exact signed-nibble 4-bit + UE4M3 scale
-        GGML_TYPE_COUNT             = 109,
+        GGML_TYPE_Q5_0_ROCMFPX      = 109, // 5-bit signed linear + dual UE4M3 scales
+        GGML_TYPE_Q7_0_ROCMFPX      = 110, // 7-bit signed linear + dual UE4M3 scales
+        GGML_TYPE_COUNT             = 111,
     };
 
     // precision
@@ -503,6 +505,11 @@ extern "C" {
         GGML_FTYPE_MOSTLY_Q6_0_ROCMFPX_AGENT_LEAN   = 117,
         GGML_FTYPE_MOSTLY_Q4_0_ROCMI4               = 118,
         GGML_FTYPE_MOSTLY_Q2_0_ROCMFPX              = 119,
+        GGML_FTYPE_MOSTLY_Q5_0_ROCMFPX              = 120,
+        GGML_FTYPE_MOSTLY_Q5_0_ROCMFPX_AGENT        = 121,
+        GGML_FTYPE_MOSTLY_Q7_0_ROCMFPX              = 122,
+        GGML_FTYPE_MOSTLY_Q7_0_ROCMFPX_AGENT        = 123,
+        GGML_FTYPE_MOSTLY_Q2_0_ROCMFPX_AGENT        = 124,
     };
 
     // available tensor operations:

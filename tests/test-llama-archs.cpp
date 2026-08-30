@@ -59,13 +59,23 @@ static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
             tmp[i] = ggml_fp32_to_fp16(dis(gen));
         }
         ggml_backend_tensor_set(tensor, tmp.data(), 0, ggml_nbytes(tensor));
+    } else if (tensor->type == GGML_TYPE_Q3_0_ROCMFPX) {
+        std::vector<float> src(ne);
+        for (int64_t i = 0; i < ne; i++) {
+            src[i] = dis(gen);
+        }
+        std::vector<uint8_t> tmp(ggml_nbytes(tensor));
+        const size_t written = ggml_quantize_chunk(
+            tensor->type, src.data(), tmp.data(), 0, ggml_nrows(tensor), tensor->ne[0], nullptr);
+        GGML_ASSERT(written == tmp.size());
+        ggml_backend_tensor_set(tensor, tmp.data(), 0, tmp.size());
     } else {
         GGML_ABORT("fatal error");
     }
 }
 
 static void usage(char ** argv) {
-    printf("Usage: %s [-a/--arch arch] [-s/--seed seed] [-v/--verbose]\n", argv[0]);
+    printf("Usage: %s [-a/--arch arch] [-s/--seed seed] [-o/--out dir] [-v/--verbose] [-h/--help]\n", argv[0]);
 }
 
 static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32_t n_vocab, const size_t seed){
@@ -82,7 +92,7 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
 static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     gguf_context_ptr ret(gguf_init_empty());
     llama_model_saver ms(arch, ret.get());
-    const uint32_t n_ctx = 128;
+    const uint32_t n_ctx = 256;
 
     uint32_t n_vocab = 128;
     uint32_t n_embd  = 256;
@@ -249,8 +259,36 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
 
     // MSA requires one indexer head per GQA (KV) head, unlike the DSA archs where the
     // indexer head count is independent of the main attention head count.
-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,   arch == LLM_ARCH_MINIMAX_M3 || arch == LLM_ARCH_DEEPSEEK4 ? n_head : uint32_t(1));
-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,   uint32_t(64));
+    if (arch == LLM_ARCH_QWEN4EXP) {
+        ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT,    uint32_t(4));
+        ms.add_kv(LLM_KV_HYPER_CONNECTION_LOW_RANK, uint32_t(8));
+        // without this the QSA layers fall back to dense and go uncovered
+        ms.add_kv(LLM_KV_ATTENTION_COMPRESS_RATIOS, std::vector<uint32_t>(n_layer, 4));
+
+        // Exercise the complete PLE lane with a compact, genuinely quantized
+        // lookup table. Four heads occupy disjoint 16-row ranges; Q3 uses its
+        // exact 64-value block width for each row.
+        ms.add_kv(LLM_KV_PLE_LAYERS,             std::vector<uint32_t>{0});
+        ms.add_kv(LLM_KV_PLE_NGRAM_SIZE,         uint32_t(3));
+        ms.add_kv(LLM_KV_PLE_HEADS_PER_NGRAM,    uint32_t(2));
+        ms.add_kv(LLM_KV_PLE_CONV_KERNEL,        uint32_t(2));
+        ms.add_kv(LLM_KV_PLE_EOS_TOKEN_ID,       uint32_t(n_vocab - 1));
+        ms.add_kv(LLM_KV_PLE_IMAGE_TOKEN_ID,     uint32_t(n_vocab - 2));
+        ms.add_kv(LLM_KV_EMBEDDING_LENGTH_PER_LAYER, uint32_t(64));
+        ms.add_kv(LLM_KV_PLE_LAYER_MULTIPLIERS,
+                  std::vector<uint64_t>{2654435761ULL, 2246822519ULL, 3266489917ULL});
+        ms.add_kv(LLM_KV_PLE_HEAD_OFFSETS,
+                  std::vector<uint64_t>{0, 16, 32, 48});
+        ms.add_kv(LLM_KV_PLE_HEAD_VOCAB_SIZES,
+                  std::vector<uint64_t>{16, 16, 16, 16});
+    }
+
+    // minimax-m3 keeps one indexer head per GQA head; the rest use a fixed 64 to match the fused
+    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,   arch == LLM_ARCH_MINIMAX_M3 ? n_head : uint32_t(64));
+    // qwen4exp ropes indexer keys with the main rotary width, so its head can't be < n_rot
+    ms.add_kv(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,
+              arch == LLM_ARCH_QWEN4EXP ? n_embd_head : uint32_t(128));
+
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        uint32_t(8));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,   uint32_t(4));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS, uint32_t(1));
@@ -294,7 +332,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_XIELU_ALPHA_P,             1.0f);
     ms.add_kv(LLM_KV_XIELU_BETA,                1.0f);
     ms.add_kv(LLM_KV_XIELU_EPS,                 1.0e-7f);
-    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ? 256 : 2*n_embd);
+    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP ? 256 : 2*n_embd);
     ms.add_kv(LLM_KV_SSM_CONV_KERNEL,           uint32_t(4));
     ms.add_kv(LLM_KV_SSM_STATE_SIZE,            uint32_t(128));
     ms.add_kv(LLM_KV_SSM_TIME_STEP_RANK,        n_head);
@@ -326,6 +364,16 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         gguf_add_tensor(ms.gguf_ctx, &t);
         ggml_format_name(&t, "convnext.%" PRIu32 ".dw.weight", il);
         gguf_add_tensor(ms.gguf_ctx, &t);
+    }
+    if (arch == LLM_ARCH_QWEN4EXP) {
+        const size_t ctx_size = ggml_tensor_overhead() + 1024;
+        ggml_init_params params = { ctx_size, nullptr, true };
+        ggml_context * ctx = ggml_init(params);
+        GGML_ASSERT(ctx != nullptr);
+        ggml_tensor * table = ggml_new_tensor_2d(ctx, GGML_TYPE_Q3_0_ROCMFPX, 64, 64);
+        ggml_set_name(table, "per_layer_token_embd.weight");
+        gguf_add_tensor(ms.gguf_ctx, table);
+        ggml_free(ctx);
     }
     return ret;
 }
@@ -411,6 +459,7 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_QWEN3VLMOE:
         case LLM_ARCH_QWEN35MOE:
+        case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_PHIMOE:
         case LLM_ARCH_DBRX:
         case LLM_ARCH_OLMOE:
@@ -507,7 +556,7 @@ static bool arch_supported(const llm_arch arch) {
     }
     // FIXME: these hit scheduler/view-backed-output issues with WebGPU on CI.
 #ifdef GGML_USE_WEBGPU
-    if (arch == LLM_ARCH_DEEPSEEK32 || arch == LLM_ARCH_GLM_DSA || arch == LLM_ARCH_DOTS3NOTE) {
+    if (arch == LLM_ARCH_DEEPSEEK32 || arch == LLM_ARCH_GLM_DSA || arch == LLM_ARCH_DOTS3NOTE || arch == LLM_ARCH_QWEN4EXP) {
         return false;
     }
 #endif // GGML_USE_WEBGPU
@@ -687,7 +736,15 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
                 std::string status_nmse      = "\033[1;33mSKIP\033[0m";
                 std::string status_roundtrip = "\033[1;33mSKIP\033[0m";
                 char nmse_str[12] = {0};
-                bool skip = !arch_supported(arch) || (dc.split_mode == LLAMA_SPLIT_MODE_TENSOR && dc.devs.empty());
+                // The Meta backend keys its simple-tensor map by the original
+                // GGUF tensor address. Adding the typed PLE table copies that
+                // metadata, so this synthetic configuration cannot be mapped
+                // there; real CPU/GPU backends and their round-trips remain the
+                // PLE correctness gates.
+                const bool ple_meta_incompatible =
+                    arch == LLM_ARCH_QWEN4EXP && dc.split_mode == LLAMA_SPLIT_MODE_TENSOR;
+                bool skip = !arch_supported(arch) || ple_meta_incompatible ||
+                    (dc.split_mode == LLAMA_SPLIT_MODE_TENSOR && dc.devs.empty());
                 if (!skip) {
                     if (logits_cpu.empty()) {
                         model_and_ctx_cpu = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {}, LLAMA_SPLIT_MODE_LAYER, encode);
@@ -752,6 +809,10 @@ int main(int argc, char ** argv) {
     std::string out;
 
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage(argv);
+            return 0;
+        }
         if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--arch") == 0) {
             if (i + 1 < argc) {
                 const std::string arch_name = argv[++i];

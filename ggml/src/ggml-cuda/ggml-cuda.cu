@@ -754,6 +754,7 @@ static void * ggml_backend_cuda_buffer_get_base(ggml_backend_buffer_t buffer) {
     return ctx->dev_ptr;
 }
 
+#ifdef GGML_USE_HIP
 static constexpr size_t ggml_cuda_rocmfpx_fp6_disk_block_size = sizeof(block_rocmfp6);
 static constexpr size_t ggml_cuda_rocmfpx_fp6_expanded_block_size = sizeof(block_rocmfp6_expanded);
 
@@ -853,6 +854,7 @@ static size_t ggml_cuda_tensor_offset(const ggml_tensor * tensor, size_t packed_
     }
     return packed_offset;
 }
+#endif // GGML_USE_HIP
 
 static enum ggml_status ggml_backend_cuda_buffer_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
@@ -5062,7 +5064,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q4_0_ROCMI4:
                     case GGML_TYPE_Q3_0_ROCMFPX:
                     case GGML_TYPE_Q2_0_ROCMFPX:
+                    case GGML_TYPE_Q5_0_ROCMFPX:
                     case GGML_TYPE_Q6_0_ROCMFPX:
+                    case GGML_TYPE_Q7_0_ROCMFPX:
                     case GGML_TYPE_Q8_0_ROCMFPX:
                     case GGML_TYPE_NVFP4:
                     case GGML_TYPE_Q2_K:
@@ -5115,6 +5119,12 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ1_S:
                     case GGML_TYPE_IQ1_M:
                     case GGML_TYPE_IQ4_XS:
+                    case GGML_TYPE_Q2_0_ROCMFPX:
+                    case GGML_TYPE_Q3_0_ROCMFPX:
+                    case GGML_TYPE_Q5_0_ROCMFPX:
+                    case GGML_TYPE_Q6_0_ROCMFPX:
+                    case GGML_TYPE_Q7_0_ROCMFPX:
+                    case GGML_TYPE_Q8_0_ROCMFPX:
                         return true;
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_MXFP4:

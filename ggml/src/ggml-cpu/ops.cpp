@@ -1261,7 +1261,9 @@ void ggml_compute_forward_acc(
         case GGML_TYPE_Q4_0_ROCMI4:
         case GGML_TYPE_Q2_0_ROCMFPX:
         case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q5_0_ROCMFPX:
         case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q7_0_ROCMFPX:
         case GGML_TYPE_Q8_0_ROCMFPX:
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
@@ -4537,7 +4539,9 @@ void ggml_compute_forward_out_prod(
         case GGML_TYPE_Q4_0_ROCMI4:
         case GGML_TYPE_Q2_0_ROCMFPX:
         case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q5_0_ROCMFPX:
         case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q7_0_ROCMFPX:
         case GGML_TYPE_Q8_0_ROCMFPX:
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
@@ -4820,7 +4824,9 @@ void ggml_compute_forward_set(
         case GGML_TYPE_Q4_0_ROCMFP4_FAST:
         case GGML_TYPE_Q4_0_ROCMI4:
         case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q5_0_ROCMFPX:
         case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q7_0_ROCMFPX:
         case GGML_TYPE_Q8_0_ROCMFPX:
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
@@ -5052,7 +5058,9 @@ void ggml_compute_forward_get_rows(
         case GGML_TYPE_Q4_0_ROCMI4:
         case GGML_TYPE_Q3_0_ROCMFPX:
         case GGML_TYPE_Q2_0_ROCMFPX:
+        case GGML_TYPE_Q5_0_ROCMFPX:
         case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q7_0_ROCMFPX:
         case GGML_TYPE_Q8_0_ROCMFPX:
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
@@ -5816,7 +5824,9 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_Q4_0_ROCMI4:
         case GGML_TYPE_Q2_0_ROCMFPX:
         case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q5_0_ROCMFPX:
         case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q7_0_ROCMFPX:
         case GGML_TYPE_Q8_0_ROCMFPX:
         case GGML_TYPE_TURBO3_0:
         case GGML_TYPE_TURBO4_0:
@@ -6286,7 +6296,7 @@ static void ggml_compute_forward_dsv4_rope_tail_flt(
     }
 }
 
-void ggml_compute_forward_dsv4_rope_tail(
+static void ggml_compute_forward_dsv4_rope_tail(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
@@ -7424,18 +7434,21 @@ static void ggml_compute_forward_conv_transpose_2d_impl(
             }
         }
 
-        // permute source data (src1) from (Sw x Sh x Cin) to (Cin x Sw x Sh)
+        // permute source data (src1) from (Sw x Sh x Cin) to (Cin x Sw x Sh), for all batches
         {
             kernel_t * const wdata = (kernel_t *) params->wdata + nk;
-            for (int i12 = 0; i12 < ne12; i12++) {
-                for (int i11 = 0; i11 < ne11; i11++) {
-                    const float * const src = (float *)((char *) src1->data + i12*nb12 + i11*nb11);
-                    kernel_t * dst_data = wdata + i11*ne10*ne12;
-                    for (int i10 = 0; i10 < ne10; i10++) {
-                        if constexpr (std::is_same_v<kernel_t, ggml_fp16_t>) {
-                            dst_data[i10*ne12 + i12] = GGML_CPU_FP32_TO_FP16(src[i10]);
-                        } else {
-                            dst_data[i10*ne12 + i12] = src[i10];
+            for (int i13 = 0; i13 < ne13; i13++) {
+                kernel_t * const wdata_b = wdata + i13*ne10*ne11*ne12;
+                for (int i12 = 0; i12 < ne12; i12++) {
+                    for (int i11 = 0; i11 < ne11; i11++) {
+                        const float * const src = (float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11);
+                        kernel_t * dst_data = wdata_b + i11*ne10*ne12;
+                        for (int i10 = 0; i10 < ne10; i10++) {
+                            if constexpr (std::is_same_v<kernel_t, ggml_fp16_t>) {
+                                dst_data[i10*ne12 + i12] = GGML_CPU_FP32_TO_FP16(src[i10]);
+                            } else {
+                                dst_data[i10*ne12 + i12] = src[i10];
+                            }
                         }
                     }
                 }
@@ -7462,24 +7475,27 @@ static void ggml_compute_forward_conv_transpose_2d_impl(
     kernel_t * const wdata_src = wdata + nk;
 
     for (int i2 = ip0; i2 < ip1; i2++) { // Cout
-        float * dst_data = (float *)((char *) dst->data + i2*nb2);
         kernel_t * wdata_kernel = wdata + i2*ne01*ne00*ne03;
-        for (int i11 = 0; i11 < ne11; i11++) {
-            for (int i10 = 0; i10 < ne10; i10++) {
-                const int i1n = i11*ne10*ne12 + i10*ne12;
-                for (int i01 = 0; i01 < ne01; i01++) {
-                    for (int i00 = 0; i00 < ne00; i00++) {
-                        float v = 0;
-                        if constexpr (std::is_same_v<kernel_t, ggml_fp16_t>) {
-                            ggml_vec_dot_f16(ne03, &v, 0,
-                                    wdata_src + i1n, 0,
-                                    wdata_kernel + i01*ne00*ne03 + i00*ne03, 0, 1);
-                        } else {
-                            ggml_vec_dot_f32(ne03, &v, 0,
-                                    wdata_src + i1n, 0,
-                                    wdata_kernel + i01*ne00*ne03 + i00*ne03, 0, 1);
+        for (int i3 = 0; i3 < ne3; i3++) { // batch
+            float * dst_data = (float *)((char *) dst->data + i3*nb3 + i2*nb2);
+            kernel_t * wdata_src_b = wdata_src + i3*ne10*ne11*ne12;
+            for (int i11 = 0; i11 < ne11; i11++) {
+                for (int i10 = 0; i10 < ne10; i10++) {
+                    const int i1n = i11*ne10*ne12 + i10*ne12;
+                    for (int i01 = 0; i01 < ne01; i01++) {
+                        for (int i00 = 0; i00 < ne00; i00++) {
+                            float v = 0;
+                            if constexpr (std::is_same_v<kernel_t, ggml_fp16_t>) {
+                                ggml_vec_dot_f16(ne03, &v, 0,
+                                        wdata_src_b + i1n, 0,
+                                        wdata_kernel + i01*ne00*ne03 + i00*ne03, 0, 1);
+                            } else {
+                                ggml_vec_dot_f32(ne03, &v, 0,
+                                        wdata_src_b + i1n, 0,
+                                        wdata_kernel + i01*ne00*ne03 + i00*ne03, 0, 1);
+                            }
+                            dst_data[(i11*stride + i01)*ne0 + i10*stride + i00] += v;
                         }
-                        dst_data[(i11*stride + i01)*ne0 + i10*stride + i00] += v;
                     }
                 }
             }

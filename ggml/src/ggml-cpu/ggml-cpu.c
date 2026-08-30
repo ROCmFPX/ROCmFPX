@@ -261,7 +261,9 @@ static void ggml_vec_dot_rocmfpx_q8_0(
 
 GGML_ROCMFPX_CPU_VEC_DOT(ggml_vec_dot_rocmfpx_fp2_q8_0, block_rocmfp2, rocmfpx_dequantize_row_fp2)
 GGML_ROCMFPX_CPU_VEC_DOT(ggml_vec_dot_rocmfpx_fp3_q8_0, block_rocmfp3, rocmfpx_dequantize_row_fp3)
+GGML_ROCMFPX_CPU_VEC_DOT(ggml_vec_dot_rocmfpx_fp5_q8_0, block_rocmfp5, rocmfpx_dequantize_row_fp5)
 GGML_ROCMFPX_CPU_VEC_DOT(ggml_vec_dot_rocmfpx_fp6_q8_0, block_rocmfp6, rocmfpx_dequantize_row_fp6)
+GGML_ROCMFPX_CPU_VEC_DOT(ggml_vec_dot_rocmfpx_fp7_q8_0, block_rocmfp7, rocmfpx_dequantize_row_fp7)
 GGML_ROCMFPX_CPU_VEC_DOT(ggml_vec_dot_rocmfpx_fp8_q8_0, block_rocmfp8, rocmfpx_dequantize_row_fp8)
 GGML_ROCMFPX_CPU_VEC_DOT(ggml_vec_dot_rocmi4_q8_0,      block_rocmi4,  rocmfpx_dequantize_row_i4)
 
@@ -326,9 +328,21 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
+    [GGML_TYPE_Q5_0_ROCMFPX] = {
+        .from_float               = rocmfpx_quantize_row_fp5,
+        .vec_dot                  = ggml_vec_dot_rocmfpx_fp5_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
     [GGML_TYPE_Q6_0_ROCMFPX] = {
         .from_float               = rocmfpx_quantize_row_fp6,
         .vec_dot                  = ggml_vec_dot_rocmfpx_fp6_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q7_0_ROCMFPX] = {
+        .from_float               = rocmfpx_quantize_row_fp7,
+        .vec_dot                  = ggml_vec_dot_rocmfpx_fp7_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
@@ -3044,12 +3058,13 @@ struct ggml_cplan ggml_graph_plan(
                         const int64_t ne10 = node->src[1]->ne[0]; // W
                         const int64_t ne11 = node->src[1]->ne[1]; // H
                         const int64_t ne12 = node->src[1]->ne[2]; // Channels In
+                        const int64_t ne13 = node->src[1]->ne[3]; // Batch
 
                         GGML_ASSERT(node->src[0]->type == GGML_TYPE_F16 || node->src[0]->type == GGML_TYPE_F32);
                         GGML_ASSERT(node->src[1]->type == GGML_TYPE_F32);
 
                         cur += ggml_type_size(node->src[0]->type) * ne00 * ne01 * ne02 * ne03;
-                        cur += ggml_type_size(node->src[0]->type) * ne10 * ne11 * ne12;
+                        cur += ggml_type_size(node->src[0]->type) * ne10 * ne11 * ne12 * ne13;
 
                     } break;
                 case GGML_OP_TOP_K:

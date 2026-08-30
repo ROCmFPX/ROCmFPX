@@ -580,6 +580,121 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             store_a(col, eff_row + 4, FLOAT_TYPEV2(kvalues_mxfp4[vui  >>  4] * d,
                                                     kvalues_mxfp4[vui2 >>  4] * d));
 #endif
+#elif defined(DATA_A_ROCMFP4) || defined(DATA_A_ROCMFP4_FAST)
+            // ROCmFP4 stores elements 0..15 in the low nibbles and 16..31 in
+            // the high nibbles. Reassemble four consecutive values for the
+            // scalar matrix tile; dequantize4() uses the mat-vec ordering and
+            // is intentionally not used here.
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint ib = idx / 8u;
+            const uint elem0 = (idx & 7u) * 4u;
+            vec4 v;
+            [[unroll]] for (uint lane = 0u; lane < 4u; ++lane) {
+                const uint elem = elem0 + lane;
+                const uint packed = uint(data_a[ib].qs[elem & 15u]);
+                const uint code = elem < 16u ? packed & 15u : packed >> 4u;
+#if defined(DATA_A_ROCMFP4)
+                const float d = ue4m3_to_fp32(data_a[ib].e[elem >> 4u]);
+#else
+                const float d = ue4m3_to_fp32(data_a[ib].e);
+#endif
+                v[lane] = float(kvalues_rocmfp4[code]) * d;
+            }
+            const uint k_pair = row * LOAD_VEC_A / 2u;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_ROCMFPX_FP2)
+            // All ROCmFPX v1 weight blocks contain 32 elements. LOAD_VEC_A is
+            // four for these scalar matrix shaders, so each invocation owns
+            // four consecutive elements in one block.
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint ib = idx / 8u;
+            const uint elem = (idx & 7u) * 4u;
+            const uint packed = uint(data_a[ib].qs[elem >> 2u]);
+            vec4 v;
+            [[unroll]] for (uint lane = 0u; lane < 4u; ++lane) {
+                const uint code = (packed >> (2u * lane)) & 3u;
+                const float d = ue4m3_to_fp32(data_a[ib].e[(elem + lane) >> 4u]);
+                v[lane] = float(kvalues_rocmfpx_fp2_const[code]) * d;
+            }
+            const uint k_pair = row * LOAD_VEC_A / 2u;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_ROCMFPX_FP3)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint ib = idx / 8u;
+            const uint elem = (idx & 7u) * 4u;
+            vec4 v;
+            [[unroll]] for (uint lane = 0u; lane < 4u; ++lane) {
+                const uint ei = elem + lane;
+                uint code = 0u;
+                [[unroll]] for (uint bit = 0u; bit < 3u; ++bit) {
+                    const uint src_bit = ei * 3u + bit;
+                    code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+                }
+                const float d = ue4m3_to_fp32(data_a[ib].e[ei >> 4u]);
+                v[lane] = float(kvalues_rocmfpx_fp3_const[code]) * d;
+            }
+            const uint k_pair = row * LOAD_VEC_A / 2u;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_ROCMFPX_FP5)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint ib = idx / 8u;
+            const uint elem = (idx & 7u) * 4u;
+            vec4 v;
+            [[unroll]] for (uint lane = 0u; lane < 4u; ++lane) {
+                const uint ei = elem + lane;
+                uint code = 0u;
+                [[unroll]] for (uint bit = 0u; bit < 5u; ++bit) {
+                    const uint src_bit = ei * 5u + bit;
+                    code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+                }
+                const float d = ue4m3_to_fp32(data_a[ib].e[ei >> 4u]);
+                v[lane] = float(rocmfpx_decode_linear_code(code, 5u)) * d;
+            }
+            const uint k_pair = row * LOAD_VEC_A / 2u;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_ROCMFPX_FP6)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint ib = idx / 8u;
+            const uint elem = (idx & 7u) * 4u;
+            const float d = ue4m3_to_fp32(data_a[ib].e[elem >> 4u]);
+            const vec4 v = vec4(unpack8(rocmfpx_fp6_pack4_qs(data_a[ib].qs, elem))) * d;
+            const uint k_pair = row * LOAD_VEC_A / 2u;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_ROCMFPX_FP7)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint ib = idx / 8u;
+            const uint elem = (idx & 7u) * 4u;
+            vec4 v;
+            [[unroll]] for (uint lane = 0u; lane < 4u; ++lane) {
+                const uint ei = elem + lane;
+                uint code = 0u;
+                [[unroll]] for (uint bit = 0u; bit < 7u; ++bit) {
+                    const uint src_bit = ei * 7u + bit;
+                    code |= ((uint(data_a[ib].qs[src_bit >> 3u]) >> (src_bit & 7u)) & 1u) << bit;
+                }
+                const float d = ue4m3_to_fp32(data_a[ib].e[ei >> 4u]);
+                v[lane] = float(rocmfpx_decode_linear_code(code, 7u)) * d;
+            }
+            const uint k_pair = row * LOAD_VEC_A / 2u;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
+#elif defined(DATA_A_ROCMFPX_FP8)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint ib = idx / 8u;
+            const uint elem = (idx & 7u) * 4u;
+            const float d = ue4m3_to_fp32(data_a[ib].e);
+            const vec4 v = vec4(float(int(data_a[ib].qs[elem + 0u])),
+                                float(int(data_a[ib].qs[elem + 1u])),
+                                float(int(data_a[ib].qs[elem + 2u])),
+                                float(int(data_a[ib].qs[elem + 3u]))) * d;
+            const uint k_pair = row * LOAD_VEC_A / 2u;
+            store_a(col, k_pair,     FLOAT_TYPEV2(v.xy));
+            store_a(col, k_pair + 1, FLOAT_TYPEV2(v.zw));
 #endif
 }
 

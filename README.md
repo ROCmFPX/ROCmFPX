@@ -1,3 +1,24 @@
+![ROCmFPX — Max Performance. Open Power.](media/rocmfpx-banner.png)
+
+# ROCmFPX llama.cpp
+
+This private integration branch tracks current upstream `llama.cpp` while
+developing the ROCmFPX weight-format family for AMD GPUs. Normal Vulkan support
+remains enabled; HIP and CPU are also supported build targets. Existing NVFP4
+GGUF tensors can be loaded natively and remain bit-exact when an NVFP4 model is
+completed with the `NVFP4` quantization preset.
+
+Carlo Pasquale (Charlie12345) is the creator and founder of the ROCmFPX format
+family and of ROCmFP3, ROCmFP4, ROCmFP6, and ROCmFP8. See
+[ROCmFPX documentation](docs/rocmfpx/README.md), [NOTICE](NOTICE), and the
+same upstream [MIT license terms](LICENSE) with the ROCmFPX copyright line.
+
+The currently qualified formats are experimental. The on-disk layouts of
+ROCmFP2/3/4/6/8 are frozen for compatibility; new kernel and quantizer work
+must preserve their encoded sizes and semantics.
+
+---
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
