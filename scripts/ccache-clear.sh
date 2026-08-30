@@ -62,7 +62,10 @@ to_epoch() {
   echo "$out"
 }
 
-CACHES=$(gh cache list --repo "$GITHUB_REPOSITORY" --key "ccache-$KEY" --json id,key,createdAt --jq '.[] | [.createdAt, .id, .key] | @tsv' | LC_ALL=C sort)
+if ! CACHES=$(gh cache list --repo "$GITHUB_REPOSITORY" --key "ccache-$KEY" --json id,key,createdAt --jq '.[] | [.createdAt, .id, .key] | @tsv' | LC_ALL=C sort); then
+    echo "::warning::Skipping cache cleanup because this workflow token cannot list Actions caches"
+    exit 0
+fi
 if [[ -z "$CACHES" ]]; then
     echo "No caches found with key prefix: $KEY"
     exit 0
@@ -99,7 +102,10 @@ while IFS=$'\t' read -r CREATED ID CACHE_KEY; do
         echo "Would delete cache: $ID ($CACHE_KEY)"
     else
         echo "Deleting cache: $ID ($CACHE_KEY)"
-        gh cache delete --repo "$GITHUB_REPOSITORY" "$ID"
+        if ! gh cache delete --repo "$GITHUB_REPOSITORY" "$ID"; then
+            echo "::warning::Stopping cache cleanup because this workflow token cannot delete Actions caches"
+            exit 0
+        fi
     fi
     DELETED=$((DELETED + 1))
 done <<< "$CACHES"
