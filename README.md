@@ -1,3 +1,5 @@
+![ROCmFPX — Max Performance. Open Power.](media/rocmfpx-banner.png)
+
 # ROCmFPX llama.cpp
 
 This private integration branch tracks current upstream `llama.cpp` while
