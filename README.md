@@ -17,6 +17,107 @@ The currently qualified formats are experimental. The on-disk layouts of
 ROCmFP2/3/4/6/8 are frozen for compatibility; new kernel and quantizer work
 must preserve their encoded sizes and semantics.
 
+## Optional Charlie Vulkan plugin
+
+The optional [`ROCmFPXVulkan` extension](extensions/rocmfpx-vulkan/README.md)
+preserves the proven Charlie-era ROCmFP4 Vulkan path as a separate backend. It
+does not replace or patch llama.cpp's normal `Vulkan0` backend. The extension
+is disabled by default and appears as `ROCmFPXVulkan0` only when it is built
+and explicitly loaded.
+
+Build both the normal Vulkan backend and the optional extension on Linux:
+
+```bash
+cmake -S . -B build-rocmfpx-vulkan -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DGGML_VULKAN=ON \
+  -DROCMFPX_VULKAN_PLUGIN=ON
+cmake --build build-rocmfpx-vulkan \
+  --target llama-cli rocmfpx-vulkan-plugin -j
+```
+
+Load the plugin and select its device:
+
+```bash
+export ROCMFPX_PLUGIN_PATH="$PWD/build-rocmfpx-vulkan/bin/rocmfpx-vulkan-plugin.so"
+build-rocmfpx-vulkan/bin/llama-cli --list-devices
+build-rocmfpx-vulkan/bin/llama-cli \
+  -m /absolute/path/to/model.gguf \
+  -dev ROCmFPXVulkan0 -ngl 999
+```
+
+Keep `rocmfpx-vulkan-plugin.so` and its sibling
+`libggml-rocmfpx-vulkan.so` together. Both files must come from the same build
+and ROCmFPX commit. `--list-devices` should show both `Vulkan0` and
+`ROCmFPXVulkan0`; remove `ROCMFPX_PLUGIN_PATH` to return to the normal backend.
+See the [extension guide](extensions/rocmfpx-vulkan/README.md) for matched
+ROCmFP4 benchmarks and qualification limits.
+
+## Plugin system
+
+ROCmFPX plugin ABI v1 lets trusted native shared libraries register a standard
+ggml backend or receive model-open and model-close notifications for PLE, KV
+checkpoint, repack-cache, and expert-streaming sidecars. Set
+`ROCMFPX_PLUGIN_PATH` to a plugin file or directory before starting a ROCmFPX
+tool. Use `:` between entries on Linux and macOS and `;` on Windows. Directories
+are scanned once, non-recursively, in sorted order; the working directory is
+never searched automatically.
+
+A minimal C plugin looks like this:
+
+```c
+#define ROCMFPX_PLUGIN_BUILD
+#include "rocmfpx-plugin.h"
+
+static int on_load(void) {
+    return 0;
+}
+
+static const struct rocmfpx_plugin_v1 plugin = {
+    ROCMFPX_PLUGIN_ABI_VERSION,
+    sizeof(struct rocmfpx_plugin_v1),
+    "example-sidecar",
+    "0.1.0",
+    ROCMFPX_PLUGIN_CAP_SIDECAR,
+    on_load,
+    0,
+    0,
+    0,
+};
+
+ROCMFPX_PLUGIN_EXPORT const struct rocmfpx_plugin_v1 * rocmfpx_plugin_query(
+        uint32_t host_abi_version,
+        const struct rocmfpx_plugin_host_v1 * host) {
+    if (host_abi_version != ROCMFPX_PLUGIN_ABI_VERSION || !host ||
+        host->abi_version != ROCMFPX_PLUGIN_ABI_VERSION) {
+        return 0;
+    }
+    return &plugin;
+}
+```
+
+Build and load it on Linux:
+
+```bash
+cc -shared -fPIC -I/path/to/ROCmFPX/include \
+  example-sidecar.c -o example-sidecar.so
+ROCMFPX_PLUGIN_PATH="$PWD/example-sidecar.so" \
+  /path/to/ROCmFPX/build/bin/llama-cli --list-devices
+```
+
+Every plugin must export `rocmfpx_plugin_query`, validate the ABI, return a
+static size-versioned descriptor, and keep that descriptor and its strings
+alive until unload. A backend plugin copies `backend_load` and `plugin_path`
+during the query, then registers its matching ggml backend from `on_load`. A
+sidecar uses `on_model_open` and `on_model_close` and keys its state by
+`model_id`. ABI v1 provides discovery, backend registration, and lifecycle
+notifications; capability flags alone do not intercept tensors or token
+generation. Plugins run as native code with the same permissions as ROCmFPX,
+so load only libraries you trust. See the complete [plugin and sidecar ABI
+guide](docs/rocmfpx/PLUGINS.md) and the tested
+[`rocmfpx-test-plugin`](tests/rocmfpx-test-plugin.c) example.
+
 ---
 
 # llama.cpp
