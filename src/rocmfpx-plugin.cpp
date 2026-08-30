@@ -103,15 +103,17 @@ int load_one(const std::filesystem::path & input) {
     void * handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     auto query = handle ? reinterpret_cast<rocmfpx_plugin_query_fn>(dlsym(handle, "rocmfpx_plugin_query")) : nullptr;
 #endif
-    if (!handle || !query) {
-        host_log(ROCMFPX_PLUGIN_LOG_WARN, ("cannot load " + key + " or missing rocmfpx_plugin_query").c_str());
-        if (handle) {
+    if (!handle) {
+        host_log(ROCMFPX_PLUGIN_LOG_WARN, ("cannot load " + key).c_str());
+        return 0;
+    }
+    if (!query) {
+        // Plugin directories may contain backend dependencies without plugin symbols.
 #if defined(_WIN32)
-            FreeLibrary(handle);
+        FreeLibrary(handle);
 #else
-            dlclose(handle);
+        dlclose(handle);
 #endif
-        }
         return 0;
     }
 

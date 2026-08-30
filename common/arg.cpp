@@ -1283,6 +1283,10 @@ bool common_params_parse(int argc, char ** argv, common_params & params, llama_e
     }
 #endif
 
+    if (std::getenv("ROCMFPX_PLUGIN_PATH")) {
+        llama_backend_init();
+    }
+
     auto ctx_arg = common_params_parser_init(params, ex, print_usage);
     const common_params params_org = ctx_arg.params; // the example can modify the default params
 

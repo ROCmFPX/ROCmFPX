@@ -136,6 +136,7 @@ option(LLAMA_BUILD_SERVER    "llama: build server example"                      
 option(LLAMA_BUILD_APP       "llama: build the unified binary"                                                   ${LLAMA_STANDALONE})
 option(LLAMA_BUILD_UI        "llama: build the embedded Web UI for server"                                       OFF)
 option(LLAMA_USE_PREBUILT_UI "llama: use prebuilt UI from HF Bucket when available" ON)
+option(ROCMFPX_VULKAN_PLUGIN "ROCmFPX: build the optional Charlie Vulkan backend plugin" OFF)
 
 option(LLAMA_TOOLS_INSTALL "llama: install tools" ${LLAMA_TOOLS_INSTALL_DEFAULT})
 option(LLAMA_TESTS_INSTALL "llama: install tests" ON)
@@ -212,6 +213,13 @@ if (NOT TARGET ggml AND NOT LLAMA_USE_SYSTEM_GGML)
     set(GGML_BUILD_COMMIT ${LLAMA_BUILD_COMMIT})
     add_subdirectory(ggml)
     # ... otherwise assume ggml is added by a parent CMakeLists.txt
+endif()
+
+if (ROCMFPX_VULKAN_PLUGIN)
+    if (LLAMA_USE_SYSTEM_GGML)
+        message(FATAL_ERROR "ROCMFPX_VULKAN_PLUGIN requires the in-tree ggml build")
+    endif()
+    add_subdirectory(extensions/rocmfpx-vulkan)
 endif()
 
 #
