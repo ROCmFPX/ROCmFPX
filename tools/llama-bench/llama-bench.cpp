@@ -2267,6 +2267,13 @@ int llama_bench(int argc, char ** argv) {
     // initialize backends
     ggml_backend_load_all();
 
+    // An opt-in plugin may register devices referenced by -dev. Load it before
+    // parsing so llama-bench has the same device-validation order as the
+    // common argument parser used by llama-cli and llama-server.
+    if (std::getenv("ROCMFPX_PLUGIN_PATH")) {
+        llama_backend_init();
+    }
+
     cmd_params params = parse_cmd_params(argc, argv);
 
     auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
