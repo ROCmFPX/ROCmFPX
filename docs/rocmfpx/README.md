@@ -35,6 +35,7 @@ individual block layout.
 - [Quant mixing](QUANT-MIXING.md)
 - [Plugin and sidecar ABI](PLUGINS.md)
 - [Hyperloom adapter](../../tools/hyperloom/README.md)
+- [CI policy](CI.md)
 - [AMD support tiers](SUPPORT.md)
 - [Release process](RELEASES.md)
 - Existing detailed benchmark and handoff documents in `docs/ROCmFP*.md`
