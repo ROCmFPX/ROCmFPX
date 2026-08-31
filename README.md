@@ -13,6 +13,21 @@ family and of ROCmFP3, ROCmFP4, ROCmFP6, and ROCmFP8. See
 [ROCmFPX documentation](docs/rocmfpx/README.md), [NOTICE](NOTICE), and the
 same upstream [MIT license terms](LICENSE) with the ROCmFPX copyright line.
 
+## Contributors and history
+
+ROCmFPX preserves the upstream `llama.cpp` lineage and the public legacy
+ROCmFPX lineage. Original commit authors and commit IDs remain reachable. The
+legacy lineage is connected by an ancestry-only merge whose source tree is
+identical to the current ROCmFPX tree, so legacy code does not replace the
+current implementation.
+
+- [Current ROCmFPX contributors](https://github.com/ROCmFPX/ROCmFPX/graphs/contributors)
+- [Legacy ROCmFPX contributors](https://github.com/charlie12345/ROCmFPX/graphs/contributors)
+- [Upstream llama.cpp contributors](https://github.com/ggml-org/llama.cpp/graphs/contributors)
+
+GitHub contributor displays can lag behind repository history. The complete
+commit-level author record is also available with `git shortlog -sne main`.
+
 The currently qualified formats are experimental. The on-disk layouts of
 ROCmFP2/3/4/6/8 are frozen for compatibility; new kernel and quantizer work
 must preserve their encoded sizes and semantics.
