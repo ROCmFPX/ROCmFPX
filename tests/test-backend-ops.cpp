@@ -4557,6 +4557,10 @@ struct test_mul_mat : public test_case {
         if ((type_a == GGML_TYPE_MXFP4 || type_a == GGML_TYPE_NVFP4) && backend_has_feature(backend, "BLACKWELL_NATIVE_FP4")) {
             return 2e-2;
         }
+        // W4A4 quantizes activations to IU4; exact ROCmI4 keeps the normal threshold.
+        if (type_a == GGML_TYPE_Q4_0_ROCMI4 && backend_has_feature(backend, "ROCMI4_W4A4")) {
+            return 1e-2;
+        }
         return max_nmse_err();
     }
 
@@ -4757,6 +4761,10 @@ struct test_mul_mat_id : public test_case {
         // for blackwell we quantize activations to mxfp4 instead of q8_1 so we add higher tolerance
         if ((type_a == GGML_TYPE_MXFP4 || type_a == GGML_TYPE_NVFP4) && backend_has_feature(backend, "BLACKWELL_NATIVE_FP4")) {
             return 2e-2;
+        }
+        // Match test_mul_mat for the advertised W4A4 activation path.
+        if (type_a == GGML_TYPE_Q4_0_ROCMI4 && backend_has_feature(backend, "ROCMI4_W4A4")) {
+            return 1e-2;
         }
         return max_nmse_err();
     }
