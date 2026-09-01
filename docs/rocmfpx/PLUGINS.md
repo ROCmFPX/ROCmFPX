@@ -117,6 +117,33 @@ logging, capability flags, and model callbacks. Its matching
 `tests/test-rocmfpx-plugin.cpp` exercises load deduplication, model open/close,
 and shutdown.
 
+## Windows AMD multi-GPU transport boundary
+
+Charlie12345's
+[Windows AMD Multi-GPU Bridge](https://github.com/charlie12345/windows-amd-vllm-multigpu)
+supports an external, source-clean ROCmFPX/llama.cpp integration. Its
+[`install-llama-rocmfpx.md`](https://github.com/charlie12345/windows-amd-vllm-multigpu/blob/main/docs/install-llama-rocmfpx.md)
+guide builds a six-symbol RCCL ABI shim and exposes it as a `roc::rccl` CMake
+package. ROCmFPX's HIP backend must be configured with `GGML_HIP_RCCL=ON` and
+linked against that package before it can use the transport.
+
+This is deliberately separate from plugin ABI v1:
+
+- `ROCMFPX_PLUGIN_PATH` libraries must export `rocmfpx_plugin_query`; the
+  bridge's `rccl.dll` exports the NCCL/RCCL symbols consumed by ggml HIP.
+- ABI v1 backend registration loads a complete standard ggml backend. It does
+  not replace a dependency inside an already-built HIP backend.
+- ABI v1 sidecar callbacks observe model open and close. They do not receive or
+  override collective operations.
+
+Do not rename or wrap `rccl.dll` and present it as an ABI v1 plugin. A future
+runtime adapter would need either a commit-matched HIP backend bundle registered
+as a standard ggml backend, or a new pre-backend collective-provider contract;
+a query-symbol wrapper alone cannot remove the `GGML_HIP_RCCL` build
+requirement. Until such an interface is implemented and qualified, the
+external CMake package plus its PowerShell launcher is the supported clean-tree
+route on Windows.
+
 ## Use the Charlie Vulkan backend plugin
 
 The in-tree [Charlie Vulkan extension](../../extensions/rocmfpx-vulkan/README.md)

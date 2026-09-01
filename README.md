@@ -2,7 +2,7 @@
 
 # ROCmFPX llama.cpp
 
-This private integration branch tracks current upstream `llama.cpp` while
+This public downstream tracks current upstream `llama.cpp` while
 developing the ROCmFPX weight-format family for AMD GPUs. Normal Vulkan support
 remains enabled; HIP and CPU are also supported build targets. Existing NVFP4
 GGUF tensors can be loaded natively and remain bit-exact when an NVFP4 model is
@@ -132,6 +132,35 @@ generation. Plugins run as native code with the same permissions as ROCmFPX,
 so load only libraries you trust. See the complete [plugin and sidecar ABI
 guide](docs/rocmfpx/PLUGINS.md) and the tested
 [`rocmfpx-test-plugin`](tests/rocmfpx-test-plugin.c) example.
+
+## Windows AMD multi-GPU bridge
+
+Windows users with two AMD GPUs can evaluate Charlie12345's external
+[Windows AMD Multi-GPU Bridge](https://github.com/charlie12345/windows-amd-vllm-multigpu).
+For ROCmFPX and llama.cpp, use its dedicated
+[Windows installation guide](https://github.com/charlie12345/windows-amd-vllm-multigpu/blob/main/docs/install-llama-rocmfpx.md),
+not the separate vLLM adapter instructions.
+
+The bridge keeps the ROCmFPX source tree unchanged. It supplies an external
+`roc::rccl` CMake package to the existing HIP collective interface, so build
+ROCmFPX with `GGML_HIP_RCCL=ON`, point `rccl_DIR` at the installed bridge, and
+use the bridge's `run-with-llama-plugin.ps1` launcher. The tested Windows path
+also requires `GGML_CUDA_NO_PEER_COPY=ON`; follow the external guide for the
+matching ROCm version, GPU target, DLL layout, health probes, and model-specific
+launch flags.
+
+Despite the launcher's name, this transport is **not** loaded through
+`ROCMFPX_PLUGIN_PATH` and is not a ROCmFPX ABI v1 plugin. ABI v1 can register a
+ggml backend or receive model lifecycle notifications, but it cannot inject a
+link-time RCCL provider or intercept collectives. Pointing
+`ROCMFPX_PLUGIN_PATH` at `rccl.dll` will therefore do nothing. The current
+external-package design is the upstream-safe integration: update ROCmFPX
+normally, then configure a fresh HIP build against the bridge package.
+
+The bridge is experimental, source-only, and currently qualified only on the
+hardware and revisions listed by its maintainers. Validate its small parity
+and transport probes before loading a large model; a selectable GPU target is
+not the same as a runtime-qualified configuration.
 
 ---
 
