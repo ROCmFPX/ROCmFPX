@@ -439,11 +439,14 @@ extern "C" {
         GGML_TYPE_Q3_0_ROCMFPX      = 104, // 3-bit UE4M3-scale layout
         GGML_TYPE_TURBO3_0          = 105, // TurboQuant 3-bit KV cache
         GGML_TYPE_TURBO4_0          = 106, // TurboQuant 4-bit KV cache
-        GGML_TYPE_Q2_0_ROCMFPX      = 107, // 2-bit S40 codebook + dual UE4M3 scales
+        // Type 107 was emitted with two incompatible 10-byte ROCmFP2 layouts.
+        // It is retained only so readers can reject ambiguous legacy files.
+        GGML_TYPE_Q2_0_ROCMFPX_LEGACY_AMBIGUOUS = 107,
         GGML_TYPE_Q4_0_ROCMI4       = 108, // exact signed-nibble 4-bit + UE4M3 scale
         GGML_TYPE_Q5_0_ROCMFPX      = 109, // 5-bit signed linear + dual UE4M3 scales
         GGML_TYPE_Q7_0_ROCMFPX      = 110, // 7-bit signed linear + dual UE4M3 scales
-        GGML_TYPE_COUNT             = 111,
+        GGML_TYPE_Q2_0_ROCMFPX      = 111, // 2-bit S40 codebook + dual UE4M3 scales
+        GGML_TYPE_COUNT             = 112,
     };
 
     // precision

@@ -731,6 +731,12 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) rocmfpx_dequantize_row_fp5,
         .from_float_ref           = (ggml_from_float_t) rocmfpx_quantize_row_fp5_ref,
     },
+    [GGML_TYPE_Q2_0_ROCMFPX_LEGACY_AMBIGUOUS] = {
+        .type_name                = "q2_0_rocmfpx_legacy_ambiguous",
+        .blck_size                = 0,
+        .type_size                = 0,
+        .is_quantized             = false,
+    },
     [GGML_TYPE_Q2_0_ROCMFPX] = {
         .type_name                = "q2_0_rocmfpx",
         .blck_size                = QK_ROCMFP2,

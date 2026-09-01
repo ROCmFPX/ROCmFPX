@@ -717,6 +717,15 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
                 ok = false;
                 break;
             }
+            if (info.t.type == GGML_TYPE_Q2_0_ROCMFPX_LEGACY_AMBIGUOUS) {
+                GGML_LOG_ERROR(
+                    "%s: tensor '%s' uses ambiguous legacy ROCmFP2 type 107; "
+                    "the bytes may be affine or dual-scale S40, so refusing to guess. "
+                    "Retag only files with known provenance to a layout-specific type.\n",
+                    __func__, info.t.name);
+                ok = false;
+                break;
+            }
             const size_t  type_size = ggml_type_size(info.t.type);
             const int64_t blck_size = ggml_blck_size(info.t.type);
 
