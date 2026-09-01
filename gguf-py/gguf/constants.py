@@ -5520,10 +5520,11 @@ class GGMLQuantizationType(IntEnum):
     Q3_0_ROCMFPX      = 104
     TURBO3_0          = 105
     TURBO4_0          = 106
-    Q2_0_ROCMFPX      = 107
+    Q2_0_ROCMFPX_LEGACY_AMBIGUOUS = 107
     Q4_0_ROCMI4       = 108
     Q5_0_ROCMFPX      = 109
     Q7_0_ROCMFPX      = 110
+    Q2_0_ROCMFPX      = 111
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -5747,10 +5748,14 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q3_0_ROCMFPX:      (32, 12 + 2),
     GGMLQuantizationType.TURBO3_0:          (32, 12 + 2),
     GGMLQuantizationType.TURBO4_0:          (32, 16 + 2),
-    GGMLQuantizationType.Q2_0_ROCMFPX:      (32, 8 + 2),
+    # Type 107 has two incompatible interpretations. Its size is registered so
+    # migration tools can inspect it, but no quant/dequant implementation may
+    # select a layout automatically.
+    GGMLQuantizationType.Q2_0_ROCMFPX_LEGACY_AMBIGUOUS: (32, 8 + 2),
     GGMLQuantizationType.Q4_0_ROCMI4:       (32, 1 + 16),
     GGMLQuantizationType.Q5_0_ROCMFPX:      (32, 20 + 2),
     GGMLQuantizationType.Q7_0_ROCMFPX:      (32, 28 + 2),
+    GGMLQuantizationType.Q2_0_ROCMFPX:      (32, 8 + 2),
 }
 
 

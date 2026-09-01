@@ -4,6 +4,12 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+_Static_assert(GGML_TYPE_Q2_0_ROCMFPX_LEGACY_AMBIGUOUS == 107,
+        "ambiguous ROCmFP2 legacy type ID changed");
+_Static_assert(GGML_TYPE_Q2_0_ROCMFPX == 111,
+        "canonical dual-scale ROCmFP2 type ID changed");
 
 static void fill_row(float * x, int n) {
     for (int i = 0; i < n; ++i) {
@@ -220,6 +226,32 @@ static void check_fp2_swar_codebook(void) {
     printf("ROCmFP2 Vulkan SWAR: all 256 packed bytes match {-4,-1,1,4}\n");
 }
 
+static void check_fp2_legacy_collision_probe(void) {
+    static const int codebook[4] = {-4, -1, 1, 4};
+    const uint8_t bytes[sizeof(block_rocmfp2)] = {
+        0xe4, 0xe4, 0xe4, 0xe4, 0xe4, 0xe4, 0xe4, 0xe4, 0x38, 0x40,
+    };
+    block_rocmfp2 block;
+    float dual_scale[QK_ROCMFP2];
+    bool layouts_differ = false;
+
+    memcpy(&block, bytes, sizeof(block));
+    rocmfpx_dequantize_row_fp2(&block, dual_scale, QK_ROCMFP2);
+
+    for (int i = 0; i < QK_ROCMFP2; ++i) {
+        const int code = i % 4;
+        const float scale = i < QK_ROCMFP2/2 ? 0.5f : 1.0f;
+        const float expected_dual_scale = (float) codebook[code] * scale;
+        const float expected_affine = (float) code * 0.5f - 1.0f;
+
+        assert(dual_scale[i] == expected_dual_scale);
+        layouts_differ |= expected_dual_scale != expected_affine;
+    }
+
+    assert(layouts_differ);
+    printf("ROCmFP2 type collision probe: identical 10-byte payload has incompatible affine and dual-scale values\n");
+}
+
 int main(void) {
     enum { N = 64 };
 
@@ -307,6 +339,7 @@ int main(void) {
     check_weighted_imatrix_fp8();
     check_weighted_imatrix_i4();
     check_fp2_swar_codebook();
+    check_fp2_legacy_collision_probe();
 
     return 0;
 }

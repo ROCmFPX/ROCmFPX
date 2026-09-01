@@ -32,6 +32,32 @@ The currently qualified formats are experimental. The on-disk layouts of
 ROCmFP2/3/4/6/8 are frozen for compatibility; new kernel and quantizer work
 must preserve their encoded sizes and semantics.
 
+### ROCmFP2 tensor type identity
+
+Canonical dual-scale S40 ROCmFP2 uses GGUF tensor type **111**. Its payload is
+still exactly 10 bytes per 32 weights (2.5 bpw); only the tensor type tag moved.
+Legacy type 107 is reserved as ambiguous because both dual-scale S40 and an
+affine `code * scale - offset` layout were emitted with that same ID and block
+size. ROCmFPX refuses type 107 instead of guessing and silently corrupting a
+model.
+
+New quantizations write type 111 automatically. To audit an older file, run:
+
+```bash
+scripts/rocmfpx/retag-legacy-rocmfp2.py MODEL.gguf
+```
+
+Only when the file's provenance confirms that it uses dual-scale S40, make a
+backup and retag its tensor headers in place:
+
+```bash
+scripts/rocmfpx/retag-legacy-rocmfp2.py MODEL.gguf \
+  --layout s40-dual-scale-v1 --apply
+```
+
+The tool does not inspect or infer the layout because the two interpretations
+cannot be distinguished from the bytes. Do not use it on affine ROCmFP2 files.
+
 ## Optional Charlie Vulkan plugin
 
 The optional [`ROCmFPXVulkan` extension](extensions/rocmfpx-vulkan/README.md)
