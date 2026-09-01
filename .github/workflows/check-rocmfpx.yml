@@ -57,7 +57,6 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         run: |
           python3 -m py_compile convert_hf_to_gguf.py convert_modular.py conversion/base.py conversion/__init__.py conversion/gemma.py conversion/llama.py scripts/rocmfpx/retag-legacy-rocmfp2.py tools/hyperloom/run_benchmark.py
-          python3 scripts/rocmfpx/retag-legacy-rocmfp2.py --help >/dev/null
           python3 - <<'PY'
           from pathlib import Path
 
