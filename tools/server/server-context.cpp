@@ -894,6 +894,7 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+    bool strict_qwen_mtp_verification = false;
 
     bool add_bos_token = true;
 
@@ -1117,6 +1118,39 @@ private:
 
         add_bos_token = llama_vocab_get_add_bos(vocab);
 
+        {
+            char model_arch[32] = {};
+            const bool has_model_arch =
+                llama_model_meta_val_str(model_tgt, "general.architecture", model_arch, sizeof(model_arch)) >= 0;
+            const bool is_qwen35 =
+                has_model_arch &&
+                (strcmp(model_arch, "qwen35") == 0 || strcmp(model_arch, "qwen35moe") == 0);
+            const bool has_mtp =
+                std::find(params_base.speculative.types.begin(), params_base.speculative.types.end(),
+                          COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
+
+            strict_qwen_mtp_verification = is_qwen35 && has_mtp && params_base.speculative.mtp_strict_qwen;
+
+            if (params_base.speculative.mtp_strict_qwen && !strict_qwen_mtp_verification) {
+                SRV_ERR("%s", "--spec-mtp-strict-qwen requires a qwen35 or qwen35moe target with draft-mtp enabled\n");
+                return false;
+            }
+
+            if (strict_qwen_mtp_verification) {
+                if (params_base.n_parallel != 1) {
+                    SRV_ERR("%s", "Qwen strict MTP requires one server slot/sequence; restart with -np 1 or use --no-spec-mtp-strict-qwen\n");
+                    return false;
+                }
+                if (llama_n_rs_seq(ctx_tgt) < (uint32_t) params_base.speculative.draft.n_max) {
+                    SRV_ERR("%s", "Qwen strict MTP requires bounded recurrent rollback covering the full draft\n");
+                    return false;
+                }
+                SRV_WRN("%s", "Qwen strict MTP: boundary-safe verification with bounded recurrent rollback is enabled for exact greedy output\n");
+            } else if (is_qwen35 && has_mtp) {
+                SRV_WRN("%s", "Qwen MTP strict verification is disabled; greedy output may diverge from no-spec decoding (enable --spec-mtp-strict-qwen)\n");
+            }
+        }
+
         if (has_spec) {
             // spec_mtp doesn't use load a model internally, so we report 0.0 and 1.0 manually
             load_progress_callback(0.0f, &load_progress_spec);
@@ -1238,6 +1272,12 @@ private:
         slots.clear();
 
         ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
+        if (strict_qwen_mtp_verification &&
+            (ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
+             llama_n_rs_seq(ctx_tgt) < (uint32_t) params_base.speculative.draft.n_max)) {
+            SRV_ERR("%s", "Qwen strict MTP requires bounded rollback covering the full draft\n");
+            return false;
+        }
         if (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
             SRV_WRN("%s", "speculative decoding not supported by this context\n");
         }
@@ -2974,7 +3014,19 @@ private:
                 const bool use_ckpt_tgt = ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
                 const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
-                const int n_draft_max = slot.get_n_draft_max();
+                int n_draft_max = slot.get_n_draft_max();
+
+                if (strict_qwen_mtp_verification) {
+                    // Keep verification within one padded KV block to match serial reduction widths.
+                    if (slot.truncated || slot.prompt.tokens.pos_next() < 0) {
+                        n_draft_max = 0;
+                    } else {
+                        constexpr uint32_t kv_pad = 256;
+                        const uint32_t rows_to_boundary =
+                            kv_pad - ((uint32_t) slot.prompt.tokens.pos_next() % kv_pad);
+                        n_draft_max = std::min(n_draft_max, std::max(0, (int) rows_to_boundary - 1));
+                    }
+                }
 
                 if (n_draft_max > 0) {
                     GGML_ASSERT(slot.can_speculate());
@@ -3374,9 +3426,21 @@ private:
 
                         // [TAG_PROMPT_LOGITS]
                         if (n_past == slot.task->n_tokens() && n_past > 0) {
-                            SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
-                            n_past--;
-                            SLT_WRN(slot, "n_past was set to %d\n", n_past);
+                            if (strict_qwen_mtp_verification) {
+                                // An exact recurrent cache hit lacks rollback history, so rebuild the prompt and MTP boundary state.
+                                SLT_WRN(slot,
+                                        "prompt cache cold fallback: reason=strict-qwen-exact-hit cached_tokens=%d request_tokens=%d\n",
+                                        n_past, slot.task->n_tokens());
+                                n_past = 0;
+                                slot.spec_draft.clear();
+                                slot.spec_i_batch.clear();
+                                slot.spec_ckpt.clear();
+                                common_speculative_set_state(spec.get(), slot.id, {});
+                            } else {
+                                SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
+                                n_past--;
+                                SLT_WRN(slot, "n_past was set to %d\n", n_past);
+                            }
                         }
 
                         slot.stats.n_prompt_cached    = n_past;
