@@ -1124,7 +1124,8 @@ private:
                 llama_model_meta_val_str(model_tgt, "general.architecture", model_arch, sizeof(model_arch)) >= 0;
             const bool is_qwen35 =
                 has_model_arch &&
-                (strcmp(model_arch, "qwen35") == 0 || strcmp(model_arch, "qwen35moe") == 0);
+                (strcmp(model_arch, "qwen35") == 0 || strcmp(model_arch, "qwen35moe") == 0 ||
+                 strcmp(model_arch, "qwen4exp") == 0);
             const bool has_mtp =
                 std::find(params_base.speculative.types.begin(), params_base.speculative.types.end(),
                           COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
@@ -1132,7 +1133,7 @@ private:
             strict_qwen_mtp_verification = is_qwen35 && has_mtp && params_base.speculative.mtp_strict_qwen;
 
             if (params_base.speculative.mtp_strict_qwen && !strict_qwen_mtp_verification) {
-                SRV_ERR("%s", "--spec-mtp-strict-qwen requires a qwen35 or qwen35moe target with draft-mtp enabled\n");
+                SRV_ERR("%s", "--spec-mtp-strict-qwen requires a qwen35, qwen35moe, or qwen4exp target with draft-mtp enabled\n");
                 return false;
             }
 
@@ -1141,7 +1142,8 @@ private:
                     SRV_ERR("%s", "Qwen strict MTP requires one server slot/sequence; restart with -np 1 or use --no-spec-mtp-strict-qwen\n");
                     return false;
                 }
-                if (llama_n_rs_seq(ctx_tgt) < (uint32_t) params_base.speculative.draft.n_max) {
+                // qwen4exp has no recurrent state needing rollback; only check n_rs_seq for archs that actually support it
+                if (strcmp(model_arch, "qwen4exp") != 0 && llama_n_rs_seq(ctx_tgt) < (uint32_t) params_base.speculative.draft.n_max) {
                     SRV_ERR("%s", "Qwen strict MTP requires bounded recurrent rollback covering the full draft\n");
                     return false;
                 }
