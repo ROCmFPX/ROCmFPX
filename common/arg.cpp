@@ -3976,6 +3976,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     //
 
     add_opt(common_arg(
+        {"--spec-mtp-strict-qwen"},
+        {"--no-spec-mtp-strict-qwen"},
+        "use boundary-safe verification for exact greedy Qwen35/Qwen35MoE MTP output; requires one slot/sequence (default: disabled)",
+        [](common_params & params, bool value) {
+            params.speculative.mtp_strict_qwen = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SPEC_MTP_STRICT_QWEN"));
+    add_opt(common_arg(
         {"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"}, "<user>/<model>[:quant]",
         "Same as --hf-repo, but for the draft model (default: unused)",
         [](common_params & params, const std::string & value) {

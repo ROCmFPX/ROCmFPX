@@ -255,6 +255,31 @@ static void test(void) {
     assert(params.speculative.draft.n_max == 123);
 
     {
+        common_params strict_params;
+
+        argv = {"binary_name", "--spec-mtp-strict-qwen"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), strict_params, LLAMA_EXAMPLE_EMBEDDING));
+
+        argv = {"binary_name", "--spec-draft-n-max", "-1"};
+        assert(false == common_params_parse(argv.size(), list_str_to_char(argv).data(), strict_params, LLAMA_EXAMPLE_SPECULATIVE));
+
+        strict_params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+        strict_params.speculative.draft.n_max = 6;
+        assert(strict_params.speculative.need_n_rs_seq() == 6);
+        strict_params.speculative.draft.n_max = -1;
+        assert(strict_params.speculative.need_n_rs_seq() == 0);
+        strict_params.speculative.draft.n_max = 6;
+
+        argv = {"binary_name", "--spec-mtp-strict-qwen"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), strict_params, LLAMA_EXAMPLE_SERVER));
+        assert(strict_params.speculative.mtp_strict_qwen);
+
+        argv = {"binary_name", "--no-spec-mtp-strict-qwen"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), strict_params, LLAMA_EXAMPLE_SERVER));
+        assert(!strict_params.speculative.mtp_strict_qwen);
+    }
+
+    {
         common_params synth_params;
         argv = {"binary_name", "--spec-synth-len", "3.4"};
         assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), synth_params, LLAMA_EXAMPLE_SERVER));
