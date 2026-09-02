@@ -3988,7 +3988,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--spec-mtp-strict-qwen"},
         {"--no-spec-mtp-strict-qwen"},
-        "use boundary-safe verification for exact greedy Qwen35/Qwen35MoE MTP output; requires one slot/sequence (default: disabled)",
+        "use boundary-safe verification for exact greedy Qwen35/Qwen35MoE/Qwen4Exp MTP output; requires one slot/sequence (default: disabled)",
         [](common_params & params, bool value) {
             params.speculative.mtp_strict_qwen = value;
         }

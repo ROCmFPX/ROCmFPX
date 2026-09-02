@@ -1122,17 +1122,18 @@ private:
             char model_arch[32] = {};
             const bool has_model_arch =
                 llama_model_meta_val_str(model_tgt, "general.architecture", model_arch, sizeof(model_arch)) >= 0;
-            const bool is_qwen35 =
+            const bool is_strict_qwen_arch =
                 has_model_arch &&
-                (strcmp(model_arch, "qwen35") == 0 || strcmp(model_arch, "qwen35moe") == 0);
+                (strcmp(model_arch, "qwen35") == 0 || strcmp(model_arch, "qwen35moe") == 0 ||
+                 strcmp(model_arch, "qwen4exp") == 0);
             const bool has_mtp =
                 std::find(params_base.speculative.types.begin(), params_base.speculative.types.end(),
                           COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
 
-            strict_qwen_mtp_verification = is_qwen35 && has_mtp && params_base.speculative.mtp_strict_qwen;
+            strict_qwen_mtp_verification = is_strict_qwen_arch && has_mtp && params_base.speculative.mtp_strict_qwen;
 
             if (params_base.speculative.mtp_strict_qwen && !strict_qwen_mtp_verification) {
-                SRV_ERR("%s", "--spec-mtp-strict-qwen requires a qwen35 or qwen35moe target with draft-mtp enabled\n");
+                SRV_ERR("%s", "--spec-mtp-strict-qwen requires a qwen35, qwen35moe, or qwen4exp target with draft-mtp enabled\n");
                 return false;
             }
 
@@ -1146,7 +1147,7 @@ private:
                     return false;
                 }
                 SRV_WRN("%s", "Qwen strict MTP: boundary-safe verification with bounded recurrent rollback is enabled for exact greedy output\n");
-            } else if (is_qwen35 && has_mtp) {
+            } else if (is_strict_qwen_arch && has_mtp) {
                 SRV_WRN("%s", "Qwen MTP strict verification is disabled; greedy output may diverge from no-spec decoding (enable --spec-mtp-strict-qwen)\n");
             }
         }
