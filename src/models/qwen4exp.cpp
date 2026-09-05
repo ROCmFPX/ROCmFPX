@@ -296,6 +296,10 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
 
     // The MTP draft block sits one past the trunk. It is a full qwen4exp layer plus the
     // three nextn tensors, and is skipped unless the file is opened as a draft.
+    std::array<uint32_t, LLAMA_MAX_LAYERS> mtp_ff_exp = {};
+    if (hparams.n_layer_nextn > 0) {
+        ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, mtp_ff_exp, hparams.n_layer_all, false);
+    }
     for (int il = n_layer; il < n_layer + (int) hparams.n_layer_nextn; ++il) {
         if (ml.files.empty() && !ml.load_mtp) {
             continue;
@@ -303,7 +307,7 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
         auto & layer = layers[il];
 
         const int flags = ml.load_mtp ? 0 : TENSOR_SKIP | TENSOR_SKIP_IF_VIRTUAL;
-        const int64_t n_ff_exp   = hparams.n_ff_exp   ? hparams.n_ff_exp   : n_ff / n_expert_used;
+        const int64_t n_ff_exp   = mtp_ff_exp[il] ? mtp_ff_exp[il] : n_ff / n_expert_used;
         const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
         const int64_t idx_dim    = hparams.indexer_head_size;
 
