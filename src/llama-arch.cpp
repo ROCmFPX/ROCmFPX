@@ -1009,7 +1009,9 @@ std::string LLM_TN_IMPL::str() const {
         GGML_ABORT("unknown tensor name for tensor id %d", static_cast<int>(tensor));
     }
 
-    std::string name = ::format(LLM_TENSOR_NAMES.at(tensor), bid, xid);
+    // Split PLE tables use a head index in the name and a layer index for placement.
+    const int name_index = tensor == LLM_TENSOR_PLE_NGRAM_EMBD ? xid : bid;
+    std::string name = ::format(LLM_TENSOR_NAMES.at(tensor), name_index, xid);
     if (suffix != nullptr) {
         name += ".";
         name += suffix;

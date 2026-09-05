@@ -9,6 +9,7 @@
 
 // TODO: replace with #include "llama-ext.h" in the future
 #include "../src/llama-arch.h"
+#include "../src/llama-ext.h"
 #include "../src/llama-model-saver.h"
 
 #include <cinttypes>
@@ -42,9 +43,17 @@ static double nmse(const std::vector<float> & a, const std::vector<float> & b) {
 static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
     size_t seed = *(const size_t *) userdata;
     std::hash<std::string> hasher;
-    seed ^= hasher(tensor->name);
+    int ple_head = -1;
+    const bool split_ple = std::sscanf(tensor->name, "ple_ngram_embd.%d.weight", &ple_head) == 1;
+    seed ^= hasher(split_ple ? "per_layer_token_embd.weight" : tensor->name);
     std::mt19937 gen(seed);
     std::normal_distribution<float> dis(0.0f, 1.0e-2f);
+    // Match the corresponding 16-row range of the joined PLE fixture.
+    if (split_ple) {
+        for (int i = 0; i < ple_head * 16 * 64; ++i) {
+            dis(gen);
+        }
+    }
 
     const int64_t ne = ggml_nelements(tensor);
     if (tensor->type == GGML_TYPE_F32) {
@@ -89,7 +98,7 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
     return ret;
 }
 
-static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const bool split_ple = false, const bool mtp = false) {
     gguf_context_ptr ret(gguf_init_empty());
     llama_model_saver ms(arch, ret.get());
     const uint32_t n_ctx = 256;
@@ -98,7 +107,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     uint32_t n_embd  = 256;
     uint32_t n_head  = 2;
     uint32_t n_ff    = 384;
-    uint32_t n_layer = 2;
+    uint32_t n_layer = mtp ? 3 : 2;
     if (arch == LLM_ARCH_LLAMA4) {
         n_layer = 4; // hparams.n_no_rope_layer_step is hard-coded to 4
     } else if (arch == LLM_ARCH_GEMMA4) {
@@ -260,6 +269,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     // MSA requires one indexer head per GQA (KV) head, unlike the DSA archs where the
     // indexer head count is independent of the main attention head count.
     if (arch == LLM_ARCH_QWEN4EXP) {
+        ms.add_kv(LLM_KV_NEXTN_PREDICT_LAYERS, uint32_t(mtp ? 1 : 0));
         ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT,    uint32_t(4));
         ms.add_kv(LLM_KV_HYPER_CONNECTION_LOW_RANK, uint32_t(8));
         // without this the QSA layers fall back to dense and go uncovered
@@ -366,13 +376,19 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         gguf_add_tensor(ms.gguf_ctx, &t);
     }
     if (arch == LLM_ARCH_QWEN4EXP) {
-        const size_t ctx_size = ggml_tensor_overhead() + 1024;
+        const size_t ctx_size = 4 * ggml_tensor_overhead() + 1024;
         ggml_init_params params = { ctx_size, nullptr, true };
         ggml_context * ctx = ggml_init(params);
         GGML_ASSERT(ctx != nullptr);
-        ggml_tensor * table = ggml_new_tensor_2d(ctx, GGML_TYPE_Q3_0_ROCMFPX, 64, 64);
-        ggml_set_name(table, "per_layer_token_embd.weight");
-        gguf_add_tensor(ms.gguf_ctx, table);
+        for (int h = 0; h < (split_ple ? 4 : 1); ++h) {
+            ggml_tensor * table = ggml_new_tensor_2d(ctx, GGML_TYPE_Q3_0_ROCMFPX, 64, split_ple ? 16 : 64);
+            if (split_ple) {
+                ggml_format_name(table, "ple_ngram_embd.%d.weight", h);
+            } else {
+                ggml_set_name(table, "per_layer_token_embd.weight");
+            }
+            gguf_add_tensor(ms.gguf_ctx, table);
+        }
         ggml_free(ctx);
     }
     return ret;
@@ -384,7 +400,7 @@ static bool silent_model_load_progress(float /*progress*/, void * /*user_data*/)
 
 static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
         struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const std::vector<ggml_backend_dev_t> & devs,
-        const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER, bool encode = false) {
+        const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER, bool encode = false, bool mtp = false) {
     GGML_ASSERT((gguf_ctx == nullptr) != (file == nullptr));
     llama_model_params model_params = llama_model_default_params();
     model_params.progress_callback = silent_model_load_progress;
@@ -392,11 +408,15 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
     devs_copy.push_back(nullptr);
     model_params.devices = devs_copy.data();
     model_params.split_mode = split_mode;
+    model_params.load_mtp = mtp;
 
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = 0;
     ctx_params.n_threads = 4;
     ctx_params.n_threads_batch = 4;
+    if (mtp) {
+        ctx_params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+    }
     if (!encode) {
         ctx_params.n_ubatch = 64;
     }
@@ -447,6 +467,72 @@ static std::vector<float> get_logits(
     }
     llama_batch_free(batch);
     return ret;
+}
+
+static int test_qwen4exp_split_ple(const size_t seed) {
+    auto joined = get_gguf_ctx(LLM_ARCH_QWEN4EXP, true);
+    auto split = get_gguf_ctx(LLM_ARCH_QWEN4EXP, true, true);
+    auto cpu = get_model_and_ctx(joined.get(), nullptr, seed, {});
+    const auto tokens = get_tokens(32, 128, seed);
+    const auto reference = get_logits(cpu.first.get(), cpu.second.get(), tokens);
+    auto with_mtp = get_gguf_ctx(LLM_ARCH_QWEN4EXP, true, true, true);
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        auto dev = ggml_backend_dev_get(i);
+        auto model = get_model_and_ctx(split.get(), nullptr, seed, {dev});
+        const auto logits = get_logits(model.first.get(), model.second.get(), tokens);
+        const double error = nmse(reference, logits);
+        if (!(error <= 1e-4)) {
+            std::fprintf(stderr, "FAIL split PLE vs joined on %s: NMSE=%g\n", ggml_backend_dev_name(dev), error);
+            return 1;
+        }
+        FILE * file = tmpfile();
+        if (file) {
+            llama_model_saver saver(model.first.get());
+            saver.add_kv_from_model();
+            saver.add_tensors_from_model();
+            saver.save(file);
+            rewind(file);
+            auto reloaded = get_model_and_ctx(nullptr, file, seed, {dev});
+            const auto roundtrip = get_logits(reloaded.first.get(), reloaded.second.get(), tokens);
+            fclose(file);
+            if (roundtrip != logits) {
+                std::fprintf(stderr, "FAIL split PLE roundtrip on %s\n", ggml_backend_dev_name(dev));
+                return 1;
+            }
+        }
+        std::printf("PASS split PLE on %s: 4 heads / 2 layers, joined NMSE=%g, roundtrip=%s\n",
+                    ggml_backend_dev_name(dev), error, file ? "PASS" : "SKIP");
+
+        auto target = get_model_and_ctx(with_mtp.get(), nullptr, seed, {dev});
+        llama_set_embeddings_nextn(target.second.get(), true, false);
+        const auto target_logits = get_logits(target.first.get(), target.second.get(), tokens);
+        if (!(nmse(logits, target_logits) <= 1e-6)) {
+            std::fprintf(stderr, "FAIL MTP metadata/hidden extraction changed target logits on %s\n", ggml_backend_dev_name(dev));
+            return 1;
+        }
+        auto draft = get_model_and_ctx(with_mtp.get(), nullptr, seed, {dev}, LLAMA_SPLIT_MODE_LAYER, false, true);
+        llama_set_embeddings_nextn(draft.second.get(), true, true);
+        const int n_embd = llama_model_n_embd_out(target.first.get());
+        llama_batch batch = llama_batch_init(1, 0, 1);
+        std::vector<float> hidden(n_embd);
+        std::memcpy(hidden.data(), llama_get_embeddings_nextn_ith(target.second.get(), 0), n_embd * sizeof(float));
+        common_batch_add(batch, tokens[1], 0, {0}, true);
+        batch.embd = hidden.data();
+        const int status = llama_decode(draft.second.get(), batch);
+        batch.embd = nullptr;
+        llama_batch_free(batch);
+        if (status != 0) {
+            throw std::runtime_error("qwen4exp MTP fixture decode failed");
+        }
+        const float * draft_logits = llama_get_logits_ith(draft.second.get(), 0);
+        for (int j = 0; j < 128; ++j) {
+            if (!std::isfinite(draft_logits[j])) {
+                throw std::runtime_error("qwen4exp MTP fixture produced non-finite logits");
+            }
+        }
+        std::printf("PASS MTP target hidden extraction and draft decode on %s\n", ggml_backend_dev_name(dev));
+    }
+    return 0;
 }
 
 static bool moe_mandatory(const llm_arch arch) {
@@ -870,7 +956,11 @@ int main(int argc, char ** argv) {
         if (!out.empty()) {
             return save_models(arch, seed, verbosity, out);
         }
-        return test_backends(arch, seed, verbosity);
+        const int result = test_backends(arch, seed, verbosity);
+        if (result == 0 && arch == LLM_ARCH_QWEN4EXP) {
+            return test_qwen4exp_split_ple(seed);
+        }
+        return result;
     } catch (const std::exception & err) {
         fprintf(stderr, "encountered runtime error: %s\n", err.what());
         return -1;

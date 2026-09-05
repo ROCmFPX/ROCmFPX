@@ -53,7 +53,9 @@ void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
     qwen4exp_require_nonzero(ml, LLM_KV_HYPER_CONNECTION_LOW_RANK, hparams.hc_low_rank);
     hparams.n_embd_out_impl = hparams.dsv4_hc_mult * hparams.n_embd;
 
-    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.n_layer_nextn, false);
+    if (hparams.n_layer_nextn > 1 || hparams.n_layer_nextn == hparams.n_layer_all) {
+        throw std::runtime_error("qwen4exp requires trunk layers and supports at most one MTP layer");
+    }
     ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT, hparams.indexer_n_head);
     ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH, hparams.indexer_head_size);
     ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,      hparams.indexer_top_k);
@@ -203,9 +205,13 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
             per_layer_tok_embd = create_tensor(tn(LLM_TENSOR_PER_LAYER_TOKEN_EMBD, "weight"),
                                                { hparams.ple_head_dim, ple_rows }, TENSOR_READ_LAZY);
         } else {
+            uint32_t ple_layer = 0;
+            while (ple_layer < hparams.n_layer_all && !hparams.is_ple(ple_layer)) {
+                ++ple_layer;
+            }
             ple_ngram_embd.resize(hparams.ple_n_heads);
             for (uint32_t h = 0; h < hparams.ple_n_heads; ++h) {
-                ple_ngram_embd[h] = create_tensor(tn(LLM_TENSOR_PLE_NGRAM_EMBD, "weight", h),
+                ple_ngram_embd[h] = create_tensor(tn(LLM_TENSOR_PLE_NGRAM_EMBD, "weight", ple_layer, h),
                                                   { hparams.ple_head_dim, (int64_t) hparams.ple_head_vocab_sizes[h] }, 0);
             }
         }
@@ -213,7 +219,11 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
 
     // An MTP-only file carries just the draft block. Keep walking the trunk so the
     // per-layer bookkeeping still runs, but let its tensors be absent.
-    const bool mtp_only = hparams.n_layer_nextn > 0 && ml.get_weight("blk.0.hc_attn_norm.weight") == nullptr;
+    const bool mtp_only = !ml.files.empty() && hparams.n_layer_nextn > 0 &&
+                         ml.get_weight("blk.0.hc_attn_norm.weight") == nullptr;
+    if (mtp_only && !ml.load_mtp) {
+        throw std::runtime_error("qwen4exp MTP-only weights must be loaded as a draft model");
+    }
     const int  trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
 
     for (int il = 0; il < n_layer; ++il) {
@@ -287,9 +297,12 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     // The MTP draft block sits one past the trunk. It is a full qwen4exp layer plus the
     // three nextn tensors, and is skipped unless the file is opened as a draft.
     for (int il = n_layer; il < n_layer + (int) hparams.n_layer_nextn; ++il) {
+        if (ml.files.empty() && !ml.load_mtp) {
+            continue;
+        }
         auto & layer = layers[il];
 
-        const int flags = ml.load_mtp ? 0 : TENSOR_SKIP;
+        const int flags = ml.load_mtp ? 0 : TENSOR_SKIP | TENSOR_SKIP_IF_VIRTUAL;
         const int64_t n_ff_exp   = hparams.n_ff_exp   ? hparams.n_ff_exp   : n_ff / n_expert_used;
         const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
         const int64_t idx_dim    = hparams.indexer_head_size;
@@ -309,7 +322,7 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
         layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", il), { n_embd_head_k }, flags);
 
         // The draft attends dense, so the indexer weights are present but never read.
-        const int idx_flags = flags | TENSOR_NOT_REQUIRED | TENSOR_SKIP;
+        const int idx_flags = flags | TENSOR_NOT_REQUIRED | TENSOR_SKIP | TENSOR_SKIP_IF_VIRTUAL;
         layer.index_q_proj = create_tensor(tn(LLM_TENSOR_INDEXER_Q_PROJ, "weight", il), { n_embd, hparams.indexer_n_head * idx_dim }, idx_flags);
         layer.index_k_proj = create_tensor(tn(LLM_TENSOR_INDEXER_K_PROJ, "weight", il), { n_embd, idx_dim }, idx_flags);
         layer.index_q_norm = create_tensor(tn(LLM_TENSOR_INDEXER_Q_NORM, "weight", il), { idx_dim }, idx_flags);
