@@ -1,2 +1,2 @@
-# Private downstream ownership.
-* @ROCmFPX
+# Downstream ownership: either maintainer can review the other's changes.
+* @ROCmFPX @charlie12345
