@@ -1146,7 +1146,11 @@ private:
                     SRV_ERR("%s", "Qwen strict MTP requires bounded recurrent rollback covering the full draft\n");
                     return false;
                 }
-                SRV_WRN("%s", "Qwen strict MTP: boundary-safe verification with bounded recurrent rollback is enabled for exact greedy output\n");
+                if (strcmp(model_arch, "qwen4exp") == 0) {
+                    SRV_WRN("%s", "Qwen4Exp MTP: boundary-safe verification and bounded recurrent rollback enabled; quantized batched verification can still differ from serial greedy output. Use --spec-type none when exact serial output is required.\n");
+                } else {
+                    SRV_WRN("%s", "Qwen strict MTP: boundary-safe verification with bounded recurrent rollback is enabled for exact greedy output\n");
+                }
             } else if (is_strict_qwen_arch && has_mtp) {
                 SRV_WRN("%s", "Qwen MTP strict verification is disabled; greedy output may diverge from no-spec decoding (enable --spec-mtp-strict-qwen)\n");
             }
