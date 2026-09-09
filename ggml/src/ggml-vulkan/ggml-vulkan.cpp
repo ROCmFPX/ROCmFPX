@@ -3952,16 +3952,35 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
         path = FA_SCALAR;
     }
 
+    vk_fa_tuning_params result{};
     switch (path) {
     case FA_SCALAR:
-        return get_fa_tuning_params_scalar(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
+        result = get_fa_tuning_params_scalar(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
+        break;
     case FA_COOPMAT1:
-        return get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
+        result = get_fa_tuning_params_coopmat1(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
+        break;
     case FA_COOPMAT2:
-        return get_fa_tuning_params_coopmat2(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
+        result = get_fa_tuning_params_coopmat2(device, hsk, hsv, n_rows, n_kv, k_type, v_type, f32acc);
+        break;
     default:
         throw std::runtime_error("unsupported FaCodePath");
     }
+
+    // diagnostic override: force FA tile, e.g. GGML_VK_ROCMFP4_FA_TILE=64x32
+    const char * fa_tile_env = getenv("GGML_VK_ROCMFP4_FA_TILE");
+    if (fa_tile_env != nullptr) {
+        unsigned br = 0, bc = 0;
+        if (sscanf(fa_tile_env, "%ux%u", &br, &bc) == 2 && br > 0 && bc > 0) {
+            result.block_rows = br;
+            result.block_cols = bc;
+        }
+    }
+    if (getenv("GGML_VK_ROCMFP4_PROFILE")) {
+        fprintf(stderr, "PROF fa path=%d Br=%u Bc=%u\n", (int)result.path, result.block_rows, result.block_cols);
+    }
+
+    return result;
 }
 
 static vk_fa_pipeline_state get_fa_pipeline_state(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool aligned, bool f32acc,
@@ -4111,6 +4130,8 @@ static bool ggml_vk_matmul_int_shmem_support(const vk_device& device, const std:
         case GGML_TYPE_Q5_1:    block_a_size = std430_size({{16, 4}, {4, 4}, {fp2_size, fp2_align}});         break; // qs[16/4] + qh + dm(vec2)
         case GGML_TYPE_Q8_0:    block_a_size = std430_size({{32, 4}, {fp_size,  fp_align}});                  break; // qs[8] + dm
         case GGML_TYPE_MXFP4:   block_a_size = std430_size({{32, 4}, {fp_size,  fp_align}});                  break; // qs[8] + d
+        case GGML_TYPE_Q4_0_ROCMFP4:
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST: block_a_size = std430_size({{32, 4}, {fp2_size, fp2_align}});       break; // qs[8] + d(vec2)
         case GGML_TYPE_Q2_K:    block_a_size = std430_size({{ 8, 4}, {2, 2}, {fp2_size, fp2_align}});         break; // qs[2] + scales(u8vec2) + dm(vec2)
         case GGML_TYPE_Q3_K:    block_a_size = std430_size({{16, 4}, {fp2_size, fp2_align}});                 break; // qs[4] + d_scales(vec2)
         case GGML_TYPE_Q4_K:    block_a_size = std430_size({{16, 4}, {fp2_size, fp2_align}});                 break; // qs[4] + dm(vec2)
@@ -4939,6 +4960,38 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             CREATE_MM(GGML_TYPE_Q4_0_ROCMFP4_FAST, pipeline_dequant_mul_mat_mat[GGML_TYPE_Q4_0_ROCMFP4_FAST].f32acc, matmul_rocmfp4_fast_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
             CREATE_MM(GGML_TYPE_Q4_0_ROCMFP4, pipeline_dequant_mul_mat_mat_id[GGML_TYPE_Q4_0_ROCMFP4].f32acc, matmul_id_subgroup_rocmfp4_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id);
             CREATE_MM(GGML_TYPE_Q4_0_ROCMFP4_FAST, pipeline_dequant_mul_mat_mat_id[GGML_TYPE_Q4_0_ROCMFP4_FAST].f32acc, matmul_id_subgroup_rocmfp4_fast_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id);
+
+            // opt-in integer-dot path: CREATE_MMQ above only runs without coopmat support
+            const char * fp4_mmq_env = getenv("GGML_VK_ROCMFP4_MMQ");
+            if (device->integer_dot_product && fp4_mmq_env != nullptr && strcmp(fp4_mmq_env, "1") == 0) {
+                const bool id_ok = device->subgroup_ballot && device->subgroup_require_full_support && subgroup_min_size_16;
+
+#define CREATE_MMQ_FP4(TYPE, NAMELC) \
+                if (device->mul_mat_l_int[TYPE]) \
+                    ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_mat_q8_1[TYPE].f32acc->l, #NAMELC "_l", NAMELC ## _len, NAMELC ## _data, "main", 3, sizeof(vk_mat_mat_push_constants), l_mmq_wg_denoms, l_warptile_mmq_int, 1, false, false, 0); \
+                if (device->mul_mat_m_int[TYPE]) \
+                    ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_mat_q8_1[TYPE].f32acc->m, #NAMELC "_m", NAMELC ## _len, NAMELC ## _data, "main", 3, sizeof(vk_mat_mat_push_constants), m_mmq_wg_denoms, m_warptile_mmq_int, 1, false, false, 0); \
+                if (device->mul_mat_s_int[TYPE]) \
+                    ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_mat_q8_1[TYPE].f32acc->s, #NAMELC "_s", NAMELC ## _len, NAMELC ## _data, "main", 3, sizeof(vk_mat_mat_push_constants), s_mmq_wg_denoms, s_warptile_mmq_int, 1, false, false, 0);
+#define CREATE_MMQ_FP4_ID(TYPE, NAMELC) \
+                if (id_ok && device->mul_mat_id_l_int[TYPE]) \
+                    ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_mat_id_q8_1[TYPE].f32acc->l, #NAMELC "_l", NAMELC ## _len, NAMELC ## _data, "main", mul_mat_id_param_count, sizeof(vk_mat_mat_id_push_constants), l_mmq_wg_denoms, l_warptile_mmqid_int, 1, false, true, mul_mat_subgroup_size); \
+                if (id_ok && device->mul_mat_id_m_int[TYPE]) \
+                    ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_mat_id_q8_1[TYPE].f32acc->m, #NAMELC "_m", NAMELC ## _len, NAMELC ## _data, "main", mul_mat_id_param_count, sizeof(vk_mat_mat_id_push_constants), m_mmq_wg_denoms, m_warptile_mmqid_int, 1, false, true, mul_mat_subgroup_size); \
+                if (id_ok && device->mul_mat_id_s_int[TYPE]) \
+                    ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_mat_id_q8_1[TYPE].f32acc->s, #NAMELC "_s", NAMELC ## _len, NAMELC ## _data, "main", mul_mat_id_param_count, sizeof(vk_mat_mat_id_push_constants), s_mmq_wg_denoms, s_warptile_mmqid_int, 1, false, true, mul_mat_subgroup_size);
+
+                CREATE_MMQ_FP4(GGML_TYPE_Q4_0_ROCMFP4,      matmul_rocmfp4_q8_1)
+                CREATE_MMQ_FP4(GGML_TYPE_Q4_0_ROCMFP4_FAST, matmul_rocmfp4_fast_q8_1)
+                const char * fp4_mmq_id_env = getenv("GGML_VK_ROCMFP4_MMQ_ID");
+                if (fp4_mmq_id_env == nullptr || strcmp(fp4_mmq_id_env, "1") == 0) {
+                    CREATE_MMQ_FP4_ID(GGML_TYPE_Q4_0_ROCMFP4,      matmul_id_subgroup_rocmfp4_q8_1)
+                    CREATE_MMQ_FP4_ID(GGML_TYPE_Q4_0_ROCMFP4_FAST, matmul_id_subgroup_rocmfp4_fast_q8_1)
+                }
+
+#undef CREATE_MMQ_FP4_ID
+#undef CREATE_MMQ_FP4
+            }
         }
 #endif
 #undef CREATE_MM2
@@ -9212,6 +9265,14 @@ static vk_pipeline ggml_vk_guess_matmul_id_pipeline(ggml_backend_vk_context * ct
     const bool mm_m = is_q8_1 ? ctx->device->mul_mat_id_m_int[src0_type] : ctx->device->mul_mat_id_m[src0_type];
     const bool mm_s = is_q8_1 ? ctx->device->mul_mat_id_s_int[src0_type] : ctx->device->mul_mat_id_s[src0_type];
 
+    // diagnostic override: force id-path tile size (s/m/l), fall back to heuristic below
+    const char * mmqid_tile_env = getenv("GGML_VK_ROCMFP4_MMQID_TILE");
+    if (mmqid_tile_env != nullptr && mmp) {
+        if (mmqid_tile_env[0] == 's' && mm_s && mmp->s) return aligned ? mmp->a_s : mmp->s;
+        if (mmqid_tile_env[0] == 'm' && mm_m && mmp->m) return aligned ? mmp->a_m : mmp->m;
+        if (mmqid_tile_env[0] == 'l' && mm_l && mmp->l) return aligned ? mmp->a_l : mmp->l;
+    }
+
     if (ctx->device->coopmat2) {
         // Use large shader when the N dimension is greater than the medium shader's tile size
         uint32_t crossover_large = mmp->m->wg_denoms[1];
@@ -9599,6 +9660,9 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
     const uint64_t d_ne = ggml_nelements(dst);
 
     const uint32_t split_k = ggml_vk_guess_split_k(ctx, ne01, ne11, ne10, disable_split_k, pipeline);
+    if (getenv("GGML_VK_ROCMFP4_PROFILE")) {
+        fprintf(stderr, "PROF dense m=%u n=%u k=%u split_k=%u qy=%d pipe=%s\n", (uint32_t)ne01, (uint32_t)ne11, (uint32_t)ne10, split_k, (int)quantize_y, pipeline ? pipeline->name.c_str() : "null");
+    }
 
     const uint64_t qx_sz = ggml_type_size(src0->type) * x_ne / ggml_blck_size(src0->type);
     const uint64_t qy_sz = ggml_type_size(src1->type) * y_ne / ggml_blck_size(src1->type);
@@ -10532,6 +10596,9 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
     const bool aligned = !quantize_y && ne10 == kpad && ne01 > 8 && nei1 > 8;
 
     vk_pipeline pipeline = ggml_vk_guess_matmul_id_pipeline(ctx, mmp, ne01, nei1, aligned, qx_needs_dequant ? f16_type : src0->type, effective_src1_type);
+    if (getenv("GGML_VK_ROCMFP4_PROFILE")) {
+        fprintf(stderr, "PROF moe m=%u n=%u k=%u n_as=%u qy=%d pipe=%s\n", (uint32_t)ne01, (uint32_t)nei1, (uint32_t)ne10, (uint32_t)n_as, (int)quantize_y, pipeline ? pipeline->name.c_str() : "null");
+    }
 
     if (ggml_nbytes(src0) > ctx->device->properties.limits.maxStorageBufferRange) {
         pipeline = ggml_vk_get_64b_indexing_pipeline(ctx, pipeline);
@@ -10603,7 +10670,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
             ctx->prealloc_size_y = y_sz;
             ggml_vk_preallocate_buffers(ctx, subctx);
         }
-        if (ctx->prealloc_size_split_k < expert_data_size) {
+        if (ctx->prealloc_split_k == nullptr || ctx->prealloc_split_k->size < expert_data_size) {
             ctx->prealloc_size_split_k = expert_data_size;
             ggml_vk_preallocate_buffers(ctx, subctx);
         }
