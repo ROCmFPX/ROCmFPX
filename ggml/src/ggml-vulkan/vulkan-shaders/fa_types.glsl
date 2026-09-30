@@ -1,50 +1,71 @@
 #if !defined(GGML_FA_TYPES_COMP)
 #define GGML_FA_TYPES_COMP
 
-// FaTypeK / FaTypeV spec constant values. These mirror enum ggml_type so the
-// host can pass the type directly. Keep in sync with ggml.h.
-#define FA_TYPE_F32   0u
-#define FA_TYPE_F16   1u
-#define FA_TYPE_Q4_0  2u
-#define FA_TYPE_Q4_1  3u
-#define FA_TYPE_Q5_0  6u
-#define FA_TYPE_Q5_1  7u
-#define FA_TYPE_Q8_0  8u
-#define FA_TYPE_IQ4_NL 20u
-#define FA_TYPE_BF16 30u
-#define FA_TYPE_Q1_0 41u
-#define FA_TYPE_Q4_0_ROCMFP4      100u
-#define FA_TYPE_Q4_0_ROCMFP4_FAST 101u
-#define FA_TYPE_Q6_0_ROCMFPX      102u
-#define FA_TYPE_Q8_0_ROCMFPX      103u
-#define FA_TYPE_Q3_0_ROCMFPX      104u
-#define FA_TYPE_TURBO3_0          105u
-#define FA_TYPE_TURBO4_0          106u
+#include "ggml_type_ids.glsl"
+
+// Backward-compatibility aliases for shaders written against older FA_TYPE_* names
+#define FA_TYPE_F32                 GGML_TYPE_F32
+#define FA_TYPE_F16                 GGML_TYPE_F16
+#define FA_TYPE_Q4_0                GGML_TYPE_Q4_0
+#define FA_TYPE_Q4_1                GGML_TYPE_Q4_1
+#define FA_TYPE_Q5_0                GGML_TYPE_Q5_0
+#define FA_TYPE_Q5_1                GGML_TYPE_Q5_1
+#define FA_TYPE_Q8_0                GGML_TYPE_Q8_0
+#define FA_TYPE_Q2_K                GGML_TYPE_Q2_K
+#define FA_TYPE_Q3_K                GGML_TYPE_Q3_K
+#define FA_TYPE_Q4_K                GGML_TYPE_Q4_K
+#define FA_TYPE_Q5_K                GGML_TYPE_Q5_K
+#define FA_TYPE_Q6_K                GGML_TYPE_Q6_K
+#define FA_TYPE_IQ2_XXS             GGML_TYPE_IQ2_XXS
+#define FA_TYPE_IQ2_XS              GGML_TYPE_IQ2_XS
+#define FA_TYPE_IQ3_XXS             GGML_TYPE_IQ3_XXS
+#define FA_TYPE_IQ1_S               GGML_TYPE_IQ1_S
+#define FA_TYPE_IQ4_NL              GGML_TYPE_IQ4_NL
+#define FA_TYPE_IQ3_S               GGML_TYPE_IQ3_S
+#define FA_TYPE_IQ2_S               GGML_TYPE_IQ2_S
+#define FA_TYPE_IQ4_XS              GGML_TYPE_IQ4_XS
+#define FA_TYPE_IQ1_M               GGML_TYPE_IQ1_M
+#define FA_TYPE_BF16                GGML_TYPE_BF16
+#define FA_TYPE_TQ1_0               GGML_TYPE_TQ1_0
+#define FA_TYPE_TQ2_0               GGML_TYPE_TQ2_0
+#define FA_TYPE_MXFP4               GGML_TYPE_MXFP4
+#define FA_TYPE_NVFP4               GGML_TYPE_NVFP4
+#define FA_TYPE_Q1_0                GGML_TYPE_Q1_0
+#define FA_TYPE_Q2_0                GGML_TYPE_Q2_0
+#define FA_TYPE_Q4_0_ROCMFP4        GGML_TYPE_Q4_0_ROCMFP4
+#define FA_TYPE_Q4_0_ROCMFP4_FAST   GGML_TYPE_Q4_0_ROCMFP4_FAST
+#define FA_TYPE_Q6_0_ROCMFPX        GGML_TYPE_Q6_0_ROCMFPX
+#define FA_TYPE_Q8_0_ROCMFPX        GGML_TYPE_Q8_0_ROCMFPX
+#define FA_TYPE_Q3_0_ROCMFPX        GGML_TYPE_Q3_0_ROCMFPX
+#define FA_TYPE_TURBO3_0            GGML_TYPE_TURBO3_0
+#define FA_TYPE_TURBO4_0            GGML_TYPE_TURBO4_0
+#define FA_TYPE_Q2_0_ROCMFPX        GGML_TYPE_Q2_0_ROCMFPX
+#define FA_TYPE_Q4_0_ROCMI4         GGML_TYPE_Q4_0_ROCMI4
 
 // Number of matrix elements per buffer block, derived from the K/V type spec
 // constant. F32 is treated as a vec4 "block" of 4 floats. F16 uses block size 1
 // and bypasses the dequant path entirely. Quants follow their ggml block sizes.
 uint fa_block_elems(uint ty) {
     switch (ty) {
-        case FA_TYPE_F32:  return 4u;
-        case FA_TYPE_F16:  return 1u;
-        case FA_TYPE_Q4_0: return uint(QUANT_K_Q4_0);
-        case FA_TYPE_Q4_1: return uint(QUANT_K_Q4_1);
-        case FA_TYPE_Q5_0: return uint(QUANT_K_Q5_0);
-        case FA_TYPE_Q5_1: return uint(QUANT_K_Q5_1);
-        case FA_TYPE_Q8_0: return uint(QUANT_K_Q8_0);
-        case FA_TYPE_IQ4_NL: return uint(QUANT_K_IQ4_NL);
-        case FA_TYPE_BF16: return 1u;
-        case FA_TYPE_Q1_0: return uint(QUANT_K_Q1_0);
-        case FA_TYPE_Q4_0_ROCMFP4:
-        case FA_TYPE_Q4_0_ROCMFP4_FAST:
+        case GGML_TYPE_F32:  return 4u;
+        case GGML_TYPE_F16:  return 1u;
+        case GGML_TYPE_Q4_0: return uint(QUANT_K_Q4_0);
+        case GGML_TYPE_Q4_1: return uint(QUANT_K_Q4_1);
+        case GGML_TYPE_Q5_0: return uint(QUANT_K_Q5_0);
+        case GGML_TYPE_Q5_1: return uint(QUANT_K_Q5_1);
+        case GGML_TYPE_Q8_0: return uint(QUANT_K_Q8_0);
+        case GGML_TYPE_IQ4_NL: return uint(QUANT_K_IQ4_NL);
+        case GGML_TYPE_BF16: return 1u;
+        case GGML_TYPE_Q1_0: return uint(QUANT_K_Q1_0);
+        case GGML_TYPE_Q4_0_ROCMFP4:
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
             return uint(QUANT_K_ROCMFP4);
-        case FA_TYPE_Q3_0_ROCMFPX:
-        case FA_TYPE_Q6_0_ROCMFPX:
-        case FA_TYPE_Q8_0_ROCMFPX:
+        case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q8_0_ROCMFPX:
             return uint(QUANT_K_ROCMFPX_FP8);
-        case FA_TYPE_TURBO3_0: return uint(QUANT_K_TURBO3_0);
-        case FA_TYPE_TURBO4_0: return uint(QUANT_K_TURBO4_0);
+        case GGML_TYPE_TURBO3_0: return uint(QUANT_K_TURBO3_0);
+        case GGML_TYPE_TURBO4_0: return uint(QUANT_K_TURBO4_0);
         default:           return 1u;
     }
 }
@@ -54,27 +75,27 @@ uint fa_block_elems(uint ty) {
 // of int32s per 32-element block on the MMQ K path: ints_per_block == 8 / R.
 uint fa_quant_r_mmq(uint ty) {
     switch (ty) {
-        case FA_TYPE_Q4_0: return uint(QUANT_R_Q4_0);
-        case FA_TYPE_Q4_1: return uint(QUANT_R_Q4_1);
-        case FA_TYPE_Q5_0: return uint(QUANT_R_Q5_0);
-        case FA_TYPE_Q5_1: return uint(QUANT_R_Q5_1);
-        case FA_TYPE_Q8_0: return uint(QUANT_R_Q8_0);
-        case FA_TYPE_Q4_0_ROCMFP4:
-        case FA_TYPE_Q4_0_ROCMFP4_FAST:
-        case FA_TYPE_Q3_0_ROCMFPX:
-        case FA_TYPE_Q6_0_ROCMFPX:
-        case FA_TYPE_Q8_0_ROCMFPX: return 1u;
+        case GGML_TYPE_Q4_0: return uint(QUANT_R_Q4_0);
+        case GGML_TYPE_Q4_1: return uint(QUANT_R_Q4_1);
+        case GGML_TYPE_Q5_0: return uint(QUANT_R_Q5_0);
+        case GGML_TYPE_Q5_1: return uint(QUANT_R_Q5_1);
+        case GGML_TYPE_Q8_0: return uint(QUANT_R_Q8_0);
+        case GGML_TYPE_Q4_0_ROCMFP4:
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+        case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q8_0_ROCMFPX: return 1u;
         default:           return 1u;
     }
 }
 
 bool fa_type_needs_shmem(uint ty) {
     switch (ty) {
-        case FA_TYPE_IQ4_NL: return true;
+        case GGML_TYPE_IQ4_NL: return true;
 #if defined(FA_ROCMFPX_FAMILY)
-        case FA_TYPE_Q3_0_ROCMFPX:
-        case FA_TYPE_Q6_0_ROCMFPX:
-        case FA_TYPE_Q8_0_ROCMFPX: return true;
+        case GGML_TYPE_Q3_0_ROCMFPX:
+        case GGML_TYPE_Q6_0_ROCMFPX:
+        case GGML_TYPE_Q8_0_ROCMFPX: return true;
 #endif
         default:             return false;
     }
