@@ -990,7 +990,27 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
 
     size_t mc_width = 0, mc_height = 0, mc_spitch = 0, mc_dpitch = 0;
 
-    if (src0->type == src1->type && contiguous_srcs) {
+    // HIP captured DMA copies of device-produced recurrent state can return stale
+    // data on gfx1151. Use the existing bit-preserving scalar copy kernels during
+    // capture; the direct execution and prefill copy paths retain their dispatch.
+    bool capture_scalar_copy = false;
+#if defined(GGML_USE_HIP)
+    static const bool graph_copy_kernel = [] {
+        const char * value = getenv("ROCMFPX_HIP_GRAPH_COPY_KERNEL");
+        return value && atoi(value) == 1;
+    }();
+    const bool scalar_copy = src0->type == src1->type &&
+        (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 ||
+         src0->type == GGML_TYPE_BF16 || src0->type == GGML_TYPE_I32 || src0->type == GGML_TYPE_I16);
+    if (graph_copy_kernel && scalar_copy &&
+            GGML_CUDA_CC_IS_RDNA3_5(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) {
+        hipStreamCaptureStatus status = hipStreamCaptureStatusNone;
+        CUDA_CHECK(hipStreamIsCapturing(main_stream, &status));
+        capture_scalar_copy = status == hipStreamCaptureStatusActive;
+    }
+#endif
+
+    if (!capture_scalar_copy && src0->type == src1->type && contiguous_srcs) {
         GGML_ASSERT(ggml_nbytes(src0) == ggml_nbytes(src1));
 #if defined(GGML_USE_MUSA) && defined(GGML_MUSA_MUDNN_COPY)
         if (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16) {
@@ -1000,7 +1020,7 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         {
             CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0), cudaMemcpyDeviceToDevice, main_stream));
         }
-    } else if (ggml_cuda_cpy_as_memcpy_2d(src0, src1, mc_width, mc_height, mc_spitch, mc_dpitch)) {
+    } else if (!capture_scalar_copy && ggml_cuda_cpy_as_memcpy_2d(src0, src1, mc_width, mc_height, mc_spitch, mc_dpitch)) {
         CUDA_CHECK(cudaMemcpy2DAsync(src1_ddc, mc_dpitch, src0_ddc, mc_spitch,
                                      mc_width, mc_height, cudaMemcpyDeviceToDevice, main_stream));
     } else if (src0->type == GGML_TYPE_Q4_0_ROCMFP4 && src1->type == GGML_TYPE_Q4_0_ROCMFP4) {
@@ -1024,7 +1044,7 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         ggml_cpy_rocmfp4_rocmfp4_hip<sizeof(block_rocmfp8)>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
-        if (can_be_transposed) {
+        if (!capture_scalar_copy && can_be_transposed) {
             ggml_cpy_scalar_cuda<float, float, true>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         } else {
@@ -1161,7 +1181,7 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         ggml_cpy_q5_1_f32_cuda
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
-        if (can_be_transposed) {
+        if (!capture_scalar_copy && can_be_transposed) {
             ggml_cpy_scalar_cuda<half, half, true>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         } else {
@@ -1185,7 +1205,7 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         }
     } else if (src0->type == GGML_TYPE_BF16 && src1->type == GGML_TYPE_BF16) {
-        if (can_be_transposed) {
+        if (!capture_scalar_copy && can_be_transposed) {
             ggml_cpy_scalar_cuda<nv_bfloat16, nv_bfloat16, true>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         } else {
@@ -1209,11 +1229,19 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         }
     } else if (src0->type == GGML_TYPE_I32 && src1->type == GGML_TYPE_I32) {
-        if (can_be_transposed) {
+        if (!capture_scalar_copy && can_be_transposed) {
             ggml_cpy_scalar_cuda<int32_t, int32_t, true>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         } else {
             ggml_cpy_scalar_cuda<int32_t, int32_t>
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+        }
+    } else if (src0->type == GGML_TYPE_I16 && src1->type == GGML_TYPE_I16) {
+        if (!capture_scalar_copy && can_be_transposed) {
+            ggml_cpy_scalar_cuda<int16_t, int16_t, true>
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+        } else {
+            ggml_cpy_scalar_cuda<int16_t, int16_t>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         }
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_I32) {

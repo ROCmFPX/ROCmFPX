@@ -358,8 +358,8 @@ static __device__ __forceinline__ void dequantize_turbo4_0(
 // Each call dequantizes one super-block of QK_K values into y using the
 // thread layout of the caller: 32 threads for q4_K, 64 threads otherwise.
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_q2_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_q2_K(const void * vx, const int64_t ib, dst_ptr_t yy, const int tid) {
     const block_q2_K * x = (const block_q2_K *) vx;
 
     const int64_t n   = tid/32;
@@ -367,7 +367,7 @@ static __device__ __forceinline__ void dequantize_q2_K(const void * vx, const in
     const int64_t is  = 8*n + l/16;
 
     const uint8_t q = x[ib].qs[32*n + l];
-    dst_t * y = yy + 128*n;
+    auto y = yy + 128*n;
 
     float dall = __low2half(x[ib].dm);
     float dmin = __high2half(x[ib].dm);
@@ -377,8 +377,8 @@ static __device__ __forceinline__ void dequantize_q2_K(const void * vx, const in
     y[l+96] = ggml_cuda_cast<dst_t>(dall * (x[ib].scales[is+6] & 0xF) * ((q >> 6) & 3) - dmin * (x[ib].scales[is+6] >> 4));
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_q3_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_q3_K(const void * vx, const int64_t ib, dst_ptr_t yy, const int tid) {
     const block_q3_K * x = (const block_q3_K *) vx;
 
     const int64_t r = tid/4;
@@ -399,7 +399,7 @@ static __device__ __forceinline__ void dequantize_q3_K(const void * vx, const in
     float d_all = x[ib].d;
     float dl = d_all * (us - 32);
 
-    dst_t * y = yy + 128*n + 32*j;
+    auto y = yy + 128*n + 32*j;
     const uint8_t * q = x[ib].qs + 32*n;
     const uint8_t * hm = x[ib].hmask;
 
@@ -417,8 +417,8 @@ static inline __device__ void get_scale_min_k4(int j, const uint8_t * q, uint8_t
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_q4_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_q4_K(const void * vx, const int64_t ib, dst_ptr_t yy, const int tid) {
     const block_q4_K * x = (const block_q4_K *) vx;
 
     // assume 32 threads
@@ -427,7 +427,7 @@ static __device__ __forceinline__ void dequantize_q4_K(const void * vx, const in
     const int64_t is  = 2*il;
     const int64_t n   = 4;
 
-    dst_t * y = yy + 64*il + n*ir;
+    auto y = yy + 64*il + n*ir;
 
     const float dall = __low2half(x[ib].dm);
     const float dmin = __high2half(x[ib].dm);
@@ -445,8 +445,8 @@ static __device__ __forceinline__ void dequantize_q4_K(const void * vx, const in
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_q5_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_q5_K(const void * vx, const int64_t ib, dst_ptr_t yy, const int tid) {
     const block_q5_K * x = (const block_q5_K *) vx;
 
     // assume 64 threads - this is very slightly better than the one below
@@ -454,7 +454,7 @@ static __device__ __forceinline__ void dequantize_q5_K(const void * vx, const in
     const int64_t ir  = tid%16;   // ir is in 0...15
     const int64_t is  = 2*il;     // is is in 0...6
 
-    dst_t * y = yy + 64*il + 2*ir;
+    auto y = yy + 64*il + 2*ir;
 
     const float dall = __low2half(x[ib].dm);
     const float dmin = __high2half(x[ib].dm);
@@ -476,8 +476,8 @@ static __device__ __forceinline__ void dequantize_q5_K(const void * vx, const in
     y[33] = ggml_cuda_cast<dst_t>(d2 * ((ql[ 1] >>  4) + (qh[ 1] & hm ? 16 : 0)) - m2);
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_q6_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_q6_K(const void * vx, const int64_t ib, dst_ptr_t yy, const int tid) {
     const block_q6_K * x = (const block_q6_K *) vx;
 
     // assume 64 threads - this is very slightly better than the one below
@@ -485,7 +485,7 @@ static __device__ __forceinline__ void dequantize_q6_K(const void * vx, const in
     const int64_t il  = tid - 32*ip; // 0...32
     const int64_t is  = 8*ip + il/16;
 
-    dst_t * y = yy + 128*ip + il;
+    auto y = yy + 128*ip + il;
 
     const float d = x[ib].d;
 
@@ -504,14 +504,14 @@ static __device__ __forceinline__ void dequantize_q6_K(const void * vx, const in
 // Each call dequantizes one super-block of QK_K values into y with 32
 // threads; iq4_nl packs QK_K/QK4_NL sub-blocks per super-block.
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq2_xxs(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq2_xxs(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq2_xxs * x = (const block_iq2_xxs  *) vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 8*il;
+    auto y = yy + 32*ib + 8*il;
     const uint16_t * q2 = x[ibs].qs + 4*ib;
     const uint8_t  * aux8 = (const uint8_t *)q2;
     const uint8_t  * grid = (const uint8_t *)(iq2xxs_grid + aux8[il]);
@@ -523,14 +523,14 @@ static __device__ __forceinline__ void dequantize_iq2_xxs(const void * vx, const
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq2_xs(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq2_xs(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq2_xs * x = (const block_iq2_xs *) vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 8*il;
+    auto y = yy + 32*ib + 8*il;
     const uint16_t * q2 = x[ibs].qs + 4*ib;
     const uint8_t  * grid = (const uint8_t *)(iq2xs_grid + (q2[il] & 511));
     const float d = (float)x[ibs].d * (0.5f + ((x[ibs].scales[ib] >> 4*(il/2)) & 0xf)) * 0.25f;
@@ -540,14 +540,14 @@ static __device__ __forceinline__ void dequantize_iq2_xs(const void * vx, const 
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq2_s(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq2_s(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq2_s * x = (const block_iq2_s *) vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 8*il;
+    auto y = yy + 32*ib + 8*il;
     const uint8_t * grid = (const uint8_t *)(iq2s_grid + (x[ibs].qs[4*ib+il] | ((x[ibs].qh[ib] << (8-2*il)) & 0x300)));
     const float d = (float)x[ibs].d * (0.5f + ((x[ibs].scales[ib] >> 4*(il/2)) & 0xf)) * 0.25f;
     const uint8_t signs = x[ibs].qs[QK_K/8+4*ib+il];
@@ -556,14 +556,14 @@ static __device__ __forceinline__ void dequantize_iq2_s(const void * vx, const i
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq3_xxs(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq3_xxs(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq3_xxs * x = (const block_iq3_xxs  *) vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 8*il;
+    auto y = yy + 32*ib + 8*il;
     const uint8_t  * q3 = x[ibs].qs + 8*ib;
     const uint16_t * gas = (const uint16_t *)(x[ibs].qs + QK_K/4) + 2*ib;
     const uint8_t  * grid1 = (const uint8_t *)(iq3xxs_grid + q3[2*il+0]);
@@ -577,14 +577,14 @@ static __device__ __forceinline__ void dequantize_iq3_xxs(const void * vx, const
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq3_s(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq3_s(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq3_s * x = (const block_iq3_s *) vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 8*il;
+    auto y = yy + 32*ib + 8*il;
     const uint8_t * qs = x[ibs].qs + 8*ib;
     const uint8_t * grid1 = (const uint8_t *)(iq3s_grid + (qs[2*il+0] | ((x[ibs].qh[ib] << (8-2*il)) & 256)));
     const uint8_t * grid2 = (const uint8_t *)(iq3s_grid + (qs[2*il+1] | ((x[ibs].qh[ib] << (7-2*il)) & 256)));
@@ -596,14 +596,14 @@ static __device__ __forceinline__ void dequantize_iq3_s(const void * vx, const i
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq1_s(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq1_s(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq1_s * x = (const block_iq1_s  *) vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 8*il;
+    auto y = yy + 32*ib + 8*il;
     const float delta = x[ibs].qh[ib] & 0x8000 ? -1 - IQ1S_DELTA : -1 + IQ1S_DELTA;
     const float d = (float)x[ibs].d * (2*((x[ibs].qh[ib] >> 12) & 7) + 1);
     uint32_t grid32[2]; const int8_t * q = (const int8_t *)grid32;
@@ -615,14 +615,14 @@ static __device__ __forceinline__ void dequantize_iq1_s(const void * vx, const i
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq1_m(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq1_m(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq1_m * x = (const block_iq1_m  *) vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 8*il;
+    auto y = yy + 32*ib + 8*il;
     const uint16_t * sc = (const uint16_t *)x[ibs].scales;
     iq1m_scale_t scale;
     scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000);
@@ -638,14 +638,14 @@ static __device__ __forceinline__ void dequantize_iq1_m(const void * vx, const i
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq4_nl(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq4_nl(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_iq4_nl * x = (const block_iq4_nl *) vx + ibs*(QK_K/QK4_NL);
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 4*il;
+    auto y = yy + 32*ib + 4*il;
     const uint8_t  * q4 = x[ib].qs + 4*il;
     const float d = (float)x[ib].d;
     for (int j = 0; j < 4; ++j) {
@@ -654,13 +654,13 @@ static __device__ __forceinline__ void dequantize_iq4_nl(const void * vx, const 
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_iq4_xs(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_iq4_xs(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
     const block_iq4_xs * x = (const block_iq4_xs *)vx;
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 4*il;
+    auto y = yy + 32*ib + 4*il;
     const uint8_t  * q4 = x[ibs].qs + 16*ib + 4*il;
     const float d = (float)x[ibs].d * ((((x[ibs].scales_l[ib/2] >> 4*(ib%2)) & 0xf) | (((x[ibs].scales_h >> 2*ib) & 3) << 4)) - 32);
     for (int j = 0; j < 4; ++j) {
@@ -669,18 +669,93 @@ static __device__ __forceinline__ void dequantize_iq4_xs(const void * vx, const 
     }
 }
 
-template<typename dst_t>
-static __device__ __forceinline__ void dequantize_mxfp4(const void * vx, const int64_t ibs, dst_t * yy, const int tid) {
+template<typename dst_t, typename dst_ptr_t>
+static __device__ __forceinline__ void dequantize_mxfp4(const void * vx, const int64_t ibs, dst_ptr_t yy, const int tid) {
 
     const block_mxfp4 * x = (const block_mxfp4 *) vx + ibs*(QK_K/QK_MXFP4);
 
     const int64_t il = tid/8; // 0...3
     const int64_t ib = tid%8; // 0...7
-    dst_t * y = yy + 32*ib + 4*il;
+    auto y = yy + 32*ib + 4*il;
     const uint8_t  * q4 = x[ib].qs + 4*il;
     const float d = ggml_cuda_e8m0_to_fp32(x[ib].e);
     for (int j = 0; j < 4; ++j) {
         y[j+ 0] = ggml_cuda_cast<dst_t>(d * kvalues_mxfp4[q4[j] & 0xf]*0.5f);
         y[j+16] = ggml_cuda_cast<dst_t>(d * kvalues_mxfp4[q4[j] >>  4]*0.5f);
     }
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_q2_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_q2_K<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_q3_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_q3_K<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_q4_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_q4_K<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_q5_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_q5_K<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_q6_K(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_q6_K<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq2_xxs(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq2_xxs<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq2_xs(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq2_xs<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq2_s(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq2_s<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq3_xxs(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq3_xxs<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq3_s(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq3_s<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq1_s(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq1_s<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq1_m(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq1_m<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq4_nl(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq4_nl<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_iq4_xs(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_iq4_xs<dst_t, dst_t *>(vx, ib, yy, tid);
+}
+
+template<typename dst_t>
+static __device__ __forceinline__ void dequantize_mxfp4(const void * vx, const int64_t ib, dst_t * yy, const int tid) {
+    dequantize_mxfp4<dst_t, dst_t *>(vx, ib, yy, tid);
 }
