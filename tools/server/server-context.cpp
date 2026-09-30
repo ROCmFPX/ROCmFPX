@@ -309,7 +309,7 @@ struct server_slot {
         SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
 
-        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft);
+        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft, id);
         if (cur == nullptr) {
             return false;
         }
@@ -1610,9 +1610,12 @@ private:
             }
         }
 
-        // find the slot that has at least n% prompt similarity
-        if (slot_prompt_similarity != 0.0f) {
-            float f_sim_best = 0;
+        // select a slot by how much of its cached prompt the request re-sends;
+        // -sps 1.0 = identity match, above 1.0 can never be satisfied
+        const bool select_by_prompt = slot_prompt_similarity != 0.0f && slot_prompt_similarity <= 1.0f;
+
+        if (select_by_prompt) {
+            size_t best_len = 0;
 
             for (server_slot & slot : slots) {
                 if (task.id_slot != -1 && slot.id != task.id_slot) {
@@ -1633,31 +1636,73 @@ private:
                     continue;
                 }
 
-                // fraction of the Longest Common Prefix length with respect to the input prompt length
+                // fraction of the cached prompt that is re-sent by the request
                 const size_t lcp_len = tokens.get_common_prefix(task.tokens);
-                const float f_sim_cur = float(lcp_len) / task.tokens.size();
+                const float f_keep_cur = float(lcp_len) / tokens.size();
 
-                SLT_TRC(slot, " - checking sim = %.3f (%zu/%zu) > %.3f\n", f_sim_cur, lcp_len, task.tokens.size(), slot_prompt_similarity);
+                SLT_TRC(slot, " - checking history match = %.3f (%zu/%zu) >= %.3f\n",
+                        f_keep_cur, lcp_len, tokens.size(), slot_prompt_similarity);
 
-                // select the current slot if the criteria match
-                if (f_sim_cur > f_sim_best && f_sim_cur > slot_prompt_similarity) {
-                    f_sim_best = f_sim_cur;
+                if (f_keep_cur < slot_prompt_similarity) {
+                    continue;
+                }
+
+                // pick the slot that preserves the most context
+                if (lcp_len > best_len) {
+                    best_len = lcp_len;
 
                     ret = &slot;
                 }
             }
 
             if (ret != nullptr) {
-                const float f_keep = (f_sim_best*task.tokens.size()) / ret->prompt.tokens.size();
+                const float f_keep = float(best_len) / ret->prompt.tokens.size();
 
                 if (task.id_slot == -1) {
-                    SLT_INF(*ret, "selected slot by LCP similarity, f_sim_best = %.3f (> %.3f thold), f_keep = %.3f\n",
-                            f_sim_best, slot_prompt_similarity, f_keep);
+                    SLT_INF(*ret, "selected slot by history match, f_keep = %.3f (>= %.3f thold), cached = %zu tokens\n",
+                            f_keep, slot_prompt_similarity, ret->prompt.tokens.size());
                 }
 
                 // if we are about to lose a large portion of the existing context - save it in the prompt cache
                 if (f_keep < 0.5f) {
                     update_cache = true;
+                }
+            }
+
+            // no match in any slot: resume a parked conversation on its home slot
+            if (ret == nullptr && prompt_cache != nullptr && task.id_slot == -1) {
+                server_prompt_cache_state * parked = prompt_cache->find_best_identity(task.tokens);
+
+                if (parked != nullptr) {
+                    server_slot * home = nullptr;
+
+                    if (parked->id_slot_last >= 0) {
+                        home = get_slot_by_id(parked->id_slot_last);
+                    }
+
+                    bool home_ok = false;
+
+                    if (home != nullptr && !home->is_processing()) {
+                        const auto & ht = home->prompt.tokens;
+
+                        if (ht.empty()) {
+                            home_ok = true;
+                        } else {
+                            // allow only the same conversation (or part of it) on the home slot
+                            const size_t lcp_home = ht.get_common_prefix(parked->prompt.tokens);
+                            home_ok = (lcp_home == ht.size());
+                        }
+                    }
+
+                    if (home_ok) {
+                        ret = home;
+
+                        // let prompt_load() below restore the parked state onto this slot
+                        update_cache = true;
+
+                        SLT_INF(*ret, "selected slot by parked-context home (last = %d, state = %zu tokens)\n",
+                                parked->id_slot_last, parked->prompt.tokens.size());
+                    }
                 }
             }
         }
