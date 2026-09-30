@@ -1240,11 +1240,11 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 
 #if GGML_ROCMI4_W4A4
-// Native packed IU4/W4A4 dot product for gfx1151.
+// Native packed IU4/W4A4 dot product for RDNA3 (gfx110x / gfx115x).
 template <ggml_type type, int J, bool fallback>
 static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_rocmi4_w4a4_wmma(
     const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
-#if defined(AMD_WMMA_AVAILABLE) && defined(__gfx1151__)
+#if GGML_HIP_WMMA_IU4_AVAILABLE
     constexpr data_layout input_layout = get_input_data_layout();
     typedef tile<16,  4, int, input_layout>        tile_A;  // 4 packed dwords == 32 nibbles == K=32
     typedef tile<16,  4, int, input_layout>        tile_B;
@@ -1274,13 +1274,29 @@ static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_rocmi4_w4a4_wmma(
         tile_A A[ntx];
 #pragma unroll
         for (int n = 0; n < ntx; ++n) {
-            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*sram_stride + kp, sram_stride);
+            // 16-byte operand load: ROCmI4 sram_stride is 44 and kp is a multiple
+            // of 4, so the base is always 16 B aligned here.
+            load_ldmatrix_16(A[n], x_qs + (i0 + n*tile_A::I)*sram_stride + kp, sram_stride);
+        }
+
+        // Weight block scales do not depend on j0: read them once per k-step
+        // and share across both j-blocks. The WMMA accumulator unit *16 folds
+        // into dA, exact in fp32 (power-of-two scale of an fp32 value).
+        float dA16[ntx][tile_C::ne];
+#pragma unroll
+        for (int n = 0; n < ntx; ++n) {
+#pragma unroll
+            for (int l = 0; l < tile_C::ne; ++l) {
+                const int i = i0 + n*tile_A::I + tile_C::get_i(l);
+                dA16[n][l] = 16.0f * x_df[i*sram_stride + k0/QI8_0];
+            }
         }
 
 #pragma unroll
         for (int j0 = 0; j0 < J; j0 += ntx*tile_C::J) {
             tile_B B;
-            load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01/2, MMQ_TILE_Y_K);
+            // MMQ_TILE_Y_K is 36, also a multiple of 4.
+            load_ldmatrix_16(B, y_qs + j0*MMQ_TILE_Y_K + k01/2, MMQ_TILE_Y_K);
 
             const int j = j0 + tile_C::get_j(0);
             const float dB = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
@@ -1291,10 +1307,7 @@ static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_rocmi4_w4a4_wmma(
                 mma_iu4<true>(C, A[n], B);
 #pragma unroll
                 for (int l = 0; l < tile_C::ne; ++l) {
-                    const int i = i0 + n*tile_A::I + tile_C::get_i(l);
-                    const float dA = x_df[i*sram_stride + k0/QI8_0];
-                    const int acc = C.x[l]*16;
-                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += acc*dA*dB;
+                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += (float(C.x[l]) * dA16[n][l]) * dB;
                 }
             }
         }

@@ -302,6 +302,14 @@ static const char * cu_get_error_str(CUresult err) {
 #define AMD_WMMA_AVAILABLE
 #endif // defined(GGML_USE_HIP) && defined(RDNA4)
 
+// Packed IU4 WMMA (v_wmma_i32_16x16x16_iu4) is available across RDNA3, including
+// discrete gfx110x and RDNA3.5 gfx115x. RDNA4 keeps AMD_WMMA but is excluded here.
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
+#define GGML_HIP_WMMA_IU4_AVAILABLE 1
+#else
+#define GGML_HIP_WMMA_IU4_AVAILABLE 0
+#endif
+
 // The Volta instructions are in principle available on Turing or newer but they are effectively unusable:
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
 #define VOLTA_MMA_AVAILABLE
@@ -377,6 +385,10 @@ static bool amd_mfma_available(const int cc) {
 
 static bool amd_wmma_available(const int cc) {
     return (GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_RDNA3(cc));
+}
+
+static bool amd_wmma_iu4_available(const int cc) {
+    return amd_wmma_available(cc) && GGML_CUDA_CC_IS_RDNA3(cc);
 }
 
 static bool volta_mma_available(const int cc) {
@@ -781,6 +793,42 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
 
 #endif // defined(GGML_USE_HIP)
+}
+
+// V_DOT8_I32_IU4: eight signed-nibble MACs in one VALU op (RDNA3 ISA §7.5).
+// Nibble i is bits [4*i+3:4*i]. Software fallback unpacks even/odd bytes and
+// uses two DP4A, matching the Q4_0 / ROCmI4 packed layout.
+static __device__ __forceinline__ int ggml_cuda_dot8_iu4(const int a, const int b, int c) {
+#if defined(GGML_USE_HIP) && (defined(RDNA3) || defined(RDNA4))
+#if defined(__has_builtin) && __has_builtin(__builtin_amdgcn_sudot8)
+    c = __builtin_amdgcn_sudot8(true, a, true, b, c, false);
+#elif defined(__has_builtin) && __has_builtin(__builtin_amdgcn_sdot8)
+    c = __builtin_amdgcn_sdot8(a, b, c, false);
+#else
+    int acc = c;
+    asm volatile("v_dot8_i32_iu4 %0, %1, %2, %0 neg_lo:[1,1,0]"
+                 : "+v"(acc)
+                 : "v"(a), "v"(b));
+    c = acc;
+#endif
+    return c;
+#else
+    int even_a = a & 0x0F0F0F0F;
+    int odd_a  = (a >> 4) & 0x0F0F0F0F;
+    int even_b = b & 0x0F0F0F0F;
+    int odd_b  = (b >> 4) & 0x0F0F0F0F;
+    const int sea = even_a & 0x08080808;
+    const int soa = odd_a  & 0x08080808;
+    const int seb = even_b & 0x08080808;
+    const int sob = odd_b  & 0x08080808;
+    even_a |= (sea << 1) | (sea << 2) | (sea << 3) | (sea << 4);
+    odd_a  |= (soa << 1) | (soa << 2) | (soa << 3) | (soa << 4);
+    even_b |= (seb << 1) | (seb << 2) | (seb << 3) | (seb << 4);
+    odd_b  |= (sob << 1) | (sob << 2) | (sob << 3) | (sob << 4);
+    c = ggml_cuda_dp4a(even_a, even_b, c);
+    c = ggml_cuda_dp4a(odd_a,  odd_b,  c);
+    return c;
+#endif
 }
 
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float v, const float u) {
@@ -1364,14 +1412,114 @@ struct ggml_tensor_extra_gpu {
 
 struct ggml_cuda_graph {
 #ifdef USE_CUDA_GRAPH
+    struct shared_q8_1_key {
+        int device;
+        int stream;
+        const ggml_tensor * tensor;
+        const void * data;
+        ggml_type weight_type;
+        ggml_type activation_type;
+        std::array<int64_t, GGML_MAX_DIMS> ne;
+        std::array<size_t, GGML_MAX_DIMS> nb;
+        int64_t row_ne_padded;
+
+        bool operator==(const shared_q8_1_key & other) const {
+            return device          == other.device &&
+                   stream          == other.stream &&
+                   tensor          == other.tensor &&
+                   data            == other.data &&
+                   weight_type     == other.weight_type &&
+                   activation_type == other.activation_type &&
+                   ne              == other.ne &&
+                   nb              == other.nb &&
+                   row_ne_padded   == other.row_ne_padded;
+        }
+    };
+
+    struct shared_q8_1_key_hash {
+        size_t operator()(const shared_q8_1_key & key) const {
+            size_t hash = std::hash<const void *>{}(key.tensor);
+            const auto mix = [&hash](size_t value) {
+                hash ^= value + (size_t) 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+            };
+            mix(std::hash<const void *>{}(key.data));
+            mix(std::hash<int>{}(key.device));
+            mix(std::hash<int>{}(key.stream));
+            mix(std::hash<int>{}((int) key.weight_type));
+            mix(std::hash<int>{}((int) key.activation_type));
+            for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+                mix(std::hash<int64_t>{}(key.ne[i]));
+                mix(std::hash<size_t>{}(key.nb[i]));
+            }
+            mix(std::hash<int64_t>{}(key.row_ne_padded));
+            return hash;
+        }
+    };
+
+    struct shared_q8_1_entry {
+        void * data = nullptr;
+        size_t size = 0;
+        uint64_t execution = 0;
+    };
+
     ~ggml_cuda_graph() {
+        reset_capture();
+    }
+
+    void reset_capture() {
         if (instance != nullptr) {
             CUDA_CHECK(cudaGraphExecDestroy(instance));
+            instance = nullptr;
         }
         if (graph != nullptr) {
             CUDA_CHECK(cudaGraphDestroy(graph));
+            graph = nullptr;
         }
+        for (const auto & [key, entry] : shared_q8_1) {
+            if (entry.data != nullptr) {
+                ggml_cuda_set_device(key.device);
+                CUDA_CHECK(cudaFree(entry.data));
+            }
+        }
+        shared_q8_1.clear();
+        execution = 0;
     }
+
+    uint64_t begin_execution() {
+        if (++execution == 0) {
+            execution = 1;
+            for (auto & [key, entry] : shared_q8_1) {
+                entry.execution = 0;
+            }
+        }
+        return execution;
+    }
+
+    void * get_shared_q8_1(const shared_q8_1_key & key, size_t size, bool allow_alloc, bool & quantize) {
+        auto [it, inserted] = shared_q8_1.try_emplace(key);
+        shared_q8_1_entry & entry = it->second;
+        if (inserted && !allow_alloc) {
+            shared_q8_1.erase(it);
+            return nullptr;
+        }
+        if (inserted) {
+            ggml_cuda_set_device(key.device);
+            const cudaError_t err = cudaMalloc(&entry.data, size);
+            if (err != cudaSuccess) {
+                (void) cudaGetLastError();
+                shared_q8_1.erase(it);
+                return nullptr;
+            }
+            entry.size = size;
+        }
+        if (entry.size != size) {
+            return nullptr;
+        }
+        quantize = entry.execution != execution;
+        entry.execution = execution;
+        return entry.data;
+    }
+
     cudaGraph_t graph = nullptr;
     cudaGraphExec_t instance = nullptr;
     size_t num_nodes = 0;
@@ -1392,6 +1540,10 @@ struct ggml_cuda_graph {
         static const bool disable_cuda_graphs_due_to_env = (getenv("GGML_CUDA_DISABLE_GRAPHS") != nullptr);
         return !(disable_due_to_gpu_arch || disable_cuda_graphs_due_to_env);
     }
+
+private:
+    std::unordered_map<shared_q8_1_key, shared_q8_1_entry, shared_q8_1_key_hash> shared_q8_1;
+    uint64_t execution = 0;
 #endif
 };
 
@@ -1562,6 +1714,8 @@ struct ggml_backend_cuda_context {
     // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
     // when the computation is split across CPU/GPU (e.g., with --n-cpu-moe)
     std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+    ggml_cuda_graph * active_cuda_graph = nullptr;
+    bool cuda_graph_capture_active = false;
 
     int64_t last_graph_eviction_sweep = 0;
 
@@ -1666,12 +1820,57 @@ struct ggml_backend_cuda_context {
     }
 };
 
+static inline void * ggml_cuda_get_shared_q8_1(
+        ggml_backend_cuda_context & ctx,
+        const ggml_tensor * activation,
+        ggml_type weight_type,
+        int64_t row_ne_padded,
+        bool & quantize) {
+    quantize = true;
+#if defined(USE_CUDA_GRAPH) && defined(GGML_USE_HIP)
+    static const bool disable_shared_q8_1 = getenv("GGML_CUDA_DISABLE_SHARED_Q8_1") != nullptr;
+    if (disable_shared_q8_1 || weight_type != GGML_TYPE_Q4_0_ROCMI4 || ctx.active_cuda_graph == nullptr) {
+        return nullptr;
+    }
+
+    const size_t size = activation->ne[3] * activation->ne[2] * activation->ne[1] * row_ne_padded *
+                        sizeof(block_q8_1) / QK8_1;
+    const ggml_cuda_graph::shared_q8_1_key key = {
+        ctx.device,
+        ctx.curr_stream_no,
+        activation,
+        activation->data,
+        weight_type,
+        activation->type,
+        { activation->ne[0], activation->ne[1], activation->ne[2], activation->ne[3] },
+        { activation->nb[0], activation->nb[1], activation->nb[2], activation->nb[3] },
+        row_ne_padded,
+    };
+    return ctx.active_cuda_graph->get_shared_q8_1(
+            key, size, !ctx.cuda_graph_capture_active, quantize);
+#else
+    GGML_UNUSED(ctx);
+    GGML_UNUSED(activation);
+    GGML_UNUSED(weight_type);
+    GGML_UNUSED(row_ne_padded);
+    return nullptr;
+#endif
+}
+
+enum ggml_cuda_mmvq_post_op {
+    GGML_CUDA_MMVQ_POST_OP_NONE = 0,
+    GGML_CUDA_MMVQ_POST_OP_SIGMOID,
+    GGML_CUDA_MMVQ_POST_OP_SOFTPLUS_MUL,
+};
+
 struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * x_bias = nullptr;
     const ggml_tensor * gate = nullptr;
     const ggml_tensor * gate_bias = nullptr;
     const ggml_tensor * x_scale = nullptr;
     const ggml_tensor * gate_scale = nullptr;
+    const ggml_tensor * post_mul = nullptr;
+    ggml_cuda_mmvq_post_op post_op = GGML_CUDA_MMVQ_POST_OP_NONE;
     ggml_glu_op glu_op;
     float glu_limit = 0.0f;
 };
@@ -1681,6 +1880,8 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * gate_bias = nullptr;
     const void * x_scale = nullptr;
     const void * gate_scale = nullptr;
+    const void * post_mul = nullptr;
+    ggml_cuda_mmvq_post_op post_op = GGML_CUDA_MMVQ_POST_OP_NONE;
     ggml_glu_op glu_op;
     float glu_limit = 0.0f;
 };

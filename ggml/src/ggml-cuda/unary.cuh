@@ -19,6 +19,14 @@
 #define CUDA_GLU_BLOCK_SIZE 256
 #define CUDA_XIELU_BLOCK_SIZE 256
 
+static __device__ __forceinline__ float ggml_cuda_op_sigmoid_single(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+static __device__ __forceinline__ float ggml_cuda_op_softplus_single(float x) {
+    return (x > 20.0f) ? x : logf(1.0f + expf(x));
+}
+
 void ggml_cuda_op_abs(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 void ggml_cuda_op_sgn(ggml_backend_cuda_context & ctx, ggml_tensor * dst);

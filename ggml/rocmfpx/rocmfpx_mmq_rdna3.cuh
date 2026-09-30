@@ -6,8 +6,14 @@ static constexpr __host__ __device__ ggml_cuda_mmq_config ggml_rocmfpx_mmq_get_c
     auto layout = GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_0;
     bool supported = true;
     switch (type) {
-        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
         case GGML_TYPE_Q4_0_ROCMI4:
+#if GGML_ROCMI4_W4A4
+            // Packed IU4 W4A4 uses the compact ROCmI4 SRAM layout instead of
+            // expanding weights into Q8_0 staging tiles.
+            layout = GGML_CUDA_MMQ_SRAM_LAYOUT_ROCMI4;
+#endif
+            break;
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
         case GGML_TYPE_Q8_0_ROCMFPX:
             break;
         case GGML_TYPE_Q4_0_ROCMFP4:

@@ -60,7 +60,8 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DGGML_HIP=ON \
     -DGGML_HIP_ROCWMMA_FATTN="${GGML_HIP_ROCWMMA_FATTN:-OFF}" \
     -DGGML_HIP_FORCE_MMQ=ON \
-    -DGGML_VULKAN=ON \
+    -DGGML_HIP_ROCMI4_W4A4="${GGML_HIP_ROCMI4_W4A4:-OFF}" \
+    -DGGML_VULKAN="${GGML_VULKAN:-ON}" \
     -DGGML_CUDA=OFF \
     -DCMAKE_HIP_ARCHITECTURES="${HIP_ARCH}" \
     -DGPU_TARGETS="${HIP_ARCH}" \
@@ -79,7 +80,8 @@ cmake --build "$BUILD_DIR" -j "$JOBS" --target \
     llama-bench \
     test-backend-ops \
     test-quantize-fns \
-    test-quantize-perf
+    test-quantize-perf \
+    test-rocmi4-iu4-dot
 
 rocmfpx_verify_hip_arch "$BUILD_DIR" "$HIP_ARCH"
 
