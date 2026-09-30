@@ -50,6 +50,7 @@ static __device__ __forceinline__ float nvfp4_native_scale_error(
 #endif // CUDART_VERSION >= 12080
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 
+template <bool i4_grid>
 __launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
 static __global__ void quantize_q8_1(
         const float * x_ptr, void * vy_ptr,
@@ -88,10 +89,24 @@ static __global__ void quantize_q8_1(
     amax = warp_reduce_max<QK8_1>(amax);
     sum  = warp_reduce_sum<QK8_1>(sum);
 
-    const float  d = amax / 127.0f;
-    const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+    // IU4 MMVQ uses the same Q4_0 nibble layout as ROCmI4 weights so V_DOT8
+    // can consume a packed weight dword against a packed activation dword.
+    // DOT8 accumulators are true integer sums (no WMMA *16).
+    const float d = i4_grid
+        ? (amax > 0.0f ? amax / 7.0f : 0.0f)
+        : amax / 127.0f;
+    const int q = (amax == 0.0f || d == 0.0f) ? 0 : (int) roundf(xi / d);
 
-    y[ib].qs[iqs] = q;
+    if constexpr (i4_grid) {
+        const int c = max(-8, min(7, q));
+        const int nibble = c & 0xF;
+        const int other  = __shfl_xor_sync(0xFFFFFFFF, nibble, 16, QK8_1);
+        if (iqs < 16) {
+            y[ib].qs[iqs] = (int8_t) (nibble | (other << 4));
+        }
+    } else {
+        y[ib].qs[iqs] = (int8_t) q;
+    }
 
     if (iqs > 0) {
         return;
@@ -590,7 +605,16 @@ void quantize_row_q8_1_cuda(
     const dim3 num_blocks(block_num_x, ne1, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE, 1, 1);
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(num_blocks, block_size, 0, stream);
-    ggml_cuda_kernel_launch(quantize_q8_1, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+#if GGML_ROCMI4_W4A4
+    {
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        if (type_src0 == GGML_TYPE_Q4_0_ROCMI4 && amd_wmma_iu4_available(cc)) {
+            ggml_cuda_kernel_launch(quantize_q8_1<true>, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
+            return;
+        }
+    }
+#endif
+    ggml_cuda_kernel_launch(quantize_q8_1<false>, launch_params, x, vy, ne00, s01, s02, s03, ne0, ne1, ne2_fastdiv);
     GGML_UNUSED(type_src0);
 }
 
@@ -608,7 +632,7 @@ void quantize_mmq_q8_1_cuda(
 #if GGML_ROCMI4_W4A4
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     // Native IU4 W4A4: activations go onto the 4-bit grid up front.
-    if (type_src0 == GGML_TYPE_Q4_0_ROCMI4 && GGML_CUDA_CC_IS_GFX1151(cc)) {
+    if (type_src0 == GGML_TYPE_Q4_0_ROCMI4 && amd_wmma_iu4_available(cc)) {
         quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_D4, false, true>
             <<<num_blocks, block_size, 0, stream>>>(x, ids, vy, ne00, s01, s02, s03, ne0, ne1, ne2, /*n_expert_used=*/0);
         return;
@@ -645,11 +669,13 @@ void quantize_scatter_mmq_q8_1_cuda(
     const dim3 num_blocks(n_tokens, block_num_y, 1);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
 #if GGML_ROCMI4_W4A4
-    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
-    if (type_src0 == GGML_TYPE_Q4_0_ROCMI4 && GGML_CUDA_CC_IS_GFX1151(cc)) {
-        quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_D4, true, true><<<num_blocks, block_size, 0, stream>>>(
+    {
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        if (type_src0 == GGML_TYPE_Q4_0_ROCMI4 && amd_wmma_iu4_available(cc)) {
+            quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_D4, true, true><<<num_blocks, block_size, 0, stream>>>(
                 x, ids_src1_inv, vy, ne00, /*s01=*/0, /*s02=*/stride_token, /*s03=*/0, ne0, /*ne1=*/(int) nrows_dst, /*ne2=*/1, n_expert_used);
-        return;
+            return;
+        }
     }
 #endif
     switch (mmq_get_q8_1_ds_layout(type_src0)) {

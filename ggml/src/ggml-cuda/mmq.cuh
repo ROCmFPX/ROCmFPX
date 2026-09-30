@@ -139,7 +139,7 @@ enum ggml_cuda_mmq_sram_layout {
     GGML_CUDA_MMQ_SRAM_LAYOUT_Q6_K,
     GGML_CUDA_MMQ_SRAM_LAYOUT_FP4,   // MXFP4 and NVFP4 on Blackwell.
     GGML_CUDA_MMQ_SRAM_LAYOUT_NVFP4, // Generic NVFP4
-    GGML_CUDA_MMQ_SRAM_LAYOUT_ROCMI4, // Packed signed 4-bit gfx1151 W4A4.
+    GGML_CUDA_MMQ_SRAM_LAYOUT_ROCMI4, // Packed signed 4-bit RDNA3 W4A4.
 };
 
 static constexpr __host__ __device__ int ggml_cuda_mmq_get_sram_stride(ggml_cuda_mmq_sram_layout sram_layout) {
@@ -778,7 +778,7 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
                 ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
                 ggml_cuda_mmq_write_back_mma<type, J, fallback>);
         case GGML_TYPE_Q4_0_ROCMI4:
-#if GGML_ROCMI4_W4A4 && defined(AMD_WMMA_AVAILABLE) && defined(__gfx1151__)
+#if GGML_ROCMI4_W4A4 && GGML_HIP_WMMA_IU4_AVAILABLE
             return ggml_cuda_mmq_util_funcs(-1,
                 ggml_cuda_mmq_load_tiles_rocmi4_w4a4<type, J, fallback>,
                 ggml_cuda_mmq_vec_dot_rocmi4_w4a4_wmma<type, J, fallback>,

@@ -6577,7 +6577,7 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
         // W4A4 requantizes MMQ activations to IU4, so tests need a feature flag for the approximate path.
         const auto & info = ggml_cuda_info();
         for (int id = 0; id < info.device_count; ++id) {
-            if (GGML_CUDA_CC_IS_GFX1151(info.devices[id].cc)) {
+            if (amd_wmma_iu4_available(info.devices[id].cc)) {
                 features.push_back({ "ROCMI4_W4A4", "1" });
                 break;
             }

@@ -226,7 +226,7 @@ option(GGML_HIP_NO_VMM                      "ggml: do not try to use HIP VMM"   
 option(GGML_HIP_MMQ_MFMA                    "ggml: enable MFMA MMA for CDNA in MMQ"           ON)
 option(GGML_HIP_FORCE_MMQ                   "ggml: use MMQ kernels instead of hipBLAS"        OFF)
 option(GGML_HIP_EXPORT_METRICS              "ggml: enable kernel perf metrics output"         OFF)
-option(GGML_HIP_ROCMI4_W4A4                 "ggml: enable lossy gfx1151 W4A4 MMQ for ROCmI4"  OFF)
+option(GGML_HIP_ROCMI4_W4A4                 "ggml: enable lossy RDNA3 W4A4/IU4 MMQ for ROCmI4" OFF)
 option(GGML_MUSA_GRAPHS                     "ggml: use MUSA graph, experimental, unstable"    OFF)
 option(GGML_MUSA_MUDNN_COPY                 "ggml: enable muDNN for accelerated copy"         OFF)
 option(GGML_VULKAN                          "ggml: use Vulkan"                                OFF)
