@@ -1564,6 +1564,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         ggml_backend_sched_print_assignments(sched, graph);
     }
 
+    // inputs are registered during the split for the input ring buffer (copy 0 is the original), not in upstream's pass 6
+
     // swap node_backend_ids and leaf _backend_ids with prevs
     {
         int * tmp = sched->node_backend_ids;
