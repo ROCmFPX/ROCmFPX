@@ -1,0 +1,52 @@
+#version 450
+
+// Gathers MUL_MAT_ID activations into int8 rows sorted by expert, for mul_mm_id_tiled_q8.comp.
+// Workgroup r writes sorted route r: each 32-value block of its src1 row as 32 int8 values
+// and one float scale (symmetric, like q8_0).
+
+#extension GL_EXT_control_flow_attributes : enable
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout (push_constant) uniform parameter {
+    uint K;             // floats per row, a multiple of 32
+    uint nb11;          // src1 stride between slots (floats)
+    uint nb12;          // src1 stride between tokens (floats)
+    uint ne11;          // src1 slots (1 when broadcast across the used experts)
+    uint n_experts;
+    uint b_offset;      // floats
+} p;
+
+layout (binding = 0) readonly buffer B { vec4 data_b4[]; };
+layout (binding = 1) readonly buffer Meta { uint data_meta[]; };
+layout (binding = 2) writeonly buffer XQ { uvec4 data_xq[]; };   // 2 uvec4 per block
+layout (binding = 3) writeonly buffer XD { float data_xd[]; };   // one scale per block
+
+void main() {
+    const uint r = gl_WorkGroupID.x;
+    if (r >= data_meta[2u * p.n_experts]) {
+        return;
+    }
+    const uint packed = data_meta[2u * p.n_experts + 1u + r];
+    const uint slot = packed & 0xffffu, token = packed >> 16;
+    const uint src4 = (p.b_offset + token * p.nb12 + (slot % p.ne11) * p.nb11) / 4u;
+    const uint nblk = p.K / 32u;
+    for (uint b = gl_LocalInvocationID.x; b < nblk; b += 128u) {
+        vec4 x[8];
+        float amax = 0.0;
+        [[unroll]] for (uint i = 0; i < 8; ++i) {
+            x[i] = data_b4[src4 + b * 8u + i];
+            amax = max(amax, max(max(abs(x[i].x), abs(x[i].y)), max(abs(x[i].z), abs(x[i].w))));
+        }
+        const float d = amax / 127.0;
+        const float id = d != 0.0 ? 1.0 / d : 0.0;
+        uint w[8];
+        [[unroll]] for (uint i = 0; i < 8; ++i) {
+            const ivec4 q = ivec4(round(x[i] * id));
+            w[i] = (uint(q.x) & 0xffu) | ((uint(q.y) & 0xffu) << 8) | ((uint(q.z) & 0xffu) << 16) | (uint(q.w) << 24);
+        }
+        data_xq[(r * nblk + b) * 2u]      = uvec4(w[0], w[1], w[2], w[3]);
+        data_xq[(r * nblk + b) * 2u + 1u] = uvec4(w[4], w[5], w[6], w[7]);
+        data_xd[r * nblk + b] = d;
+    }
+}

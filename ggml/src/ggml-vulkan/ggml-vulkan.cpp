@@ -3729,6 +3729,13 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         ggml_vk_create_pipeline(device, device->pipeline_count_experts, "count_experts", count_experts_len, count_experts_data, "main", 2, sizeof(vk_op_count_experts_push_constants), {1, 1, 1}, {}, 1, true);
     }
 
+    // Tiled routed-expert GEMM for IQ3_S prefill on int8 dot products (mul_mm_id_tiled_q8.comp),
+    // measured on AMD only
+    if (device->integer_dot_product && device->vendor_id == VK_VENDOR_ID_AMD) {
+        ggml_vk_create_pipeline(device, device->pipeline_mmid_gather_q8, "mul_mm_id_gather_q8", mul_mm_id_gather_q8_len, mul_mm_id_gather_q8_data, "main", 4, sizeof(vk_op_mmid_gather_push_constants), {1, 1, 1}, {}, 1);
+        ggml_vk_create_pipeline(device, device->pipeline_mmid_tiled_q8_iq3_s, "mul_mm_id_tiled_q8_iq3_s", mul_mm_id_tiled_q8_iq3_s_len, mul_mm_id_tiled_q8_iq3_s_data, "main", 5, sizeof(vk_op_mmid_tiled_push_constants), {128, 1, 1}, {}, 1);
+    }
+
     // comb holds a token's 4x4 matrix in one 16-lane slice of a subgroup, so it
     // needs at least 16 lanes, pinned to a known size.
     if (device->subgroup_basic && device->subgroup_shuffle && device->subgroup_require_full_support && device->subgroup_size >= 16) {
@@ -7480,6 +7487,107 @@ void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, const st
     }
 }
 
+// Prefill-sized MUL_MAT_ID for IQ3_S experts (mul_mm_id_tiled_q8.comp): count_experts sorts
+// the routes and lists 64-route tiles per expert, mul_mm_id_gather_q8.comp quantizes the routed
+// activations once to int8 in that order, and the GEMM runs one workgroup per (128 weight rows,
+// listed tile) on int8 dot products. Returns false when the shapes do not fit, so the caller takes
+// the generic path. GGML_VK_MMID_TILED=0 disables it; GGML_VK_MMID_TILED_MIN sets the minimum route count.
+static bool ggml_vk_mul_mat_id_tiled(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst) {
+    static const bool disabled = [] { const char * v = getenv("GGML_VK_MMID_TILED"); return v && v[0] == '0'; }();
+    static const uint64_t min_routes = [] { const char * v = getenv("GGML_VK_MMID_TILED_MIN"); return v ? (uint64_t) strtoull(v, nullptr, 10) : (uint64_t) 1024; }();
+    if (disabled || src0->type != GGML_TYPE_IQ3_S || ctx->device->pipeline_mmid_tiled_q8_iq3_s == nullptr) {
+        return false;
+    }
+    const uint64_t K = src0->ne[0], M = src0->ne[1], n_as = src0->ne[2];
+    const uint64_t nei0 = ids->ne[0], nei1 = ids->ne[1];
+    const uint64_t n_routes = nei0 * nei1;
+    const uint32_t tile_m = ctx->device->pipeline_mmid_tiled_q8_iq3_s->wg_denoms[0];
+    if (n_routes < min_routes || K % 256 != 0 || M % tile_m != 0 || n_as > 512 || nei0 > 0xffff || nei1 > 0xffff || n_routes > 65535) {
+        return false;
+    }
+    if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32 || ids->type != GGML_TYPE_I32 ||
+        src0->ne[3] != 1 || src1->ne[3] != 1 || dst->ne[3] != 1 || src1->ne[0] != (int64_t) K || dst->ne[0] != (int64_t) M ||
+        src1->nb[0] != sizeof(float) || dst->nb[0] != sizeof(float) || src0->nb[1] % 2 != 0 || src0->nb[2] % 2 != 0 ||
+        src0->nb[1] * M != src0->nb[2] || src1->nb[1] % sizeof(float) != 0 || src1->nb[2] % sizeof(float) != 0 ||
+        dst->nb[1] % sizeof(float) != 0 || dst->nb[2] % sizeof(float) != 0) {
+        return false;
+    }
+    const auto & lim = ctx->device->properties.limits;
+    const uint32_t BN = 64;
+    const uint64_t max_tiles = CEIL_DIV(n_routes, BN) + n_as;
+    const size_t meta_size = sizeof(uint32_t) * (2 * n_as + 1 + n_routes + 1 + max_tiles);
+    const size_t x_size = n_routes * K;
+    const size_t xd_size = n_routes * (K / 32) * sizeof(float);
+    // the gather reads src1 as vec4
+    if ((get_misalign_bytes(ctx, src1) / sizeof(float)) % 4 != 0 || (src1->nb[1] / sizeof(float)) % 4 != 0 ||
+        (src1->nb[2] / sizeof(float)) % 4 != 0) {
+        return false;
+    }
+    if (x_size > lim.maxStorageBufferRange || ggml_nbytes(src0) > lim.maxStorageBufferRange ||
+        ggml_nbytes(src1) > lim.maxStorageBufferRange || ggml_nbytes(dst) > lim.maxStorageBufferRange ||
+        max_tiles > lim.maxComputeWorkGroupCount[1]) {
+        return false;
+    }
+
+    vk_pipeline count_experts = ctx->device->pipeline_count_experts;
+    vk_pipeline gather = ctx->device->pipeline_mmid_gather_q8;
+    vk_pipeline tiled = ctx->device->pipeline_mmid_tiled_q8_iq3_s;
+    ggml_pipeline_request_descriptor_sets(ctx, count_experts, 1);
+    ggml_pipeline_request_descriptor_sets(ctx, gather, 1);
+    ggml_pipeline_request_descriptor_sets(ctx, tiled, 1);
+
+    if (ctx->prealloc_size_split_k < meta_size || ctx->prealloc_size_y < x_size || ctx->prealloc_size_x < xd_size) {
+        ctx->prealloc_size_split_k = std::max(ctx->prealloc_size_split_k, meta_size);
+        ctx->prealloc_size_y = std::max(ctx->prealloc_size_y, x_size);
+        ctx->prealloc_size_x = std::max(ctx->prealloc_size_x, xd_size);
+        ggml_vk_preallocate_buffers(ctx, subctx);
+    }
+    if (ctx->prealloc_split_k_need_sync || ctx->prealloc_y_need_sync || ctx->prealloc_x_need_sync) {
+        ggml_vk_sync_buffers(ctx, subctx);
+    }
+
+    const vk_subbuffer a_buf = ggml_vk_tensor_subbuffer(ctx, src0, true);
+    const vk_subbuffer b_buf = ggml_vk_tensor_subbuffer(ctx, src1, true);
+    const vk_subbuffer d_buf = ggml_vk_tensor_subbuffer(ctx, dst, true);
+    const vk_subbuffer ids_buf = ggml_vk_tensor_subbuffer(ctx, ids, true);
+    const vk_subbuffer meta_buf = { ctx->prealloc_split_k, 0, meta_size };
+    const vk_subbuffer x_buf = { ctx->prealloc_y, 0, x_size };
+    const vk_subbuffer xd_buf = { ctx->prealloc_x, 0, xd_size };
+
+    {
+        vk_op_count_experts_push_constants pc = { (uint32_t) nei0, (uint32_t) nei1,
+                                                  (uint32_t) (ids->nb[0] / ggml_type_size(ids->type)),
+                                                  (uint32_t) (ids->nb[1] / ggml_type_size(ids->type)),
+                                                  (uint32_t) (get_misalign_bytes(ctx, ids) / ggml_type_size(ids->type)),
+                                                  (uint32_t) n_as, 1u, 0, 0, BN };
+        init_pushconst_fastdiv(pc);
+        ggml_vk_dispatch_pipeline(ctx, subctx, count_experts, { ids_buf, meta_buf }, pc, { 1, 1, 1 });
+    }
+    ggml_vk_sync_buffers(ctx, subctx);
+    {
+        const vk_op_mmid_gather_push_constants pc = { (uint32_t) K,
+                                                      (uint32_t) (src1->nb[1] / sizeof(float)), (uint32_t) (src1->nb[2] / sizeof(float)),
+                                                      (uint32_t) src1->ne[1], (uint32_t) n_as,
+                                                      (uint32_t) (get_misalign_bytes(ctx, src1) / sizeof(float)) };
+        ggml_vk_dispatch_pipeline(ctx, subctx, gather, { b_buf, meta_buf, x_buf, xd_buf }, pc, { (uint32_t) n_routes, 1, 1 });
+    }
+    ggml_vk_sync_buffers(ctx, subctx);
+    {
+        const vk_op_mmid_tiled_push_constants pc = { (uint32_t) M, (uint32_t) K,
+                                                     (uint32_t) (src0->nb[1] / 2), (uint32_t) (src0->nb[2] / 2),
+                                                     (uint32_t) (get_misalign_bytes(ctx, src0) / 2), (uint32_t) n_as, (uint32_t) n_routes,
+                                                     (uint32_t) (dst->nb[1] / sizeof(float)), (uint32_t) (dst->nb[2] / sizeof(float)),
+                                                     (uint32_t) (get_misalign_bytes(ctx, dst) / sizeof(float)) };
+        ggml_vk_dispatch_pipeline(ctx, subctx, tiled, { a_buf, x_buf, xd_buf, d_buf, meta_buf }, pc, { (uint32_t) M, (uint32_t) max_tiles, 1 });
+    }
+    ctx->prealloc_x_need_sync = true;
+    ctx->prealloc_split_k_need_sync = true;
+    ctx->prealloc_y_need_sync = true;
+    ctx->prealloc_y_last_pipeline_used = nullptr;
+    ctx->prealloc_y_last_tensor_used = nullptr;
+    return true;
+}
+
 static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst) {
     VK_LOG_DEBUG("ggml_vk_mul_mat_id_q_f16((" << src0 << ", name=" << src0->name << ", type=" << src0->type << ", ne0=" << src0->ne[0] << ", ne1=" << src0->ne[1] << ", ne2=" << src0->ne[2] << ", ne3=" << src0->ne[3] << ", nb0=" << src0->nb[0] << ", nb1=" << src0->nb[1] << ", nb2=" << src0->nb[2] << ", nb3=" << src0->nb[3];
     std::cerr << "), (" << src1 << ", name=" << src1->name << ", type=" << src1->type << ", ne0=" << src1->ne[0] << ", ne1=" << src1->ne[1] << ", ne2=" << src1->ne[2] << ", ne3=" << src1->ne[3] << ", nb0=" << src1->nb[0] << ", nb1=" << src1->nb[1] << ", nb2=" << src1->nb[2] << ", nb3=" << src1->nb[3];
@@ -8108,7 +8216,9 @@ void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const
     if (ggml_vk_use_mul_mat_vec_id(cgraph, node_idx)) {
         ggml_vk_mul_mat_vec_id_q_f16(ctx, subctx, cgraph, node_idx);
     } else {
-        ggml_vk_mul_mat_id_q_f16(ctx, subctx, src0, src1, src2, dst);
+        if (!ggml_vk_mul_mat_id_tiled(ctx, subctx, src0, src1, src2, dst)) {
+            ggml_vk_mul_mat_id_q_f16(ctx, subctx, src0, src1, src2, dst);
+        }
     }
 }
 
