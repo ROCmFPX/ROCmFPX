@@ -210,7 +210,12 @@ static ggml_tensor * glm5_conv1d(ggml_cgraph * gf, ggml_context * ctx0,
 
     ggml_tensor * x_proj = ggml_mul_mat(ctx0, proj_w, x);
     ggml_tensor * x_3d   = ggml_reshape_3d(ctx0, x_proj, d_inner, n_seq_tokens, n_seqs);
-    ggml_tensor * conv_x = ggml_concat(ctx0, conv_state_x, ggml_transpose(ctx0, x_3d), 0);
+    // concat reads a strided transpose slowly on some backends; make it contiguous for prefill batches
+    ggml_tensor * x_t = ggml_transpose(ctx0, x_3d);
+    if (n_seq_tokens > 1) {
+        x_t = ggml_cont(ctx0, x_t);
+    }
+    ggml_tensor * conv_x = ggml_concat(ctx0, conv_state_x, x_t, 0);
 
     // group s holds the conv window s tokens back.
     // [TAG_RECURRENT_ROLLBACK_SPLITS]: the last K_rs tokens must share one ubatch.
