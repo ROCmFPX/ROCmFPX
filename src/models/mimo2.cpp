@@ -66,9 +66,8 @@ void llama_model_mimo2::load_arch_tensors(llama_model_loader & ml) {
         // MoE branch
         int64_t n_ff_exp = hparams.n_ff_exp();
         layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", i), {n_embd, n_expert}, TENSOR_NOT_REQUIRED | flags);
-        layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp,   n_expert}, TENSOR_NOT_REQUIRED | flags);
         layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, TENSOR_NOT_REQUIRED | flags);
-        layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd, n_ff_exp,   n_expert}, TENSOR_NOT_REQUIRED | flags);
+        create_tensor_gate_up_exps(layer, i, n_embd, n_ff_exp, n_expert, TENSOR_NOT_REQUIRED | flags);
         layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias", i), {n_expert}, TENSOR_NOT_REQUIRED | flags);
 
         if (is_nextn) {
@@ -217,7 +216,8 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
                     LLM_FFN_SILU, true,
                     hparams.expert_weights_scale,
                     LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID,
-                    il);
+                    il,
+                    nullptr, model.layers[il].ffn_gate_up_exps);
             cb(cur, "ffn_moe_out", il);
         }
 
