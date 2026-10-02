@@ -10919,6 +10919,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     // gpt-oss issue with Vulkan mmq_id
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_MXFP4, GGML_TYPE_F32, 32, 2, false, 2880, 32, 2880));
+    // > 256 experts (GLM-5.3-Flash: 288 experts, top-8); 512 tokens take the tiled prefill path
+    for (ggml_type t : {GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_XS, GGML_TYPE_Q5_K}) {
+        for (int n : {64, 512}) {
+            test_cases.emplace_back(new test_mul_mat_id(t, GGML_TYPE_F32, 288, 8, false, 256, n, 256));
+        }
+    }
     // more than 256 experts (hoisted row-id path): 512 as in Qwen3.8-Flash-Next,
     // and 1024 at the LLAMA_MAX_EXPERTS limit
     for (int n : {1, 5, 64, 300}) {
@@ -11859,6 +11865,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 // Test cases for performance evaluation: should be representative of real-world use cases
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
+
+    // GLM-5.3-Flash routed-expert prefill: 288 experts, top-8, 2048 tokens, K=4096 (M=1024 keeps the weights small)
+    for (ggml_type t : {GGML_TYPE_Q5_K, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ3_S}) {
+        test_cases.emplace_back(new test_mul_mat_id(t, GGML_TYPE_F32, 288, 8, false, 1024, 2048, 4096));
+    }
     for (int kv : {2048, 40704, 40960, 101120, 101376}) {
         for (int width : {1, 2, 3}) {
             test_cases.emplace_back(new test_get_rows_packed(GGML_TYPE_F32, width, kv / 4, kv, 1, 1, 0, 2, true));

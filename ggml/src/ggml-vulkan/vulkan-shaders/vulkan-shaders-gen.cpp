@@ -1152,6 +1152,8 @@ void process_shaders() {
 
     string_to_spv("count_experts", "count_experts.comp", merge_maps(base_dict, {{"A_TYPE", "uint"}, {"D_TYPE", "uint"}}));
     string_to_spv("count_experts_subgroup", "count_experts.comp", merge_maps(base_dict, {{"A_TYPE", "uint"}, {"D_TYPE", "uint"}, {"USE_SUBGROUPS", "1"}}));
+    string_to_spv("mul_mm_id_gather_q8", "mul_mm_id_gather_q8.comp", {});
+    string_to_spv("mul_mm_id_tiled_q8_iq3_s", "mul_mm_id_tiled_q8.comp", merge_maps(base_dict, {{"DATA_A_IQ3_S", "1"}, {"D_TYPE", "float"}}));
 
     for (std::string dim_str : {"", "_3d"}) {
         for (bool bda : {false, true}) {

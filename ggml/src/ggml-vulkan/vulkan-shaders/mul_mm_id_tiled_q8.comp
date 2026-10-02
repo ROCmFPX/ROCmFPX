@@ -1,0 +1,202 @@
+#version 450
+
+// Routed-expert GEMM for prefill-sized MUL_MAT_ID batches with many small IQ3_S experts, on
+// packed int8 dot products. One workgroup per listed (expert, 64-route tile) and 128 weight
+// rows over expert-sorted gathered activations; the next K step is fetched during the current one.
+//   - activations: int8 per 32-value block + float scale (mul_mm_id_gather_q8.comp)
+//   - weights: IQ3_S grid values are small integers, so each 32-weight block decodes exactly
+//     to int8 + one float scale
+//   - out[m][n] = sum over blocks of dA[m] * dX[n] * dot(qA[m], qX[n])
+
+#extension GL_EXT_control_flow_attributes : enable
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_integer_dot_product : require
+
+#include "types.glsl"
+
+#define BM 128
+#define BN 64
+#define NBLK 2                  // 32-weight blocks per K step
+#ifndef NUM_THREADS
+#define NUM_THREADS 256
+#endif
+#define TR 8                    // rows per thread: tr + 16 * i
+#define TC (BN * 16 / NUM_THREADS) // routes per thread: tc + (NUM_THREADS / 16) * jj
+#define DU (BM * NBLK / NUM_THREADS) // weight blocks each thread decodes per K step
+#define AW 9                    // ints per (row, block) in LDS: 8 x int8x4 + scale
+
+layout(local_size_x = NUM_THREADS, local_size_y = 1, local_size_z = 1) in;
+
+layout (push_constant) uniform parameter {
+    uint M;
+    uint K;
+    uint row_u16;
+    uint expert_u16;
+    uint a_offset_u16;
+    uint n_experts;
+    uint n_routes;
+    uint stride_d1;
+    uint stride_d2;
+    uint d_offset;
+} p;
+
+layout (binding = 0) readonly buffer A { uint16_t data_a[]; };
+layout (binding = 1) readonly buffer XQ { uvec4 data_xq[]; };
+layout (binding = 2) readonly buffer XD { float data_xd[]; };
+layout (binding = 3) writeonly buffer D { float data_d[]; };
+layout (binding = 4) readonly buffer Meta { uint data_meta[]; };
+
+shared int a_sh[BM * NBLK * AW];
+shared int b_sh[BN * NBLK * AW];
+
+shared uint iq_grid[512];
+
+uint byte_at(uint off_bytes) {
+    return (uint(data_a[off_bytes >> 1]) >> ((off_bytes & 1u) * 8u)) & 0xffu;
+}
+
+struct Raw { uint d; uint qs0; uint qs1; uint qs2; uint qs3; uint qh; uint sg0; uint sg1; uint sc; };
+Raw fetch_raw(uint blk_u16, uint j) {
+    Raw r;
+    const uint b = blk_u16 * 2u;
+    r.d   = uint(data_a[blk_u16]);
+    r.qs0 = uint(data_a[blk_u16 + 1u + 4u * j]);
+    r.qs1 = uint(data_a[blk_u16 + 2u + 4u * j]);
+    r.qs2 = uint(data_a[blk_u16 + 3u + 4u * j]);
+    r.qs3 = uint(data_a[blk_u16 + 4u + 4u * j]);
+    r.qh  = byte_at(b + 66u + j);
+    r.sg0 = uint(data_a[blk_u16 + 37u + 2u * j]);
+    r.sg1 = uint(data_a[blk_u16 + 38u + 2u * j]);
+    r.sc  = byte_at(b + 106u + j / 2u);
+    return r;
+}
+// 32 weights -> 8 packed int8x4 + scale
+void decode_store(Raw r, uint j, uint o) {
+    const float d = float(uint16BitsToHalf(uint16_t(r.d)));
+    const float db = d * (1 + 2 * ((r.sc >> (4u * (j & 1u))) & 0xfu));
+    const uint qs[4] = { r.qs0, r.qs1, r.qs2, r.qs3 };
+    const uint signs = r.sg0 | (r.sg1 << 16);
+    [[unroll]] for (uint g = 0; g < 8; ++g) {
+        const uint q = (qs[g >> 1] >> ((g & 1u) * 8u)) & 0xffu;
+        const uint grid = iq_grid[q | ((r.qh << (8u - g)) & 256u)];   // bytes 1..15
+        const uint s = (signs >> (4u * g)) & 0xfu;
+        // byte-wise negate where the sign bit is set: (v ^ 0xff) + 1, no carry since v >= 1
+        const uint m = ((s & 1u) * 0xffu) | ((s & 2u) * 0x7f80u) | ((s & 4u) * 0x3fc000u) | ((s & 8u) * 0x1fe00000u);
+        a_sh[o + g] = int((grid ^ m) + (m & 0x01010101u));
+    }
+    a_sh[o + 8u] = floatBitsToInt(db);
+}
+
+void main() {
+    const uint tid = gl_LocalInvocationID.x;
+    const uint list = 2u * p.n_experts + 1u + p.n_routes;
+
+    for (uint i = tid; i < 512u; i += NUM_THREADS) iq_grid[i] = iq3s_grid_const[i];
+
+    if (gl_WorkGroupID.y >= data_meta[list]) {
+        return;
+    }
+    const uint entry = data_meta[list + 1u + gl_WorkGroupID.y];
+    const uint expert = entry >> 16;
+    const uint tile = entry & 0xffffu;
+    const uint e_count = data_meta[expert];
+    const uint e_begin = data_meta[p.n_experts + expert];
+    const uint r0 = e_begin + tile * BN;
+    const uint n_valid = min(BN, e_count - tile * BN);
+    const uint m0 = gl_WorkGroupID.x * BM;
+
+    // decode: unit u = tid + NUM_THREADS * e -> (row u / NBLK, block u % NBLK of the K step)
+    const uint blk_u16 = p.row_u16 / (p.K / 256u);
+    const uint nblk_k = p.K / 32u;
+    // activations: unit tid -> (route, block of the K step); BN * NBLK <= NUM_THREADS
+    const uint b_route = tid / NBLK;
+    const uint b_blk = tid % NBLK;
+    const bool b_live = tid < BN * NBLK && b_route < n_valid;
+
+    // compute: thread -> rows tr + 16*i, routes tc + 16*jj
+    const uint tr = tid & 15u;
+    const uint tc = tid >> 4;
+    const uint TCS = NUM_THREADS / 16u;
+    float acc[TR][TC];
+    [[unroll]] for (uint i = 0; i < TR; ++i)
+        [[unroll]] for (uint jj = 0; jj < TC; ++jj) acc[i][jj] = 0.0;
+
+    barrier();   // LUT ready
+
+    const uint nk = p.K / (32u * NBLK);
+    Raw raw[DU];
+    [[unroll]] for (uint e = 0; e < DU; ++e) {
+        const uint u = tid + NUM_THREADS * e;
+        const uint kblk = u % NBLK;
+        raw[e] = fetch_raw(p.a_offset_u16 + expert * p.expert_u16 + (m0 + u / NBLK) * p.row_u16 + (kblk / 8u) * blk_u16, kblk % 8u);
+    }
+    uvec4 xq0 = uvec4(0), xq1 = uvec4(0);
+    float xd = 0.0;
+    if (b_live) {
+        const uint bb = (r0 + b_route) * nblk_k + b_blk;
+        xq0 = data_xq[bb * 2u]; xq1 = data_xq[bb * 2u + 1u]; xd = data_xd[bb];
+    }
+
+    for (uint kb = 0; kb < nk; ++kb) {
+        [[unroll]] for (uint e = 0; e < DU; ++e) {
+            const uint u = tid + NUM_THREADS * e;
+            decode_store(raw[e], (kb * NBLK + u % NBLK) % 8u, u * AW);
+        }
+        if (tid < BN * NBLK) {
+            const uint o = (b_route * NBLK + b_blk) * AW;
+            b_sh[o + 0] = int(xq0.x); b_sh[o + 1] = int(xq0.y); b_sh[o + 2] = int(xq0.z); b_sh[o + 3] = int(xq0.w);
+            b_sh[o + 4] = int(xq1.x); b_sh[o + 5] = int(xq1.y); b_sh[o + 6] = int(xq1.z); b_sh[o + 7] = int(xq1.w);
+            b_sh[o + 8] = floatBitsToInt(xd);
+        }
+        barrier();
+
+        if (kb + 1u < nk) {
+            [[unroll]] for (uint e = 0; e < DU; ++e) {
+                const uint u = tid + NUM_THREADS * e;
+                const uint kblk = (kb + 1u) * NBLK + u % NBLK;
+                raw[e] = fetch_raw(p.a_offset_u16 + expert * p.expert_u16 + (m0 + u / NBLK) * p.row_u16 + (kblk / 8u) * blk_u16, kblk % 8u);
+            }
+            if (b_live) {
+                const uint bb = (r0 + b_route) * nblk_k + (kb + 1u) * NBLK + b_blk;
+                xq0 = data_xq[bb * 2u]; xq1 = data_xq[bb * 2u + 1u]; xd = data_xd[bb];
+            }
+        }
+
+        [[unroll]] for (uint blk = 0; blk < NBLK; ++blk) {
+            int bq[TC][8];
+            float bd[TC];
+            [[unroll]] for (uint jj = 0; jj < TC; ++jj) {
+                const uint o = ((tc + TCS * jj) * NBLK + blk) * AW;
+                [[unroll]] for (uint w = 0; w < 8; ++w) bq[jj][w] = b_sh[o + w];
+                bd[jj] = intBitsToFloat(b_sh[o + 8]);
+            }
+            [[unroll]] for (uint i = 0; i < TR; ++i) {
+                const uint o = ((tr + 16u * i) * NBLK + blk) * AW;
+                int aq[8];
+                [[unroll]] for (uint w = 0; w < 8; ++w) aq[w] = a_sh[o + w];
+                const float ad = intBitsToFloat(a_sh[o + 8]);
+                [[unroll]] for (uint jj = 0; jj < TC; ++jj) {
+                    int s = 0;
+                    [[unroll]] for (uint w = 0; w < 8; ++w) s = dotPacked4x8AccSatEXT(aq[w], bq[jj][w], s);
+                    acc[i][jj] += float(s) * (ad * bd[jj]);
+                }
+            }
+        }
+        barrier();
+    }
+
+    [[unroll]] for (uint jj = 0; jj < TC; ++jj) {
+        const uint col = tc + TCS * jj;
+        if (col < n_valid) {
+            const uint packed = data_meta[2u * p.n_experts + 1u + r0 + col];
+            const uint slot = packed & 0xffffu, token = packed >> 16;
+            const uint base = p.d_offset + token * p.stride_d2 + slot * p.stride_d1 + m0;
+            [[unroll]] for (uint i = 0; i < TR; ++i) {
+                data_d[base + tr + 16u * i] = acc[i][jj];
+            }
+        }
+    }
+}
