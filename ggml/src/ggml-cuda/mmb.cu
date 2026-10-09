@@ -4,6 +4,7 @@
 #include <map>
 #include <utility>
 #include "mmid.cuh"
+#include "mmvf.cuh"
 #include <cstdlib>
 #include <vector>
 #include <unordered_set>
@@ -709,6 +710,7 @@ uint16_t * ggml_cuda_mmb_cache_reserve(ggml_backend_cuda_context & ctx, const gg
 
 bool ggml_cuda_mmb_supported_mm(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst) {
     if (!mmb_enabled()) return false;
+    if (ggml_cuda_should_use_mm_few_rows(src0, src1, dst)) return false;   // keep in sync with the dispatch in ggml_cuda_mul_mat
     const bool quant = mmb_quant_type(src0->type);
     const bool bf16w = src0->type == GGML_TYPE_BF16 && mmb_bf16w();
     const bool f32w  = src0->type == GGML_TYPE_F32 && mmb_f32split();
