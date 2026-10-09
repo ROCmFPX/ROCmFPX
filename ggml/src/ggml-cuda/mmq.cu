@@ -2,6 +2,7 @@
 #include "mmq.cuh"
 #include "quantize.cuh"
 #include "mmid.cuh"
+#include "hc-cn.cuh"
 
 #include <cstdint>
 
@@ -208,13 +209,20 @@ void ggml_cuda_mul_mat_q(
     if (!ids) {
         const size_t nbytes_src1_q8_1 = ne13*ne12 * ne11*ne10_padded * y_block_size/y_values_per_block +
             ggml_cuda_mmq_get_J_max(src0->type, fallback, cc, ne11) * sizeof(block_q8_1_mmq);
-        ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
+        // a fused producer may already have written src1 in this layout
+        const void * src1_q8_1_pre = !use_native_fp4 && !GGML_ROCMI4_W4A4 && ne12*ne13 == 1 && ggml_is_contiguous(src1) &&
+            mmq_get_q8_1_ds_layout(src0->type) == MMQ_Q8_1_DS_LAYOUT_D4 ? ggml_cuda_q8_mmq_cache_lookup(ctx, src1, nbytes_src1_q8_1) : nullptr;
+        ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool());
+        if (!src1_q8_1_pre) {
+            src1_q8_1.alloc(nbytes_src1_q8_1);
+        }
+        const char * src1_q8_1_d = src1_q8_1_pre ? (const char *) src1_q8_1_pre : src1_q8_1.get();
         ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) {
             src1_scale.alloc(ne13*ne12*ne11);
         }
 
-        {
+        if (!src1_q8_1_pre) {
             const int64_t s11 = src1->nb[1] / ts_src1;
             const int64_t s12 = src1->nb[2] / ts_src1;
             const int64_t s13 = src1->nb[3] / ts_src1;
@@ -239,7 +247,7 @@ void ggml_cuda_mul_mat_q(
         const int64_t s13 = ne12*s12;
 
         const mmq_args args = {
-            src0_d, src0->type, (const int *) src1_q8_1.ptr, nullptr, nullptr, dst_d,
+            src0_d, src0->type, (const int *) src1_q8_1_d, nullptr, nullptr, dst_d,
             src0->type == GGML_TYPE_NVFP4 && use_native_fp4 ? src1_scale.ptr : nullptr,
             ne00, ne01, ne1, s01, ne11, s1,
             ne02, ne12, s02, s12, s2,
