@@ -1768,10 +1768,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     const uint32_t n_tokens_all  = balloc->get_n_tokens();
 
     {   // warm the page cache for this batch's per-layer-embedding rows while the first chunk is on the GPU;
-        // posix_fadvise only, so a wrong prediction costs readahead and nothing else
-        extern void qwen4exp_ple_prefetch(const llama_model & model, const llama_token * tokens, int32_t n_tokens);
+        // posix_fadvise only, so a wrong prediction costs readahead and nothing else.
+        // Batches of 4096+ tokens prefetch every row (measured best at -ub 2048..8192). Smaller multi-ubatch batches
+        // (e.g. the server's -b 2048 -ub 512) prefetch only the later ubatches: the first one's gather starts right
+        // away, and prefetching it as well slows it down (58 ms instead of 38 ms per 512 tokens).
+        extern void qwen4exp_ple_prefetch(const llama_model & model, const llama_token * tokens, int32_t n_tokens, int32_t first);
         const llama_batch & batch = balloc->get_batch();
-        if (batch.token && batch.n_tokens >= 4096) { qwen4exp_ple_prefetch(model, batch.token, batch.n_tokens); }
+        if (batch.token && batch.n_tokens >= 4096) {
+            qwen4exp_ple_prefetch(model, batch.token, batch.n_tokens, 0);
+        } else if (batch.token && batch.n_tokens > (int32_t) cparams.n_ubatch) {
+            qwen4exp_ple_prefetch(model, batch.token, batch.n_tokens, (int32_t) cparams.n_ubatch);
+        }
     }
     const uint32_t n_outputs_all = balloc->get_n_outputs();
 

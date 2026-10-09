@@ -5074,6 +5074,9 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
         const void * key = cgraph->n_nodes ? cgraph->nodes[0] : nullptr;
         if (g_gt_after_compute || g_gt_first_split == nullptr || key == g_gt_first_split) { ggml_cuda_mmb_marks_clear(); g_gt_first_split = key; g_gt_after_compute = false; }
     }
+    // the BF16-only marks assume the fused kernels run, so they must not be set when fusion is disabled
+    static const bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
+    if (!disable_fusion) {
     {   // HC16 step 2: mark HC normalized-stream (xn) and gate tensors whose consumers all read the BF16 copies
         static const int hc16 = 2;
         if (hc16 >= 2 && GGML_CUDA_CC_IS_RDNA3_5(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
@@ -5091,7 +5094,8 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
                     ++nread;
                     if (t->op == GGML_OP_MUL_MAT && t->src[0]->type != GGML_TYPE_F32 &&
                         ggml_cuda_mmb_supported_mm(t->src[0], t->src[1], t)) continue;
-                    if (t->op == GGML_OP_MUL && n >= 1) { ggml_cuda_hc_mix_args ma; if (ggml_cuda_hc_mix_closed(cgraph, n - 1, ma) > 0 && (ma.xn == t->src[0] || ma.xn == t->src[1]) && (ma.xn == xn || ma.xn->view_src == xn)) continue; }
+                    if (t->op == GGML_OP_MUL && n >= 1) { ggml_cuda_hc_mix_args ma; if (ggml_cuda_hc_mix_closed(cgraph, n - 1, ma) > 0 && (ma.xn == t->src[0] || ma.xn == t->src[1]) && (ma.xn == xn || ma.xn->view_src == xn) &&
+                        ma.gate && ma.gate->op == GGML_OP_MUL_MAT && ggml_cuda_mmb_supported_mm(ma.gate->src[0], ma.gate->src[1], ma.gate)) continue; }
                     if (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE) continue;
                     ok = false;
                 }
@@ -5284,7 +5288,8 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
         }
     }
 
-    static const bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
+    }
+
     if (!disable_fusion) {
         for (int i = 0; i < cgraph->n_nodes; ++i) {
             if (GGML_CUDA_CC_IS_RDNA3_5(ggml_cuda_info().devices[cuda_ctx->device].cc)) {

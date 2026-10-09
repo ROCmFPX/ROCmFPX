@@ -1869,8 +1869,8 @@ public:
 // Prefetch hook: the chunk-boundary stall is the PLE row gather (257k-393k scattered 90-byte reads, ~300 ms with the
 // GPU idle). Given the whole batch up front we can compute the same row indices and warm the page cache for them while
 // the previous chunk is still on the GPU. It only calls posix_fadvise, so a wrong prediction costs nothing but readahead.
-void qwen4exp_ple_prefetch(const llama_model & model_base, const llama_token * tokens, int32_t n_tokens) {
-    if (!tokens || n_tokens < 4096) { return; }
+void qwen4exp_ple_prefetch(const llama_model & model_base, const llama_token * tokens, int32_t n_tokens, int32_t first) {
+    if (!tokens || first < 0 || n_tokens <= first) { return; }
     const auto & pmodel = static_cast<const llama_model_qwen4exp &>(model_base);
     if (!pmodel.ple_reader) { return; }
     const auto & hp = pmodel.hparams;
@@ -1878,9 +1878,10 @@ void qwen4exp_ple_prefetch(const llama_model & model_base, const llama_token * t
     const int64_t eos = hp.ple_eos_token_id, n_prev = n_gram - 1;
     if (n_heads <= 0 || n_gram < 2) { return; }
     std::vector<llama_token> toks(tokens, tokens + n_tokens);
-    std::thread([&pmodel, toks = std::move(toks), n_gram, n_heads, per_gram, eos, n_prev, &hp]() {
+    std::thread([&pmodel, toks = std::move(toks), n_gram, n_heads, per_gram, eos, n_prev, &hp, first]() {
         const int64_t n = (int64_t) toks.size();
         std::vector<int32_t> idx((size_t) n_heads * n);
+        const int64_t i_first = std::min<int64_t>(first, n);
         std::vector<int64_t> ctx(n_gram);
         for (int64_t i = 0; i < n; ++i) {
             ctx[0] = toks[i];
@@ -1901,7 +1902,7 @@ void qwen4exp_ple_prefetch(const llama_model & model_base, const llama_token * t
                 }
             }
         }
-        pmodel.ple_reader->prefetch(idx.data(), (int64_t) idx.size());
+        pmodel.ple_reader->prefetch(idx.data() + (size_t) i_first * n_heads, (int64_t) (n - i_first) * n_heads);
     }).detach();
 }
 
