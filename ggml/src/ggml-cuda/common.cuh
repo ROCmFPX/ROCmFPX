@@ -1135,6 +1135,7 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q4_0_ROCMI4> {
     static constexpr int qk = QK_ROCMI4;
     static constexpr int qr = QR_ROCMI4;
     static constexpr int qi = QI_ROCMI4;
+    static constexpr int bs = sizeof(block_rocmi4);
 };
 
 template<>
