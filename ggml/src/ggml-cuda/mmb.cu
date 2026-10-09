@@ -89,6 +89,42 @@ __device__ __forceinline__ void mmb_dq_row68(const uint4 w0, const uint4 w1, con
     }
 }
 
+constexpr int MMB_WT_ROCMI4 = 32 + GGML_TYPE_Q4_0_ROCMI4;
+
+// one ROCmI4 block (16 B of nibbles then the UE4M3 scale, 17 B at any byte offset) as five aligned dwords.
+// The last dword always holds the scale byte, so the read never crosses into a page the block does not touch.
+__device__ __forceinline__ void mmb_ld_rocmi4_blk(const uint8_t * p, uint4 & q, uint32_t & e) {
+    const uint32_t * b  = (const uint32_t *) ((uintptr_t) p & ~(uintptr_t) 3);
+    const uint32_t   sh = 8u * (uint32_t) ((uintptr_t) p & 3);
+    const uint32_t r0 = b[0], r1 = b[1], r2 = b[2], r3 = b[3], r4 = b[4];
+    q = make_uint4(__builtin_amdgcn_alignbit(r1, r0, sh), __builtin_amdgcn_alignbit(r2, r1, sh),
+                   __builtin_amdgcn_alignbit(r3, r2, sh), __builtin_amdgcn_alignbit(r4, r3, sh));
+    e = (r4 >> sh) & 0xFFu;
+}
+
+// dequantize one ROCmI4 block into 32 bf16 (16 dwords) in LDS, low nibbles are elements 0..15, high nibbles 16..31
+__device__ __forceinline__ void mmb_dq_rocmi4_blk(const uint4 q, const uint32_t e, uint32_t * out) {
+    const uint32_t qw[4] = { q.x, q.y, q.z, q.w };
+    const float d = rocmfpx_ue4m3_to_fp32_finite((uint8_t) e);
+    uint32_t o[16];
+#pragma unroll
+    for (int w = 0; w < 4; ++w) {
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            const uint32_t n = (qw[w] >> (4 * h)) & 0x0F0F0F0Fu;
+            float x[4];
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                x[b] = d * (float) ((int) (((n >> (8 * b)) & 0xFu) ^ 8u) - 8);
+            }
+            o[8 * h + 2 * w] = mmb_pack2(x[0], x[1]); o[8 * h + 2 * w + 1] = mmb_pack2(x[2], x[3]);
+        }
+    }
+    uint4 * o4 = (uint4 *) out;
+#pragma unroll
+    for (int v = 0; v < 4; ++v) { o4[v] = make_uint4(o[4 * v], o[4 * v + 1], o[4 * v + 2], o[4 * v + 3]); }
+}
+
 template <typename DRowFn>
 __device__ __forceinline__ void mmb_store_tile(const v8f & acc, float * __restrict__ stg, float * __restrict__ D, uint16_t * __restrict__ Dh,
         const bool store_f32, const int M, DRowFn drow, const int n_base, const int m_base, const int lane) {
@@ -127,6 +163,9 @@ __device__ __forceinline__ void mmb_tile_gemm(const uint8_t * __restrict__ Wbase
     const int tid = threadIdx.x, lane = tid & 31, wave = tid >> 5;
     const int wm = wave % WAVES_M, wn = wave / WAVES_M;
     uint4 a0[A_ITEMS], a1[A_ITEMS], a3[A_ITEMS], a4[A_ITEMS], a5[A_ITEMS], a6[A_ITEMS], a7[A_ITEMS], a8[A_ITEMS]; uint32_t a2[A_ITEMS];
+    // ROCmI4: one 32-value block per thread (2 per row per K step) so every wave shares the dequant work
+    constexpr int R_TASKS = 2 * BM, R_ITEMS = (R_TASKS + MMB_NT - 1) / MMB_NT;
+    uint4 rq[R_ITEMS]; uint32_t re[R_ITEMS];
     uint4 bst[B_ITEMS];
     int brow[B_ITEMS];
 #pragma unroll
@@ -135,7 +174,15 @@ __device__ __forceinline__ void mmb_tile_gemm(const uint8_t * __restrict__ Wbase
     int weight_ks = 0;
     auto load_regs = [&](const int ks) {
         weight_ks = ks;
+        if constexpr (WTYPE == MMB_WT_ROCMI4) {
 #pragma unroll
+            for (int i = 0; i < R_ITEMS; ++i) {
+                const int t = tid + i * MMB_NT, row = t >> 1;
+                if (t < R_TASKS && row < a_rows) {
+                    mmb_ld_rocmi4_blk(Wbase + (size_t)row * wrow_bytes + (size_t)(2 * ks + (t & 1)) * 17, rq[i], re[i]);
+                } else { rq[i] = make_uint4(0,0,0,0); re[i] = 0; }
+            }
+        } else
         for (int i = 0; i < A_ITEMS; ++i) {
             const int row = tid + i * MMB_NT;
             if (row < BM && row < a_rows) {
@@ -158,8 +205,14 @@ __device__ __forceinline__ void mmb_tile_gemm(const uint8_t * __restrict__ Wbase
         }
     };
     auto store_lds = [&]() {
-        if constexpr (WTYPE >= 32 && WTYPE != 32 + GGML_TYPE_Q5_1) mmb_load_quant_tile<WTYPE, BM, MMB_LDS_STRIDE>(Wbase, wrow_bytes, a_rows, weight_ks, As);
+        if constexpr (WTYPE >= 32 && WTYPE != 32 + GGML_TYPE_Q5_1 && WTYPE != MMB_WT_ROCMI4) mmb_load_quant_tile<WTYPE, BM, MMB_LDS_STRIDE>(Wbase, wrow_bytes, a_rows, weight_ks, As);
+        if constexpr (WTYPE == MMB_WT_ROCMI4) {
 #pragma unroll
+            for (int i = 0; i < R_ITEMS; ++i) {
+                const int t = tid + i * MMB_NT;
+                if (t < R_TASKS) { mmb_dq_rocmi4_blk(rq[i], re[i], (uint32_t *)(As + (t >> 1) * MMB_LDS_STRIDE) + (t & 1) * 16); }
+            }
+        } else
         for (int i = 0; i < A_ITEMS; ++i) { const int row = tid + i * MMB_NT; if (row < BM) {
             if constexpr (WTYPE == 0) mmb_dq_row36(a0[i], a1[i], a2[i], (uint32_t *)(As + row * MMB_LDS_STRIDE));
             else if constexpr (WTYPE == 1) mmb_dq_row68(a0[i], a1[i], a3[i], a4[i], a2[i], (uint32_t *)(As + row * MMB_LDS_STRIDE));
@@ -223,7 +276,9 @@ mmb_dense_kernel(const uint8_t * __restrict__ W, const uint16_t * __restrict__ X
     __shared__ __align__(16) uint16_t Bs[BN * MMB_LDS_STRIDE];
     const int m0 = blockIdx.x * BM, t0 = blockIdx.y * BN;
     const size_t wrow_bytes = mmb_row_bytes<WTYPE>(K);
-    mmb_tile_gemm<BM, BN, WTM, WTN, WTYPE, false>(W + (size_t)m0 * wrow_bytes, wrow_bytes, M - m0, Xh, K,
+    // ROCmI4 uses the TAIL instantiation: with TAIL=false the compiler spills this tile on gfx1151
+    // (256 VGPRs + 268 B scratch vs 224 and none); the extra column checks are uniform per wave
+    mmb_tile_gemm<BM, BN, WTM, WTN, WTYPE, WTYPE == MMB_WT_ROCMI4>(W + (size_t)m0 * wrow_bytes, wrow_bytes, M - m0, Xh, K,
         [&](int i) { return (t0 + i < T) ? t0 + i : -1; }, D, Dh, store_f32, M, [&](int i) { return (t0 + i < T) ? t0 + i : -1; }, m0, T - t0, As, Bs);
 }
 
@@ -357,6 +412,9 @@ __device__ __forceinline__ void mmb_tile_gemm_glu(const uint8_t * __restrict__ W
     const int wm = wave % WAVES_M, wn = wave / WAVES_M;
     uint4 g0[A_ITEMS], g1[A_ITEMS], u0[A_ITEMS], u1[A_ITEMS]; uint32_t g2[A_ITEMS], u2[A_ITEMS];
     uint4 gm[A_ITEMS], um[A_ITEMS];
+    // ROCmI4: one 32-value block of gate or up per thread (4 per row per K step) so every wave shares the dequant work
+    constexpr int R_TASKS = 4 * BM, R_ITEMS = (R_TASKS + MMB_NT - 1) / MMB_NT;
+    uint4 rq[R_ITEMS]; uint32_t re[R_ITEMS];
     uint4 bst[B_ITEMS];
     int brow[B_ITEMS];
 #pragma unroll
@@ -364,10 +422,22 @@ __device__ __forceinline__ void mmb_tile_gemm_glu(const uint8_t * __restrict__ W
     int weight_ks = 0;
     auto load_regs = [&](const int ks) {
         weight_ks = ks;
+        if constexpr (WTYPE == MMB_WT_ROCMI4) {
+#pragma unroll
+            for (int i = 0; i < R_ITEMS; ++i) {
+                const int t = tid + i * MMB_NT, rem = t % (2 * BM), row = rem >> 1;
+                if (t < R_TASKS && row < a_rows) {
+                    const uint8_t * W = t < 2 * BM ? Wg : Wu;
+                    mmb_ld_rocmi4_blk(W + (size_t)row * wrow_bytes + (size_t)(2 * ks + (rem & 1)) * 17, rq[i], re[i]);
+                } else { rq[i] = make_uint4(0,0,0,0); re[i] = 0; }
+            }
+        }
 #pragma unroll
         for (int i = 0; i < A_ITEMS; ++i) {
             const int row = tid + i * MMB_NT;
-            if constexpr (WTYPE == 0) {
+            if constexpr (WTYPE == MMB_WT_ROCMI4) {
+                (void) row;
+            } else if constexpr (WTYPE == 0) {
             if (row < BM && row < a_rows) {
                 const uint8_t * pg = Wg + (size_t)row * wrow_bytes + (size_t)ks * 36;
                 const uint8_t * pu = Wu + (size_t)row * wrow_bytes + (size_t)ks * 36;
@@ -392,17 +462,29 @@ __device__ __forceinline__ void mmb_tile_gemm_glu(const uint8_t * __restrict__ W
         }
     };
     auto store_lds = [&]() {
-        if constexpr (WTYPE != 0 && WTYPE != 32 + GGML_TYPE_Q4_K) {
+        if constexpr (WTYPE != 0 && WTYPE != 32 + GGML_TYPE_Q4_K && WTYPE != MMB_WT_ROCMI4) {
             constexpr int LOAD_TYPE = WTYPE == 1 ? 32 + GGML_TYPE_Q8_0 : WTYPE;
             mmb_load_quant_tile<LOAD_TYPE, BM, MMB_LDS_STRIDE>(Wg, wrow_bytes, a_rows, weight_ks, Ag);
             mmb_load_quant_tile<LOAD_TYPE, BM, MMB_LDS_STRIDE>(Wu, wrow_bytes, a_rows, weight_ks, Au);
         }
 
+        if constexpr (WTYPE == MMB_WT_ROCMI4) {
+#pragma unroll
+            for (int i = 0; i < R_ITEMS; ++i) {
+                const int t = tid + i * MMB_NT, rem = t % (2 * BM);
+                if (t < R_TASKS) {
+                    uint16_t * A = t < 2 * BM ? Ag : Au;
+                    mmb_dq_rocmi4_blk(rq[i], re[i], (uint32_t *)(A + (rem >> 1) * MMB_LDS_STRIDE) + (rem & 1) * 16);
+                }
+            }
+        }
 #pragma unroll
         for (int i = 0; i < A_ITEMS; ++i) {
             const int row = tid + i * MMB_NT;
             if (row < BM) {
-                if constexpr (WTYPE == 0) {
+                if constexpr (WTYPE == MMB_WT_ROCMI4) {
+                    (void) row;
+                } else if constexpr (WTYPE == 0) {
                     mmb_dq_row36(g0[i], g1[i], g2[i], (uint32_t *)(Ag + row * MMB_LDS_STRIDE));
                     mmb_dq_row36(u0[i], u1[i], u2[i], (uint32_t *)(Au + row * MMB_LDS_STRIDE));
                 } else if constexpr (WTYPE == 32 + GGML_TYPE_Q4_K) {
@@ -760,7 +842,8 @@ void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         return;
     }
     const uint16_t * shadow_pre = ((src0->type == GGML_TYPE_IQ4_NL && mmb_shadow()) || src0->type == GGML_TYPE_Q6_K) ? mmb_shadow_lookup(src0) : nullptr;
-    const bool big = (M >= 6144 && K >= 2560) || (shadow_pre && K >= 2560 && T >= 4096);
+    // the 128x256 tile spills for ROCmI4 (1 KB scratch); the 128x128 one does not
+    const bool big = src0->type != GGML_TYPE_Q4_0_ROCMI4 && ((M >= 6144 && K >= 2560) || (shadow_pre && K >= 2560 && T >= 4096));
     uint16_t * Dh = (mmb_hc16() && K == 320 && M == 10240) ? ggml_cuda_mmb_slot_reserve(ctx, 1, dst, (size_t) T * M) : nullptr;
     bool store_f32 = !(Dh && ggml_cuda_mmb_is_bf16_only(dst));
     if (ggml_cuda_mmb_blk16() && !Dh && ggml_cuda_mmb_is_bf16_only(dst) && (M & 7) == 0) {
