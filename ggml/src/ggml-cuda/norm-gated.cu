@@ -10,7 +10,7 @@
 // Optional sigmoid gate: dst = (scale * x * w) * (1 / (1 + expf(-z)))  (== op_sigmoid then binbcast mul).
 static __device__ __forceinline__ float xor_tree(float v) {
 #pragma unroll
-    for (int off = 16; off > 0; off >>= 1) { v += __shfl_xor(v, off); }
+    for (int off = 16; off > 0; off >>= 1) { v += __shfl_xor_sync(0xffffffff, v, off, 32); }
     return v;
 }
 template <bool GATE>
