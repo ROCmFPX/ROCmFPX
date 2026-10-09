@@ -378,7 +378,6 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
 // -------------------------------------------------
-        case GGML_TYPE_MXFP4:
         case GGML_TYPE_Q4_0_ROCMFP4:
         case GGML_TYPE_Q4_0_ROCMFP4_FAST:
         case GGML_TYPE_Q4_0_ROCMI4:
@@ -386,6 +385,11 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_Q2_0_ROCMFPX:
         case GGML_TYPE_Q6_0_ROCMFPX:
         case GGML_TYPE_Q8_0_ROCMFPX:
+            // MMQ tile configurations for these types exist for AMD GPUs only; elsewhere the
+            // J selection finds no tile and aborts, so fall back to the dequantize + BLAS path
+            mmq_supported = GGML_CUDA_CC_IS_AMD(cc);
+            break;
+        case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
             mmq_supported = true;
             break;

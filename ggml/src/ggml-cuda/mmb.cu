@@ -1,4 +1,6 @@
 #include "mmb.cuh"
+
+#if defined(GGML_USE_HIP)
 #include "unary.cuh"
 #include <unordered_map>
 #include <map>
@@ -1025,3 +1027,30 @@ void ggml_cuda_mmb_shadow_prepare(ggml_backend_cuda_context & ctx, const ggml_te
     CUDA_CHECK(cudaGetLastError());
     g_mmb_shadow_bytes += bytes;
 }
+
+#else // !defined(GGML_USE_HIP)
+
+// MMB is written with AMD WMMA builtins and clang vector types; other backends never select it.
+bool ggml_cuda_mmb_supported_mm(const ggml_tensor *, const ggml_tensor *, const ggml_tensor *) { return false; }
+bool ggml_cuda_mmb_supported_mmid(const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *) { return false; }
+bool ggml_cuda_mmb_supported_glu(const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *) { return false; }
+void ggml_cuda_mul_mat_mmb(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, ggml_tensor *) { GGML_ABORT("MMB is HIP-only"); }
+void ggml_cuda_mul_mat_id_mmb(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, ggml_tensor *) { GGML_ABORT("MMB is HIP-only"); }
+void ggml_cuda_mul_mat_id_mmb_glu(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, ggml_tensor *) { GGML_ABORT("MMB is HIP-only"); }
+void ggml_cuda_mmb_begin_graph() {}
+uint16_t * ggml_cuda_mmb_cache_reserve(ggml_backend_cuda_context &, const ggml_tensor *, size_t) { return nullptr; }
+const uint16_t * ggml_cuda_mmb_cache_lookup(const ggml_tensor *) { return nullptr; }
+uint16_t * ggml_cuda_mmb_slot_reserve(ggml_backend_cuda_context &, int, const ggml_tensor *, size_t) { return nullptr; }
+void ggml_cuda_mmb_marks_clear() {}
+size_t ggml_cuda_mmb_marks_count() { return 0; }
+void ggml_cuda_mmb_mark_bf16_only(const ggml_tensor *) {}
+bool ggml_cuda_mmb_is_bf16_only(const ggml_tensor *) { return false; }
+bool ggml_cuda_mmb_gatemix() { return false; }
+bool ggml_cuda_mmb_down16() { return false; }
+bool ggml_cuda_mmb_res16() { return false; }
+bool ggml_cuda_mmb_blk16() { return false; }
+bool ggml_cuda_hc_gate_mix(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, int, float, float) { return false; }
+void ggml_cuda_mmb_shadow_prepare(ggml_backend_cuda_context &, const ggml_tensor *) {}
+void ggml_cuda_mmb_release_all() {}
+
+#endif // defined(GGML_USE_HIP)
