@@ -53,6 +53,78 @@ static void qwen4exp_require_arr_len(llama_model_loader & ml, llm_kv kid, uint32
     }
 }
 
+// Q4_0 copy of the BF16/F16/F32 LM head for the MTP draft step. The draft token only has to be a good guess:
+// the target model verifies every drafted token with its own full-precision head, so output text is
+// unchanged, while the 248K x 2560 head GEMV that runs once per drafted token reads about a quarter of the
+// bytes. On Qwen3.8-Flash-Next HC-Q8 draft acceptance on an 8K prompt was unchanged (Q8_0, Q4_K and Q6_K
+// were measured too; Q4_0 was the fastest).
+// Built once per head tensor on first use (a few seconds), kept for the process lifetime.
+// ROCMFPX_DRAFT_HEAD_QUANT=0 disables it.
+static ggml_tensor * qwen4exp_draft_head_quant(ggml_tensor * head_w) {
+    constexpr ggml_type qtype = GGML_TYPE_Q4_0;
+    static const bool enabled = [] {
+        const char * v = std::getenv("ROCMFPX_DRAFT_HEAD_QUANT");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    if (!enabled || head_w == nullptr || head_w->buffer == nullptr || ggml_n_dims(head_w) != 2 ||
+            (head_w->type != GGML_TYPE_BF16 && head_w->type != GGML_TYPE_F16 && head_w->type != GGML_TYPE_F32) ||
+            head_w->ne[0] % ggml_blck_size(qtype) != 0 || !ggml_is_contiguous(head_w)) {
+        return nullptr;
+    }
+    struct entry { ggml_context * ctx; ggml_backend_buffer_t buf; ggml_tensor * t; };
+    static std::mutex mutex;
+    static std::map<const ggml_tensor *, entry> cache;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(head_w);
+    if (it != cache.end()) {
+        return it->second.t;
+    }
+    const int64_t ne0 = head_w->ne[0], ne1 = head_w->ne[1];
+    ggml_init_params ip = { ggml_tensor_overhead() * 2, nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * q = ggml_new_tensor_2d(ctx, qtype, ne0, ne1);
+    ggml_set_name(q, "mtp_draft_head_q4_0");
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_buffer_get_type(head_w->buffer));
+    if (buf == nullptr) {
+        ggml_free(ctx);
+        cache[head_w] = { nullptr, nullptr, nullptr };
+        return nullptr;
+    }
+    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    const auto t0 = ggml_time_us();
+    const int64_t rows_per_chunk = 4096;
+    const size_t  src_row = ggml_row_size(head_w->type, ne0);
+    const size_t  dst_row = ggml_row_size(qtype, ne0);
+    std::vector<uint8_t> src(rows_per_chunk * src_row);
+    std::vector<float>   f32(rows_per_chunk * ne0);
+    std::vector<uint8_t> dst(rows_per_chunk * dst_row);
+    const auto * traits = ggml_get_type_traits(head_w->type);
+    const int n_threads = std::max(1, std::min(16, (int) std::thread::hardware_concurrency()));
+    for (int64_t r0 = 0; r0 < ne1; r0 += rows_per_chunk) {
+        const int64_t nr = std::min(rows_per_chunk, ne1 - r0);
+        ggml_backend_tensor_get(head_w, src.data(), r0 * src_row, nr * src_row);
+        std::vector<std::thread> workers;
+        for (int w = 0; w < n_threads; ++w) {
+            workers.emplace_back([&, w]() {
+                const int64_t b = nr * w / n_threads, e = nr * (w + 1) / n_threads;
+                if (e <= b) return;
+                if (head_w->type == GGML_TYPE_F32) {
+                    std::memcpy(f32.data() + b * ne0, src.data() + b * src_row, (e - b) * src_row);
+                } else {
+                    traits->to_float(src.data() + b * src_row, f32.data() + b * ne0, (e - b) * ne0);
+                }
+                ggml_quantize_chunk(qtype, f32.data() + b * ne0, dst.data() + b * dst_row, 0, e - b, ne0, nullptr);
+            });
+        }
+        for (auto & t : workers) t.join();
+        ggml_backend_tensor_set(q, dst.data(), r0 * dst_row, nr * dst_row);
+    }
+    LLAMA_LOG_INFO("%s: built a Q4_0 copy of %s for MTP drafting (%.1f MiB, %.2f s)\n", __func__, head_w->name,
+            ggml_nbytes(q) / 1048576.0, (ggml_time_us() - t0) / 1e6);
+    cache[head_w] = { ctx, buf, q };
+    return q;
+}
+
 static const llama_model & qwen4exp_shared_model(const llama_cparams & cparams, const llama_model & model, const char * name) {
     if (cparams.ctx_other == nullptr) {
         throw std::runtime_error(format("QWEN4EXP MTP: this draft head has no '%s' of its own; "
@@ -885,6 +957,8 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
         auto projection = rocmfpx::build_draft_projection(ctx0, std::move(draft_vocabulary), head_w, cur);
         cur = projection.logits;
         res->add_input(std::move(projection.input));
+    } else if (ggml_nrows(cur) == 1 && head_s == nullptr && loras->empty() && qwen4exp_draft_head_quant(head_w) != nullptr) {
+        cur = ggml_mul_mat(ctx0, qwen4exp_draft_head_quant(head_w), cur);
     } else {
         cur = build_lora_mm(head_w, cur, head_s);
     }
