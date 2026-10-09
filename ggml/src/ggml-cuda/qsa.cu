@@ -1,5 +1,7 @@
 #include "common.cuh"
 #include "qsa.cuh"
+
+#if defined(GGML_USE_HIP)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -442,3 +444,13 @@ void ggml_cuda_flash_attn_ext_qsa(ggml_backend_cuda_context & ctx, ggml_tensor *
                             (const int *) ucount.get(), (float *) dst->data, layout);
     CUDA_CHECK(cudaGetLastError());
 }
+
+#else // !defined(GGML_USE_HIP)
+
+// QSA kernels use AMD WMMA builtins; other backends report the op as unsupported here.
+bool ggml_cuda_flash_attn_ext_qsa_supported(ggml_backend_cuda_context &, const ggml_tensor *) { return false; }
+void ggml_cuda_flash_attn_ext_qsa(ggml_backend_cuda_context &, ggml_tensor *) { GGML_ABORT("QSA attention is HIP-only"); }
+bool ggml_cuda_flash_attn_ext_qsa_decode_supported(ggml_backend_cuda_context &, const ggml_tensor *) { return false; }
+void ggml_cuda_flash_attn_ext_qsa_decode(ggml_backend_cuda_context &, ggml_tensor *) { GGML_ABORT("QSA attention is HIP-only"); }
+
+#endif // defined(GGML_USE_HIP)

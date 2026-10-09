@@ -19,7 +19,7 @@ static int ggml_cuda_match_qsa_expand(const ggml_cgraph * graph, int first, ggml
     n[19] = tail_view ? graph->nodes[first+19] : n[20]->src[1];
     if (!n[19]) return reject(__LINE__);
     auto source = [&](int node, int src, int producer) { return n[node]->src[src] == n[producer]; };
-    for (const auto & edge : {std::array<int,3>{1,0,0}, {2,0,0}, {3,0,2}, {4,0,1}, {4,1,3},
+    for (const auto & edge : std::initializer_list<std::array<int,3>>{{1,0,0}, {2,0,0}, {3,0,2}, {4,0,1}, {4,1,3},
             {5,0,4}, {6,0,5}, {7,1,6}, {8,0,7}, {9,0,8}, {10,0,9}, {12,0,11}, {12,1,5},
             {13,0,12}, {14,0,13}, {15,0,10}, {15,1,14}, {16,0,15}, {17,0,16}, {18,0,17},
             {20,0,18}, {20,1,19}}) {

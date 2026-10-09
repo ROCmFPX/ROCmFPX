@@ -125,6 +125,9 @@ if (CUDAToolkit_FOUND)
     list(APPEND GGML_SOURCES_CUDA ${SRCS})
 
     if (GGML_CUDA_FA_ALL_QUANTS)
+        # fattn.cu selects vector kernels with the GGML_CUDA_FA_<K>_<V> macros, which this helper defines
+        # (all set to 1 here); its source list is not needed because every instance is globbed below
+        ggml_cuda_fattn_vec_instances(${CMAKE_CURRENT_SOURCE_DIR} FA_DEFINE_ONLY_SRCS)
         file(GLOB   SRCS "template-instances/fattn-vec*.cu")
         list(APPEND GGML_SOURCES_CUDA ${SRCS})
         add_compile_definitions(GGML_CUDA_FA_ALL_QUANTS)
