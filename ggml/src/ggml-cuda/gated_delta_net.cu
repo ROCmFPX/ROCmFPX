@@ -620,6 +620,13 @@ __global__ void __launch_bounds__(256, 1) gdn_chunk_fused(const gdn_chunk_args p
             gdn_mma(qs, pq, sh);
             gdn_mma(qs, pq, sl);
         }
+        // decays used below, read now: wave 0 may already be writing the next chunk's gc after the last barrier
+        const float al = expf(gcs[C - 1]);
+        float ag[8];
+#pragma unroll
+        for (int e = 0; e < 8; ++e) {
+            ag[e] = expf(gcs[2 * e + hi16]);
+        }
         if (ih == 1) {
 #pragma unroll
             for (int e = 0; e < 8; ++e) {
@@ -655,15 +662,14 @@ __global__ void __launch_bounds__(256, 1) gdn_chunk_fused(const gdn_chunk_args p
             for (int e = 0; e < 8; ++e) {
                 const int t = 2 * e + hi16, c = ct * 16 + r16;
                 if (t < nvalid) {
-                    dst[(t0 + t) * D * H + (int64_t) h * D + col0 + c] = (expf(gcs[t]) * qs[e] + o[e]) * scale;
+                    dst[(t0 + t) * D * H + (int64_t) h * D + col0 + c] = (ag[e] * qs[e] + o[e]) * scale;
                 }
             }
         }
         __syncthreads();
 
-        // S^T = a_C S^T + d^T Kd
+        // S^T = a_C S^T + d^T Kd. No barrier after it: the next chunk only rewrites dth/dtl/kdt after its first barrier.
         {
-            const float al = expf(gcs[C - 1]);
             const gdn_v16h ph = gdn_frag(&dth[ct * 16 + r16][0]), pl = gdn_frag(&dtl[ct * 16 + r16][0]);
 #pragma unroll
             for (int it = 0; it < NI; ++it) {
@@ -676,7 +682,6 @@ __global__ void __launch_bounds__(256, 1) gdn_chunk_fused(const gdn_chunk_args p
                 gdn_mma(acc[it], pl, kq);
             }
         }
-        __syncthreads();
     }
 
 #pragma unroll
