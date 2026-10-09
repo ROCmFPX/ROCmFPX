@@ -9507,6 +9507,15 @@ struct test_mmb_quant_hc : test_case {
         }
     }
     double max_nmse_err() override { return 5e-4; }
+    double max_nmse_err(ggml_backend_t backend) override {
+        // same rule as test_mul_mat: Blackwell quantizes FP4 activations to FP4 instead of Q8_1
+        if ((type == GGML_TYPE_MXFP4 || type == GGML_TYPE_NVFP4) &&
+                !graph_mul_mat_hi_prec_act(gf, GGML_OP_MUL_MAT) &&
+                backend_has_feature(backend, "BLACKWELL_NATIVE_FP4")) {
+            return 2e-2;
+        }
+        return max_nmse_err();
+    }
     ggml_tensor * build_graph(ggml_context * ctx) override {
         const int embd=2560, hc=4, tokens=512, k=256;
         auto * residual=ggml_new_tensor_3d(ctx, GGML_TYPE_F32, embd, hc, tokens);
