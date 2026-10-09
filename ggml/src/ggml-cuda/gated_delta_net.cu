@@ -360,6 +360,336 @@ gated_delta_net_tiled_cuda(const float * q,
     }
 }
 
+#if defined(GGML_USE_HIP)
+// Chunked prefill for the scalar-gate delta rule, S_v == S_k == 128, one sequence, RDNA3 WMMA.
+// Per chunk of C tokens with cumulative log decay gc and a = exp(gc):
+//   A[t][j] = beta_t exp(gc_t - gc_j) k_t.k_j (j < t), T = (I + A)^-1
+//   W = T diag(beta a) K, U = T diag(beta) V, d = U - W S0
+//   o = scale (diag(a) Q S0 + M d), M[t][j] = exp(gc_t - gc_j) q_t.k_j (j <= t)
+//   S1 = a_C S0 + K^T diag(exp(gc_C - gc)) d
+// One workgroup per (head, 64 state columns). The state stays in F32 WMMA accumulators; it enters the
+// products as an f16 hi + lo pair, so only W, q and the decayed k are rounded to f16.
+#define GDN_CHUNK      16
+#define GDN_CHUNK_D    128
+#define GDN_CHUNK_COLS 64
+
+struct gdn_chunk_args {
+    const float * q; const float * k; const float * v; const float * g; const float * beta;
+    int64_t sq1, sq2, sv1, sv2, sb1, sb2;
+    int64_t neqk1;
+    int64_t n_tokens;
+};
+
+typedef _Float16 gdn_v16h __attribute__((ext_vector_type(16)));
+typedef float    gdn_v8f  __attribute__((ext_vector_type(8)));
+
+static __device__ __forceinline__ gdn_v16h gdn_frag(const _Float16 * p) {
+    const uint4 a = *(const uint4 *) p, b = *(const uint4 *) (p + 8);
+    return __builtin_bit_cast(gdn_v16h, (uint4[2]){a, b});
+}
+
+// acc[r][c] += sum_k P[r][k] * Q[c][k]; lane L supplies row (L & 15) of each operand, result row 2e + (L >> 4), column L & 15
+static __device__ __forceinline__ void gdn_mma(gdn_v8f & acc, const gdn_v16h & a, const gdn_v16h & b) {
+#if defined(RDNA3)
+    acc = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, acc);
+#else
+    GGML_UNUSED(acc); GGML_UNUSED(a); GGML_UNUSED(b);
+    NO_DEVICE_CODE;
+#endif
+}
+
+static __device__ __forceinline__ void gdn_wave_lds_sync() {
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "wavefront");
+    __builtin_amdgcn_wave_barrier();
+    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "wavefront");
+}
+
+__global__ void __launch_bounds__(256, 1) gdn_chunk_fused(const gdn_chunk_args p,
+        const float * __restrict__ s0, float * __restrict__ dst, float * __restrict__ state_out, const int64_t H, const float scale) {
+    constexpr int C = GDN_CHUNK, D = GDN_CHUNK_D, NC = GDN_CHUNK_COLS, DP = D + 4, DH = D + 8, CH = C + 8, NP = NC + 4, NT = NC / 16;
+    static_assert(C == 16 && NC == 64, "tile layout assumes 16-token chunks and 64-column blocks");
+    __shared__ __align__(16) float kf[C][DP];
+    __shared__ __align__(16) float qf[C][DP];
+    __shared__ __align__(16) float vq[C][NP];       // v slice
+    __shared__ float as[C][C + 1], ms[C][C + 1], ts[C][C + 1];
+    __shared__ float uf[C][NC + 1];
+    __shared__ float gcs[C], bts[C], bas[C];
+    __shared__ __align__(16) _Float16 wh[C][DH];
+    __shared__ __align__(16) _Float16 qh[C][DH];
+    __shared__ __align__(16) _Float16 kdt[D][CH];
+    __shared__ __align__(16) _Float16 dth[NC][CH];
+    __shared__ __align__(16) _Float16 dtl[NC][CH];
+    __shared__ __align__(16) _Float16 trs[2][8][16][CH];   // per-wave transpose scratch (hi, lo); also holds the K K^T / Q K^T partials
+    _Float16 (*trh)[16][CH] = trs[0];
+    _Float16 (*trl)[16][CH] = trs[1];
+
+    const int h = blockIdx.x, col0 = blockIdx.y * NC, tid = threadIdx.x;
+    const int lane = tid % 32, wave = tid / 32, r16 = lane & 15, hi16 = lane >> 4;
+    // wave w holds state columns (w & 3) * 16 .. + 15 and rows (w >> 2) * 64 .. + 63
+    const int ct = wave & 3, ih = wave >> 2;
+    const int64_t hq = h % p.neqk1;
+    constexpr int NI = D / 32;   // row tiles per wave
+
+    gdn_v8f acc[NI];
+#pragma unroll
+    for (int it = 0; it < NI; ++it) {
+#pragma unroll
+        for (int e = 0; e < 8; ++e) {
+            const int c = ct * 16 + 2 * e + hi16, i = (ih * NI + it) * 16 + r16;
+            acc[it][e] = s0[(int64_t) h * D * D + (int64_t) (col0 + c) * D + i];
+        }
+    }
+
+    // inputs of the next chunk are loaded into registers while the current one is processed
+    float4 pk[2], pq[2];
+    float  pv[4], pg = 0.0f, pb = 0.0f;
+    auto prefetch = [&](const int64_t c0) {
+        const int nv = (int) min((int64_t) C, p.n_tokens - c0);
+#pragma unroll
+        for (int r = 0; r < 2; ++r) {
+            const int idx = tid + r * 256, t = idx / (D / 4), i = (idx % (D / 4)) * 4;
+            const bool ok = t < nv;
+            pk[r] = ok ? *(const float4 *) (p.k + (c0 + t) * p.sq2 + hq * p.sq1 + i) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            pq[r] = ok ? *(const float4 *) (p.q + (c0 + t) * p.sq2 + hq * p.sq1 + i) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+#pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            const int idx = tid + r * 256, t = idx / NC, d = idx % NC;
+            pv[r] = t < nv ? p.v[(c0 + t) * p.sv2 + h * p.sv1 + col0 + d] : 0.0f;
+        }
+        if (tid < C) {
+            const bool ok = tid < nv;
+            pg = ok ? p.g[(c0 + tid) * p.sb2 + h * p.sb1] : 0.0f;
+            pb = ok ? p.beta[(c0 + tid) * p.sb2 + h * p.sb1] : 0.0f;
+        }
+    };
+    prefetch(0);
+
+    const int64_t n_chunks = (p.n_tokens + C - 1) / C;
+    for (int64_t ch = 0; ch < n_chunks; ++ch) {
+        const int64_t t0 = ch * C;
+        const int nvalid = (int) min((int64_t) C, p.n_tokens - t0);
+
+#pragma unroll
+        for (int r = 0; r < 2; ++r) {
+            const int idx = tid + r * 256, t = idx / (D / 4), i = (idx % (D / 4)) * 4;
+            *(float4 *) &kf[t][i] = pk[r];
+            *(float4 *) &qf[t][i] = pq[r];
+        }
+#pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            const int idx = tid + r * 256;
+            vq[idx / NC][idx % NC] = pv[r];
+        }
+        if (tid < C) {
+            // inclusive prefix sum of the log decays over the 16 lanes
+            float sum = pg;
+#pragma unroll
+            for (int off = 1; off < C; off *= 2) {
+                const float o = __shfl_up(sum, off, C);
+                sum += tid >= off ? o : 0.0f;
+            }
+            gcs[tid] = sum;
+            bts[tid] = pb;
+            bas[tid] = pb * expf(sum);
+        }
+        __syncthreads();
+        if (ch + 1 < n_chunks) {
+            prefetch(t0 + C);
+        }
+
+        // K K^T (waves 0-3) and Q K^T (waves 4-7) on WMMA with f16 hi/lo splits, each wave one quarter of K;
+        // the partial tiles meet in the (idle) transpose scratch. q is also converted to f16 here.
+        {
+            static_assert(sizeof(trs) >= 2 * 4 * 16 * 17 * sizeof(float), "partial tiles do not fit");
+            float (*pp)[4][16][17] = (float (*)[4][16][17]) &trs[0][0][0][0];
+            const float (*xr)[DP] = wave < 4 ? kf : qf;
+            const int k0 = (wave & 3) * (D / 4);
+            gdn_v8f r = {};
+#pragma unroll
+            for (int kk = 0; kk < D / 4; kk += 16) {
+                gdn_v16h xh, xl, kh, kl;
+#pragma unroll
+                for (int k = 0; k < 16; ++k) {
+                    const float x = xr[r16][k0 + kk + k], y = kf[r16][k0 + kk + k];
+                    xh[k] = (_Float16) x; xl[k] = (_Float16) (x - (float) xh[k]);
+                    kh[k] = (_Float16) y; kl[k] = (_Float16) (y - (float) kh[k]);
+                }
+                gdn_mma(r, xh, kh);
+                gdn_mma(r, xh, kl);
+                gdn_mma(r, xl, kh);
+            }
+#pragma unroll
+            for (int e = 0; e < 8; ++e) {
+                pp[wave >> 2][wave & 3][2 * e + hi16][r16] = r[e];
+            }
+            for (int idx = tid; idx < C * D; idx += blockDim.x) {
+                qh[idx / D][idx % D] = (_Float16) qf[idx / D][idx % D];
+            }
+            __syncthreads();
+            {
+                const int t = tid / C, j = tid % C;
+                const float kk = pp[0][0][t][j] + pp[0][1][t][j] + pp[0][2][t][j] + pp[0][3][t][j];
+                const float qk = pp[1][0][t][j] + pp[1][1][t][j] + pp[1][2][t][j] + pp[1][3][t][j];
+                const float dec = j <= t ? expf(gcs[t] - gcs[j]) : 0.0f;
+                as[t][j] = j < t ? bts[t] * dec * kk : 0.0f;
+                ms[t][j] = dec * qk;
+            }
+        }
+        __syncthreads();
+
+        // T = (I + A)^-1 by forward substitution; lane c owns column c
+        if (tid < C) {
+            const int c = tid;
+            float tc[C];
+#pragma unroll
+            for (int t = 0; t < C; ++t) {
+                float sum = t == c ? 1.0f : 0.0f;
+#pragma unroll
+                for (int j = 0; j < t; ++j) {
+                    sum = j >= c ? fmaf(-as[t][j], tc[j], sum) : sum;
+                }
+                tc[t] = t < c ? 0.0f : sum;
+                ts[t][c] = tc[t];
+            }
+        }
+        __syncthreads();
+
+        // W = T diag(beta a) K (f16) and U = T diag(beta) V on WMMA (T, K, V split into f16 hi + lo), Kd^T (f16)
+        {
+            gdn_v16h th, tl, kh, kl;
+#pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                const float x = ts[r16][j] * bas[j];
+                th[j] = (_Float16) x; tl[j] = (_Float16) (x - (float) th[j]);
+                const float y = kf[j][wave * 16 + r16];
+                kh[j] = (_Float16) y; kl[j] = (_Float16) (y - (float) kh[j]);
+            }
+            gdn_v8f r = {};
+            gdn_mma(r, th, kh);
+            gdn_mma(r, th, kl);
+            gdn_mma(r, tl, kh);
+#pragma unroll
+            for (int e = 0; e < 8; ++e) {
+                wh[2 * e + hi16][wave * 16 + r16] = (_Float16) r[e];
+            }
+            if (wave < NT) {
+#pragma unroll
+                for (int j = 0; j < 16; ++j) {
+                    const float x = ts[r16][j] * bts[j];
+                    th[j] = (_Float16) x; tl[j] = (_Float16) (x - (float) th[j]);
+                    const float y = vq[j][wave * 16 + r16];
+                    kh[j] = (_Float16) y; kl[j] = (_Float16) (y - (float) kh[j]);
+                }
+                gdn_v8f u = {};
+                gdn_mma(u, th, kh);
+                gdn_mma(u, th, kl);
+                gdn_mma(u, tl, kh);
+#pragma unroll
+                for (int e = 0; e < 8; ++e) {
+                    uf[2 * e + hi16][wave * 16 + r16] = u[e];
+                }
+            }
+        }
+        for (int idx = tid; idx < C * D; idx += blockDim.x) {
+            const int i = idx / C, t = idx % C;
+            kdt[i][t] = (_Float16) (expf(gcs[C - 1] - gcs[t]) * kf[t][i]);
+        }
+        __syncthreads();
+
+        // d = U - W S0 and q S0: each wave multiplies its 64 state rows, the two halves are summed through LDS
+        // (qf is free at this point). S^T tiles are transposed through a per-wave scratch.
+        float (*part)[2][16][16] = (float (*)[2][16][16]) &qf[0][0];
+        gdn_v8f dw = {}, qs = {};
+#pragma unroll
+        for (int it = 0; it < NI; ++it) {
+#pragma unroll
+            for (int e = 0; e < 8; ++e) {
+                const float x = acc[it][e];
+                const _Float16 xh = (_Float16) x;
+                trh[wave][2 * e + hi16][r16] = xh;
+                trl[wave][2 * e + hi16][r16] = (_Float16) (x - (float) xh);
+            }
+            gdn_wave_lds_sync();
+            const int k0 = (ih * NI + it) * 16;
+            const gdn_v16h sh = gdn_frag(&trh[wave][r16][0]), sl = gdn_frag(&trl[wave][r16][0]);
+            const gdn_v16h pw = gdn_frag(&wh[r16][k0]), pq = gdn_frag(&qh[r16][k0]);
+            gdn_wave_lds_sync();
+            gdn_mma(dw, pw, sh);
+            gdn_mma(dw, pw, sl);
+            gdn_mma(qs, pq, sh);
+            gdn_mma(qs, pq, sl);
+        }
+        if (ih == 1) {
+#pragma unroll
+            for (int e = 0; e < 8; ++e) {
+                part[ct][0][2 * e + hi16][r16] = dw[e];
+                part[ct][1][2 * e + hi16][r16] = qs[e];
+            }
+        }
+        __syncthreads();
+        if (ih == 0) {
+#pragma unroll
+            for (int e = 0; e < 8; ++e) {
+                const int t = 2 * e + hi16, c = ct * 16 + r16;
+                qs[e] += part[ct][1][t][r16];
+                const float d = uf[t][c] - (dw[e] + part[ct][0][t][r16]);
+                const _Float16 dh = (_Float16) d;
+                dth[c][t] = dh;
+                dtl[c][t] = (_Float16) (d - (float) dh);
+            }
+            gdn_wave_lds_sync();
+            // o = scale (a_t q S + M d) for this wave's 16 columns
+            gdn_v16h mh, ml;
+#pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                const float x = ms[r16][j];
+                mh[j] = (_Float16) x; ml[j] = (_Float16) (x - (float) mh[j]);
+            }
+            const gdn_v16h dh = gdn_frag(&dth[ct * 16 + r16][0]), dl = gdn_frag(&dtl[ct * 16 + r16][0]);
+            gdn_v8f o = {};
+            gdn_mma(o, mh, dh);
+            gdn_mma(o, mh, dl);
+            gdn_mma(o, ml, dh);
+#pragma unroll
+            for (int e = 0; e < 8; ++e) {
+                const int t = 2 * e + hi16, c = ct * 16 + r16;
+                if (t < nvalid) {
+                    dst[(t0 + t) * D * H + (int64_t) h * D + col0 + c] = (expf(gcs[t]) * qs[e] + o[e]) * scale;
+                }
+            }
+        }
+        __syncthreads();
+
+        // S^T = a_C S^T + d^T Kd
+        {
+            const float al = expf(gcs[C - 1]);
+            const gdn_v16h ph = gdn_frag(&dth[ct * 16 + r16][0]), pl = gdn_frag(&dtl[ct * 16 + r16][0]);
+#pragma unroll
+            for (int it = 0; it < NI; ++it) {
+                const gdn_v16h kq = gdn_frag(&kdt[(ih * NI + it) * 16 + r16][0]);
+#pragma unroll
+                for (int e = 0; e < 8; ++e) {
+                    acc[it][e] *= al;
+                }
+                gdn_mma(acc[it], ph, kq);
+                gdn_mma(acc[it], pl, kq);
+            }
+        }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int it = 0; it < NI; ++it) {
+#pragma unroll
+        for (int e = 0; e < 8; ++e) {
+            const int c = ct * 16 + 2 * e + hi16, i = (ih * NI + it) * 16 + r16;
+            state_out[(int64_t) h * D * D + (int64_t) (col0 + c) * D + i] = acc[it][e];
+        }
+    }
+}
+#endif // defined(GGML_USE_HIP)
+
 template <bool KDA, bool keep_rs_t>
 static void launch_gated_delta_net(
         const float * q_d, const float * k_d, const float * v_d,
@@ -427,6 +757,48 @@ static void launch_gated_delta_net(
             break;
     }
 }
+
+#if defined(GGML_USE_HIP)
+static bool gdn_chunked_enabled() {
+    static const bool enabled = [] {
+        const char * env = getenv("GGML_CUDA_GDN_CHUNKED");
+        return env == nullptr || atoi(env) != 0;
+    }();
+    return enabled;
+}
+
+// returns the number of leading tokens handled by the chunked path (0 = not used)
+static int64_t gdn_chunked_prefix(ggml_backend_cuda_context & ctx, const gdn_chunk_args & p0,
+        const float * s_d, float * dst_d, float * state_d, const int64_t H, const int64_t n_seqs, const int64_t rq3,
+        const int K, const float scale, const int64_t state_slot_stride, cudaStream_t stream) {
+    const int cc = ggml_cuda_info().devices[ctx.device].cc;
+    const int64_t tail = K > 1 ? K : 0;
+    const int64_t n_prefix = p0.n_tokens - tail;
+    if (!gdn_chunked_enabled() || !GGML_CUDA_CC_IS_RDNA3(cc) || n_seqs != 1 || rq3 != 1 || n_prefix < 64) {
+        return 0;
+    }
+    if ((uintptr_t) p0.q % 16 != 0 || (uintptr_t) p0.k % 16 != 0 || p0.sq1 % 4 != 0 || p0.sq2 % 4 != 0) {
+        return 0;
+    }
+    gdn_chunk_args p = p0;
+    p.n_tokens = n_prefix;
+    // with a snapshot tail the chunked part ends in a temporary state that the sequential kernel continues from
+    ggml_cuda_pool_alloc<float> mid(ctx.pool(), tail > 0 ? (size_t) H * GDN_CHUNK_D * GDN_CHUNK_D : 1);
+    float * s_out = tail > 0 ? mid.get() : state_d;
+    gdn_chunk_fused<<<dim3(H, GDN_CHUNK_D / GDN_CHUNK_COLS, 1), 256, 0, stream>>>(p, s_d, dst_d, s_out, H, scale);
+
+    if (tail > 0) {
+        CUDA_CHECK(cudaGetLastError());
+        const int64_t P = n_prefix;
+        launch_gated_delta_net<false, true>(p0.q + P * p0.sq2, p0.k + P * p0.sq2, p0.v + P * p0.sv2,
+            p0.g + P * p0.sb2, p0.beta + P * p0.sb2, s_out, dst_d + P * GDN_CHUNK_D * H, state_d,
+            GDN_CHUNK_D, H, tail, 1, p0.sq1, p0.sq2, 0, p0.sv1, p0.sv2, 0, p0.sb1, p0.sb2, 0,
+            p0.neqk1, 1, scale, state_slot_stride, K, stream);
+    }
+    CUDA_CHECK(cudaGetLastError());
+    return p0.n_tokens;
+}
+#endif // defined(GGML_USE_HIP)
 
 static void ggml_cuda_op_gated_delta_net_impl(
         ggml_backend_cuda_context & ctx, ggml_tensor * dst, const ggml_cuda_gated_delta_net_fused_cache * cache) {
@@ -501,6 +873,15 @@ static void ggml_cuda_op_gated_delta_net_impl(
         state_d           = cache->data;
         state_slot_stride = cache->slot_stride;
     }
+
+#if defined(GGML_USE_HIP)
+    if (!kda && S_v == GDN_CHUNK_D) {
+        const gdn_chunk_args p = { q_d, k_d, v_d, g_d, b_d, sq1, sq2, sv1, sv2, sb1, sb2, neqk1, n_tokens };
+        if (gdn_chunked_prefix(ctx, p, s_d, dst_d, state_d, H, n_seqs, rq3, K, scale, state_slot_stride, stream) > 0) {
+            return;
+        }
+    }
+#endif // defined(GGML_USE_HIP)
 
     if (kda) {
         if (keep_rs) {
