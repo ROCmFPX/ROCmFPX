@@ -1,4 +1,5 @@
 #include "hc-cn.cuh"
+#include "mmq.cuh"
 #include <cstdlib>
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -106,6 +107,7 @@ static __global__ void __launch_bounds__(HC_CN_BLOCK2, 4) hc_combine_norm_f32_b2
         const float * block_out, const float * gamma,
         float * out_res, float * out_xn, uint16_t * out_xn_bf16, const bool store_xn_f32,
         const uint16_t * res_in_bf16, uint16_t * res_out_bf16, const uint16_t * blk_in_bf16,
+        block_q8_1_mmq * out_xn_q8,
         const int n_embd, const float s1, const float b1, const float s2, const float b2, const float eps) {
     __shared__ float s_sum[32];
     const int c = blockIdx.x, t = blockIdx.y, hc = gridDim.x, tid = threadIdx.x;
@@ -161,6 +163,34 @@ static __global__ void __launch_bounds__(HC_CN_BLOCK2, 4) hc_combine_norm_f32_b2
             const float v0 = scale * xs[2 * k] * gv.x, v1 = scale * xs[2 * k + 1] * gv.y;
             if (store_xn_f32) *(float2 *)(xn + col) = make_float2(v0, v1);
             if (xh) *(uint32_t *)(xh + col) = hc_pack2(v0, v1);
+            if (out_xn_q8) {
+                // same arithmetic as quantize_mmq_q8_1 (D4 layout): one scale per 32 values, held by 16 lanes
+                float amax = fmaxf(fabsf(v0), fabsf(v1));
+#pragma unroll
+                for (int offset = 8; offset > 0; offset >>= 1) {
+                    amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, offset, WARP_SIZE));
+                }
+                const float d_inv = 127.0f / amax;
+                char2 q;
+                q.x = roundf(v0 * d_inv);
+                q.y = roundf(v1 * d_inv);
+                // gather 16 consecutive int8 values into every 8th lane so the copy is written with
+                // 16-byte stores instead of 2-byte ones (all lanes take part: n_embd % 512 == 0)
+                const uint32_t b2 = (uint32_t) (uint8_t) q.x | ((uint32_t) (uint8_t) q.y << 8);
+                const uint32_t w0 = b2 | (__shfl_xor_sync(0xFFFFFFFF, b2, 1, WARP_SIZE) << 16);
+                const uint32_t w1 = __shfl_xor_sync(0xFFFFFFFF, w0, 2, WARP_SIZE);
+                const uint32_t w2 = __shfl_xor_sync(0xFFFFFFFF, w0, 4, WARP_SIZE);
+                const uint32_t w3 = __shfl_xor_sync(0xFFFFFFFF, w1, 4, WARP_SIZE);
+                const int64_t kk = (int64_t) c * n_embd + col;
+                block_q8_1_mmq & yb = out_xn_q8[(kk / QK8_1_MMQ) * gridDim.y + t];
+                const int iqs = kk % QK8_1_MMQ;
+                if (iqs % 16 == 0) {
+                    *(uint4 *) &yb.qs[iqs] = make_uint4(w0, w1, w2, w3);
+                }
+                if (iqs % 32 == 0) {
+                    yb.d4[iqs / 32] = 1.0f / d_inv;
+                }
+            }
         } else if (col < n_embd) {
             const float v0 = scale * xs[2 * k] * g[col];
             if (store_xn_f32) xn[col] = v0;
@@ -192,7 +222,7 @@ void ggml_cuda_op_hc_combine_norm(ggml_backend_cuda_context & ctx, const ggml_cu
             (const float *) a.inject->data, (const float *) a.residual->data,
             (const float *) a.block_out->data, (const float *) a.gamma->data,
             (float *) a.out_res->data, (float *) a.out_xn->data, a.out_xn_bf16, a.store_xn_f32,
-            a.res_in_bf16, a.res_out_bf16, a.blk_in_bf16,
+            a.res_in_bf16, a.res_out_bf16, a.blk_in_bf16, (block_q8_1_mmq *) a.out_xn_q8,
             (int) n_embd, a.s1, a.b1, a.s2, a.b2, a.eps);
         return;
     }
