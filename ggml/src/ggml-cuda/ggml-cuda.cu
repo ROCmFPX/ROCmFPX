@@ -4108,6 +4108,24 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 args.res_in_bf16  = in16  ? (const uint16_t *) args.residual->data : nullptr;
                 args.res_out_bf16 = out16 ? (uint16_t *) args.out_res->data : nullptr;
             }
+            {   // let a following MMQ projection of xn read a quantized copy written by the fused kernel
+                const int64_t K = args.out_xn->ne[0] * args.out_xn->ne[1], T = ggml_nelements(args.out_xn) / K;
+                const int cc = ggml_cuda_info().devices[cuda_ctx->device].cc;
+                if (args.out_res->ne[0] % 512 == 0 && K % QK8_1_MMQ == 0 && T > MMVQ_MAX_BATCH_SIZE) {
+                    for (int n = i + skip + 1; n < cgraph->n_nodes; ++n) {
+                        const ggml_tensor * mm = cgraph->nodes[n];
+                        if (mm->op != GGML_OP_MUL_MAT || !mm->src[1] || mm->src[1]->data != args.out_xn->data) {
+                            continue;
+                        }
+                        if (mm->src[0]->type == GGML_TYPE_Q8_0 && mm->src[1]->ne[0] == K && ggml_nrows(mm->src[1]) == T &&
+                                !ggml_cuda_mmb_supported_mm(mm->src[0], mm->src[1], mm) && ggml_cuda_should_use_mmq(mm->src[0]->type, cc, T, 0)) {
+                            args.out_xn_q8 = ggml_cuda_q8_mmq_cache_reserve(*cuda_ctx, args.out_xn,
+                                (size_t) (T * K / QK8_1_MMQ + 256) * sizeof(block_q8_1_mmq));
+                        }
+                        break;
+                    }
+                }
+            }
             ggml_cuda_op_hc_combine_norm(*cuda_ctx, args);
             return skip;
         }
@@ -5067,9 +5085,54 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
 static bool         g_gt_after_compute = true;
 static const void * g_gt_first_split   = nullptr;
 
+// Q8_1 (MMQ D4 layout) copy of an activation written by a fused producer (hc_combine_norm) for the
+// MMQ that reads that activation next. Producer and consumer run back to back on the stream, so one
+// buffer per device is enough. It only grows with the ubatch; an outgrown buffer is not freed
+// because a captured graph may still reference it.
+struct ggml_cuda_q8_mmq_slot {
+    void *       ptr    = nullptr;
+    size_t       size   = 0;
+    const void * src    = nullptr;
+    int64_t      ne     = 0;
+    size_t       nbytes = 0;
+};
+static ggml_cuda_q8_mmq_slot g_q8_mmq_slot[GGML_CUDA_MAX_DEVICES];
+
+void ggml_cuda_q8_mmq_cache_begin_graph(int device) {
+    g_q8_mmq_slot[device].src = nullptr;
+}
+
+void * ggml_cuda_q8_mmq_cache_reserve(ggml_backend_cuda_context & ctx, const ggml_tensor * t, size_t nbytes) {
+    ggml_cuda_q8_mmq_slot & s = g_q8_mmq_slot[ctx.device];
+    s.src = nullptr;
+    if (s.size < nbytes) {
+        void * p = nullptr;
+        if (ggml_cuda_device_malloc(&p, nbytes, ctx.device) != cudaSuccess) {
+            (void) cudaGetLastError();
+            return nullptr;
+        }
+        s.ptr  = p;
+        s.size = nbytes;
+    }
+    s.src    = t->data;
+    s.ne     = ggml_nelements(t);
+    s.nbytes = nbytes;
+    return s.ptr;
+}
+
+const void * ggml_cuda_q8_mmq_cache_lookup(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, size_t nbytes_min) {
+    ggml_cuda_q8_mmq_slot & s = g_q8_mmq_slot[ctx.device];
+    if (s.src == nullptr || s.src != src1->data || s.ne != ggml_nelements(src1) || s.nbytes < nbytes_min) {
+        return nullptr;
+    }
+    s.src = nullptr; // consumed
+    return s.ptr;
+}
+
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_cuda_mmb_begin_graph();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_q8_mmq_cache_begin_graph(cuda_ctx->device);
 
     ggml_cuda_set_device(cuda_ctx->device);
 

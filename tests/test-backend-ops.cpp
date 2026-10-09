@@ -9556,6 +9556,38 @@ struct test_hc_post_norm : test_case {
     }
 };
 
+// the same combine + norm feeding a Q8_0 projection of the normalized stream (HIP writes the MMQ Q8_1
+// copy of xn in the fused kernel and the projection skips its own activation quantization)
+struct test_hc_post_norm_q8 : test_case {
+    const int tokens;
+    explicit test_hc_post_norm_q8(int tokens) : tokens(tokens) {}
+    std::string op_desc(ggml_tensor *) override { return "HC_POST_NORM_Q8"; }
+    std::string vars() override { return VAR_TO_STR(tokens); }
+    bool run_whole_graph() override { return true; }
+    bool use_scheduler_allocation() override { return true; }
+    double max_nmse_err() override { return 5e-4; }
+    void initialize_tensors(ggml_context * ctx) override {
+        for (auto * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->op == GGML_OP_NONE) init_tensor_uniform(t);
+        }
+    }
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int embd = 2560, hc = 4, lr = 64;
+        auto * residual = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, embd, hc, tokens);
+        auto * block    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, embd, tokens);
+        auto * inject   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hc, tokens);
+        auto * gamma    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, embd, hc);
+        auto * down     = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, embd*hc, lr);
+        auto * w = ggml_scale(ctx, ggml_sigmoid(ctx, ggml_scale(ctx, inject, 0.25f)), 2.0f);
+        if (gf) { ggml_build_forward_expand(gf, residual); ggml_build_forward_expand(gf, block); ggml_build_forward_expand(gf, w); }
+        auto * res = ggml_dsv4_hc_post(ctx, block, residual, w, nullptr);
+        auto * xn  = ggml_reshape_2d(ctx, ggml_mul(ctx, ggml_rms_norm(ctx, res, 1e-6f), gamma), embd*hc, tokens);
+        if (gf) { ggml_build_forward_expand(gf, xn); }
+        auto * lo  = ggml_mul_mat(ctx, down, xn);
+        return ggml_concat(ctx, ggml_reshape_1d(ctx, lo, lr*tokens), ggml_reshape_1d(ctx, ggml_sum_rows(ctx, xn), tokens), 0);
+    }
+};
+
 struct test_ple_conv : test_case {
     const ggml_type type;
     const int channels, tokens, slots, escape;
@@ -9608,6 +9640,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     std::vector<std::unique_ptr<test_case>> test_cases;
     for (int tokens : {1, 33, 512, 513}) {
         test_cases.emplace_back(new test_hc_post_norm(tokens));
+        test_cases.emplace_back(new test_hc_post_norm_q8(tokens));
     }
     for (auto type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
         for (int tokens : {255,256,257,383,384,385}) test_cases.emplace_back(new test_ple_conv(type,256,tokens));
