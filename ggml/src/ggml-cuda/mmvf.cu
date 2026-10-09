@@ -873,3 +873,107 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
             return false;
     }
 }
+
+// dst[t][m] = sum_k x[m][k] * y[t][k] for very few weight rows (M <= 8) and any number of tokens.
+// One block per token, the warps split K: y is read once and the few weight rows stay in cache.
+template <typename T, int M>
+static __global__ void mul_mat_f_few_rows(
+        const T * __restrict__ x, const float * __restrict__ y, float * __restrict__ dst,
+        const int K, const int64_t stride_x, const int64_t stride_y, const int64_t stride_dst) {
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    constexpr int n_warps   = 256 / warp_size;
+    __shared__ float partial[n_warps][M];
+
+    const int t    = blockIdx.x;
+    const int lane = threadIdx.x;
+    const int warp = threadIdx.y;
+    const float * yt = y + t * stride_y;
+
+    float acc[M];
+#pragma unroll
+    for (int m = 0; m < M; ++m) {
+        acc[m] = 0.0f;
+    }
+    for (int k = 2 * (warp * warp_size + lane); k < K; k += 2 * n_warps * warp_size) {
+        const float2 yv = *(const float2 *) (yt + k);
+#pragma unroll
+        for (int m = 0; m < M; ++m) {
+            const T * xm = x + m * stride_x + k;
+            acc[m] = fmaf(ggml_cuda_cast<float>(xm[0]), yv.x, fmaf(ggml_cuda_cast<float>(xm[1]), yv.y, acc[m]));
+        }
+    }
+#pragma unroll
+    for (int m = 0; m < M; ++m) {
+        acc[m] = warp_reduce_sum<warp_size>(acc[m]);
+    }
+    if (lane == 0) {
+#pragma unroll
+        for (int m = 0; m < M; ++m) {
+            partial[warp][m] = acc[m];
+        }
+    }
+    __syncthreads();
+    if (warp == 0 && lane < M) {
+        float v = 0.0f;
+#pragma unroll
+        for (int w = 0; w < n_warps; ++w) {
+            v += partial[w][lane];
+        }
+        dst[t * stride_dst + lane] = v;
+    }
+}
+
+bool ggml_cuda_should_use_mm_few_rows(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst) {
+    if (!GGML_CUDA_CC_IS_AMD(ggml_cuda_info().devices[ggml_cuda_get_device()].cc)) {
+        return false;
+    }
+    if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_F16 && src0->type != GGML_TYPE_BF16) {
+        return false;
+    }
+    if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+        return false;
+    }
+    if (src0->ne[1] > 8 || src0->ne[2] != 1 || src0->ne[3] != 1 || src0->ne[0] % 2 != 0) {
+        return false;
+    }
+    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst)) {
+        return false;
+    }
+    const int64_t n_tokens = ggml_nrows(src1);
+    return n_tokens <= INT32_MAX;
+}
+
+void ggml_cuda_mul_mat_f_few_rows(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    const int K = (int) src0->ne[0];
+    const int M = (int) src0->ne[1];
+    const int n_tokens = (int) ggml_nrows(src1);
+    const int warp_size = ggml_cuda_info().devices[ctx.device].warp_size;
+    const dim3 grid(n_tokens);
+    const dim3 block(warp_size, 256 / warp_size);
+    cudaStream_t stream = ctx.stream();
+
+    auto launch = [&](auto x_ptr) {
+        using T = std::remove_const_t<std::remove_pointer_t<decltype(x_ptr)>>;
+        const float * y = (const float *) src1->data;
+        float * d = (float *) dst->data;
+        const int64_t sx = src0->nb[1] / sizeof(T), sy = src1->nb[1] / sizeof(float), sd = dst->nb[1] / sizeof(float);
+        switch (M) {
+            case 1: mul_mat_f_few_rows<T, 1><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            case 2: mul_mat_f_few_rows<T, 2><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            case 3: mul_mat_f_few_rows<T, 3><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            case 4: mul_mat_f_few_rows<T, 4><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            case 5: mul_mat_f_few_rows<T, 5><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            case 6: mul_mat_f_few_rows<T, 6><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            case 7: mul_mat_f_few_rows<T, 7><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            case 8: mul_mat_f_few_rows<T, 8><<<grid, block, 0, stream>>>(x_ptr, y, d, K, sx, sy, sd); break;
+            default: GGML_ABORT("unsupported row count");
+        }
+    };
+    switch (src0->type) {
+        case GGML_TYPE_F32:  launch((const float *) src0->data); break;
+        case GGML_TYPE_F16:  launch((const half *) src0->data); break;
+        case GGML_TYPE_BF16: launch((const nv_bfloat16 *) src0->data); break;
+        default: GGML_ABORT("unsupported type");
+    }
+    CUDA_CHECK(cudaGetLastError());
+}

@@ -9660,6 +9660,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_ple_conv(type,10240,512));
     }
 
+    // few weight rows, many tokens (hyper-connection inject projections)
+    for (ggml_type type : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16}) {
+        for (int rows : {1, 4, 8}) {
+            for (int tokens : {4, 5, 129, 512, 513}) {
+                test_cases.emplace_back(new test_mul_mat(type, GGML_TYPE_F32, rows, tokens, 10240, {1, 1}, {1, 1}));
+            }
+            test_cases.emplace_back(new test_mul_mat(type, GGML_TYPE_F32, rows, 77, 66, {1, 1}, {1, 1}));
+        }
+    }
+
     for (ggml_type type : {GGML_TYPE_Q1_0, GGML_TYPE_Q2_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4}) {
         test_cases.emplace_back(new test_mmb_quant_dense(type, 512, 128, 256));
         test_cases.emplace_back(new test_mmb_quant_dense(type, 513, 129, 512));
@@ -10917,6 +10927,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, 576, 512, 576, {1,1}, {1,1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, 1, 2048, 8192, {1,  1}, {1, 1}));
+    // MMQ activation quantization with many row chunks per token (HIP walks a token's chunks in order)
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_F32, 48, 300, 6144, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_F32, 64, 160, 1536, {2, 2}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0,        GGML_TYPE_F32, 40, 257, 10240, {1, 1}, {1, 1}));
     // dense ROCmI4 at prefill sizes (BF16 WMMA path on RDNA3): partial row and column tiles
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_F32, 160, 600, 2560, {1, 1}, {1, 1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_F32, 256, 513, 6144, {1, 1}, {1, 1}));
