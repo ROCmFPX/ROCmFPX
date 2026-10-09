@@ -9471,8 +9471,8 @@ struct test_mmb_quant_dense : test_mul_mat {
 
 struct test_mmb_quant_routed : test_mul_mat_id {
     const bool fused;
-    test_mmb_quant_routed(ggml_type type, int tokens, bool broadcast, bool fused, int rows = 128)
-        : test_mul_mat_id(type, GGML_TYPE_F32, 8, 2, broadcast, rows, tokens, 256), fused(fused) {}
+    test_mmb_quant_routed(ggml_type type, int tokens, bool broadcast, bool fused, int rows = 128, int inner = 256)
+        : test_mul_mat_id(type, GGML_TYPE_F32, 8, 2, broadcast, rows, tokens, inner), fused(fused) {}
     std::string op_desc(ggml_tensor *) override { return "MMB_QUANT"; }
     std::string vars() override { return test_mul_mat_id::vars() + "," + VAR_TO_STR(fused); }
     bool run_whole_graph() override { return fused; }
@@ -9528,6 +9528,34 @@ struct test_mmb_quant_hc : test_case {
     }
 };
 
+// hyper-connection combine built with dsv4_hc_post, followed by the grouped RMS norm of the next block
+struct test_hc_post_norm : test_case {
+    const int tokens;
+    explicit test_hc_post_norm(int tokens) : tokens(tokens) {}
+    std::string op_desc(ggml_tensor *) override { return "HC_POST_NORM"; }
+    std::string vars() override { return VAR_TO_STR(tokens); }
+    bool run_whole_graph() override { return true; }
+    bool use_scheduler_allocation() override { return true; }
+    double max_nmse_err() override { return 1e-6; }
+    void initialize_tensors(ggml_context * ctx) override {
+        for (auto * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->op == GGML_OP_NONE) init_tensor_uniform(t);
+        }
+    }
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int embd = 2560, hc = 4;
+        auto * residual = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, embd, hc, tokens);
+        auto * block    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, embd, tokens);
+        auto * inject   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hc, tokens);
+        auto * gamma    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, embd, hc);
+        auto * w = ggml_scale(ctx, ggml_sigmoid(ctx, ggml_scale(ctx, inject, 0.25f)), 2.0f);
+        if (gf) { ggml_build_forward_expand(gf, residual); ggml_build_forward_expand(gf, block); ggml_build_forward_expand(gf, w); }
+        auto * res = ggml_dsv4_hc_post(ctx, block, residual, w, nullptr);
+        auto * xn  = ggml_mul(ctx, ggml_rms_norm(ctx, res, 1e-6f), gamma);
+        return ggml_add(ctx, xn, res);
+    }
+};
+
 struct test_ple_conv : test_case {
     const ggml_type type;
     const int channels, tokens, slots, escape;
@@ -9578,6 +9606,9 @@ struct test_ple_conv : test_case {
 
 static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     std::vector<std::unique_ptr<test_case>> test_cases;
+    for (int tokens : {1, 33, 512, 513}) {
+        test_cases.emplace_back(new test_hc_post_norm(tokens));
+    }
     for (auto type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
         for (int tokens : {255,256,257,383,384,385}) test_cases.emplace_back(new test_ple_conv(type,256,tokens));
         test_cases.emplace_back(new test_ple_conv(type,256,256,1));
@@ -9587,7 +9618,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_ple_conv(type,10240,512));
     }
 
-    for (ggml_type type : {GGML_TYPE_Q1_0, GGML_TYPE_Q2_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4}) {
+    for (ggml_type type : {GGML_TYPE_Q1_0, GGML_TYPE_Q2_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4}) {
         test_cases.emplace_back(new test_mmb_quant_dense(type, 512, 128, 256));
         test_cases.emplace_back(new test_mmb_quant_dense(type, 513, 129, 512));
         test_cases.emplace_back(new test_mmb_quant_routed(type, 512, false, false));
@@ -9595,6 +9626,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_mmb_quant_routed(type, 512, false, true));
         test_cases.emplace_back(new test_mmb_quant_routed(type, 513, true, true));
         test_cases.emplace_back(new test_mmb_quant_hc(type));
+        if (type == GGML_TYPE_Q4_0_ROCMI4) {
+            // odd number of 64-wide K steps: rows alternate between 4- and 2-byte aligned starts
+            test_cases.emplace_back(new test_mmb_quant_routed(type, 513, true, false, 129, 192));
+            test_cases.emplace_back(new test_mmb_quant_routed(type, 1025, false, true, 65, 320));
+        }
         if (type == GGML_TYPE_Q4_K) {
             test_cases.emplace_back(new test_mmb_quant_routed(type, 513, true, true, 65));
             test_cases.emplace_back(new test_mmb_quant_routed(type, 1025, false, true, 129));
@@ -10839,6 +10875,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, 576, 512, 576, {1,1}, {1,1}));
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, 1, 2048, 8192, {1,  1}, {1, 1}));
+    // dense ROCmI4 at prefill sizes (BF16 WMMA path on RDNA3): partial row and column tiles
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_F32, 160, 600, 2560, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0_ROCMI4, GGML_TYPE_F32, 256, 513, 6144, {1, 1}, {1, 1}));
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 1, 64, 256, {1,  1}, {1, 1}));
     }
