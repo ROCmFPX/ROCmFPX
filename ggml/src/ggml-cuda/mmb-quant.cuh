@@ -56,6 +56,18 @@ __device__ __forceinline__ void mmb_decode_slice(const void * row, const int k0,
             dst[o + (QR == 1 ? 1 : QK / 2)] = mmb_f2bf(v.y);
         }
     }
+    else if constexpr (TYPE == GGML_TYPE_Q4_0_ROCMI4) {
+        constexpr int QR = ggml_cuda_type_traits<TYPE>::qr;
+#pragma unroll
+        for (int p = lane; p < 32; p += 8) {
+            const int pos = k0 + 2 * p, ib = pos / QK, qs = (pos % QK) / QR;
+            float2 v;
+            dequantize_rocmi4(row, ib, qs, v);
+            const int o = ib * QK + qs - k0;
+            dst[o] = mmb_f2bf(v.x);
+            dst[o + QK / 2] = mmb_f2bf(v.y);
+        }
+    }
     else if constexpr (TYPE == GGML_TYPE_Q4_1) {
         constexpr int QR = ggml_cuda_type_traits<TYPE>::qr;
 #pragma unroll
@@ -234,6 +246,7 @@ static bool mmb_quant_type(ggml_type type) {
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
         case GGML_TYPE_Q4_0:
+        case GGML_TYPE_Q4_0_ROCMI4:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
@@ -265,6 +278,7 @@ static void mmb_dispatch_quant(ggml_type type, Fn fn) {
         case GGML_TYPE_Q1_0: fn(std::integral_constant<int, 32 + GGML_TYPE_Q1_0>{}); break;
         case GGML_TYPE_Q2_0: fn(std::integral_constant<int, 32 + GGML_TYPE_Q2_0>{}); break;
         case GGML_TYPE_Q4_0: fn(std::integral_constant<int, 32 + GGML_TYPE_Q4_0>{}); break;
+        case GGML_TYPE_Q4_0_ROCMI4: fn(std::integral_constant<int, 32 + GGML_TYPE_Q4_0_ROCMI4>{}); break;
         case GGML_TYPE_Q4_1: fn(std::integral_constant<int, 32 + GGML_TYPE_Q4_1>{}); break;
         case GGML_TYPE_Q5_0: fn(std::integral_constant<int, 32 + GGML_TYPE_Q5_0>{}); break;
         case GGML_TYPE_Q5_1: fn(std::integral_constant<int, 32 + GGML_TYPE_Q5_1>{}); break;
