@@ -840,6 +840,30 @@ namespace ggml_cuda_mma {
 #endif // TURING_MMA_AVAILABLE
     }
 
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
+    // RDNA3 16-byte LDS operand load for tile<16,4,T,I_MAJOR_MIRRORED>.
+    //
+    // On RDNA3 the generic loader above emits two 8-byte copies per operand, so
+    // one mma_iu4 pays four 8-byte LDS loads. Those two copies read contiguous
+    // source bytes (get_i(0) is threadIdx.x % 16 and does not depend on l), so a
+    // single 16-byte copy is exactly equivalent and roughly halves the LDS
+    // operand instruction count. Measured on the standalone probes this raises
+    // the operand-path ceiling from ~170 to ~240 TOPS.
+    //
+    // REQUIRES (xs0 + t.get_i(0)*stride) to be 16 B aligned. That holds for the
+    // ROCmI4 SRAM layout (stride 44, kp a multiple of 4) but NOT for every
+    // layout: Q6_K uses stride 79, so odd rows would load misaligned. Only call
+    // this from dots whose layout has been checked, and keep the generic loader
+    // as the default.
+    template <typename T, data_layout dl>
+    static __device__ __forceinline__ void load_ldmatrix_16(
+            tile<16, 4, T, dl> & t, const T * __restrict__ xs0, const int stride) {
+        static_assert(dl == DATA_LAYOUT_I_MAJOR_MIRRORED, "bad data layout");
+        static_assert(sizeof(t.x) == 16, "bad ne");
+        ggml_cuda_memcpy_1<16>(t.x, xs0 + t.get_i(0)*stride);
+    }
+#endif // defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
+
     template <typename T, data_layout dl>
     static __device__ __forceinline__ void load_ldmatrix(
             tile<16, 8, T, dl> & t, const T * __restrict__ xs0, const int stride) {
@@ -1515,13 +1539,13 @@ namespace ggml_cuda_mma {
     }
 
 #if defined(GGML_ROCMI4_W4A4) && GGML_ROCMI4_W4A4
-    // Native gfx1151 4-bit tensor core: packed IU4, K=32 as two 16-wide WMMA steps.
+    // Native RDNA3 4-bit tensor core: packed IU4, K=32 as two 16-wide WMMA steps.
     // b_signed selects how the B operand's nibbles are interpreted: signed [-8,+7]
     // or unsigned [0,15]. A is always signed (weight codes are two's complement).
     template <bool b_signed = true, data_layout dl_d = DATA_LAYOUT_I_MAJOR, data_layout dl_ab = DATA_LAYOUT_I_MAJOR>
     static __device__ __forceinline__ void mma_iu4(
             tile<16, 16, int, dl_d> & D, const tile<16, 4, int, dl_ab> & A, const tile<16, 4, int, dl_ab> & B) {
-#if defined(AMD_WMMA_AVAILABLE) && defined(__gfx1151__)
+#if GGML_HIP_WMMA_IU4_AVAILABLE
         using int32x8_t = __attribute__((__vector_size__(8 * sizeof(int)))) int;
         using int32x2_t = __attribute__((__vector_size__(2 * sizeof(int)))) int;
         int32x8_t * acc = (int32x8_t *) D.x;

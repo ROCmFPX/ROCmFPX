@@ -302,6 +302,14 @@ static const char * cu_get_error_str(CUresult err) {
 #define AMD_WMMA_AVAILABLE
 #endif // defined(GGML_USE_HIP) && defined(RDNA4)
 
+// Packed IU4 WMMA (v_wmma_i32_16x16x16_iu4) is available across RDNA3, including
+// discrete gfx110x and RDNA3.5 gfx115x. RDNA4 keeps AMD_WMMA but is excluded here.
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA3)
+#define GGML_HIP_WMMA_IU4_AVAILABLE 1
+#else
+#define GGML_HIP_WMMA_IU4_AVAILABLE 0
+#endif
+
 // The Volta instructions are in principle available on Turing or newer but they are effectively unusable:
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
 #define VOLTA_MMA_AVAILABLE
@@ -377,6 +385,10 @@ static bool amd_mfma_available(const int cc) {
 
 static bool amd_wmma_available(const int cc) {
     return (GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_RDNA3(cc));
+}
+
+static bool amd_wmma_iu4_available(const int cc) {
+    return amd_wmma_available(cc) && GGML_CUDA_CC_IS_RDNA3(cc);
 }
 
 static bool volta_mma_available(const int cc) {
@@ -772,6 +784,42 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
 
 #endif // defined(GGML_USE_HIP)
+}
+
+// V_DOT8_I32_IU4: eight signed-nibble MACs in one VALU op (RDNA3 ISA §7.5).
+// Nibble i is bits [4*i+3:4*i]. Software fallback unpacks even/odd bytes and
+// uses two DP4A, matching the Q4_0 / ROCmI4 packed layout.
+static __device__ __forceinline__ int ggml_cuda_dot8_iu4(const int a, const int b, int c) {
+#if defined(GGML_USE_HIP) && (defined(RDNA3) || defined(RDNA4))
+#if defined(__has_builtin) && __has_builtin(__builtin_amdgcn_sudot8)
+    c = __builtin_amdgcn_sudot8(true, a, true, b, c, false);
+#elif defined(__has_builtin) && __has_builtin(__builtin_amdgcn_sdot8)
+    c = __builtin_amdgcn_sdot8(a, b, c, false);
+#else
+    int acc = c;
+    asm volatile("v_dot8_i32_iu4 %0, %1, %2, %0 neg_lo:[1,1,0]"
+                 : "+v"(acc)
+                 : "v"(a), "v"(b));
+    c = acc;
+#endif
+    return c;
+#else
+    int even_a = a & 0x0F0F0F0F;
+    int odd_a  = (a >> 4) & 0x0F0F0F0F;
+    int even_b = b & 0x0F0F0F0F;
+    int odd_b  = (b >> 4) & 0x0F0F0F0F;
+    const int sea = even_a & 0x08080808;
+    const int soa = odd_a  & 0x08080808;
+    const int seb = even_b & 0x08080808;
+    const int sob = odd_b  & 0x08080808;
+    even_a |= (sea << 1) | (sea << 2) | (sea << 3) | (sea << 4);
+    odd_a  |= (soa << 1) | (soa << 2) | (soa << 3) | (soa << 4);
+    even_b |= (seb << 1) | (seb << 2) | (seb << 3) | (seb << 4);
+    odd_b  |= (sob << 1) | (sob << 2) | (sob << 3) | (sob << 4);
+    c = ggml_cuda_dp4a(even_a, even_b, c);
+    c = ggml_cuda_dp4a(odd_a,  odd_b,  c);
+    return c;
+#endif
 }
 
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float v, const float u) {

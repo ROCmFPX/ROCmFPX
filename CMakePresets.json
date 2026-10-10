@@ -49,7 +49,7 @@
     {
         "name": "strix-rocmfpx-w4a4",
         "inherits": [ "strix-rocmfpx" ],
-        "description": "Opt-in gfx1151 ROCmI4 IU4/W4A4 kernel profile. Vulkan is disabled only for this specialized HIP build; the normal strix-rocmfpx preset keeps Vulkan enabled.",
+        "description": "Opt-in RDNA3-family ROCmI4 IU4/W4A4 kernel profile (gfx110x/gfx115x). Vulkan is disabled only for this specialized HIP build; the normal strix-rocmfpx preset keeps Vulkan enabled.",
         "cacheVariables": {
             "GGML_HIP_ROCMI4_W4A4": "ON",
             "GGML_VULKAN":           "OFF"
