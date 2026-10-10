@@ -1708,13 +1708,16 @@ size_t server_prompt_cache::n_tokens() const {
     return res;
 }
 
-server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
+server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft, int32_t id_slot) {
     // first check if the current state is contained fully in the cache
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
         if (cur_lcp_len == (int) prompt.tokens.size()) {
             SRV_TRC("%s", " - prompt is already in the cache, skipping\n");
+
+            it->id_slot_last = id_slot;
+
             return nullptr;
         }
     }
@@ -1787,51 +1790,85 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
         },
     });
 
+    states.back().id_slot_last = id_slot;
+
     return &states.back();
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
-    const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
-
-    float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
-    float f_sim_best  = float(lcp_best) / tokens_new.size();
-
-    SRV_TRC(" - looking for better prompt, base f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
-
+// find the parked state that the request fully re-sends (identity match)
+std::list<server_prompt_cache_state>::iterator server_prompt_cache::find_best_identity_it(const server_tokens & tokens_new) {
     auto it_best = states.end();
+    size_t best_len = 0;
 
-    // find the most similar cached prompt, that would also preserve the most context
     for (auto it = states.begin(); it != states.end(); ++it) {
-        const int lcp_cur = it->prompt.tokens.get_common_prefix(tokens_new);
+        const size_t lcp_len = it->prompt.tokens.get_common_prefix(tokens_new);
 
-        const float f_keep_cur = float(lcp_cur) / it->prompt.tokens.size();
-        const float f_sim_cur  = float(lcp_cur) / tokens_new.size();
-
-        SRV_TRC("   - prompt with length %7zu, lcp = %7d, f_keep = %.3f, f_sim = %.3f\n", it->prompt.tokens.size(), lcp_cur, f_keep_cur, f_sim_cur);
-
-        // don't trash large prompts
-        if (f_keep_cur < 0.25f) {
+        // reuse a state only if the request fully re-sends it; a shared system
+        // prefix alone belongs to a different conversation
+        if (lcp_len != it->prompt.tokens.size()) {
             continue;
         }
 
-        if (f_keep_best < f_keep_cur && f_sim_best < f_sim_cur) {
-            f_keep_best = f_keep_cur;
-            f_sim_best  = f_sim_cur;
-
+        if (lcp_len > best_len) {
+            best_len = lcp_len;
             it_best = it;
         }
     }
 
-    if (it_best != states.end()) {
-        SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
+    return it_best;
+}
 
-        {
-            auto & data = it_best->data.main;
+server_prompt_cache_state * server_prompt_cache::find_best_identity(const server_tokens & tokens_new) {
+    auto it_best = find_best_identity_it(tokens_new);
+
+    if (it_best == states.end()) {
+        return nullptr;
+    }
+
+    return &*it_best;
+}
+
+bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
+    // keep in place whatever slot content the request fully re-sends
+    const size_t lcp_in_slot = prompt.tokens.get_common_prefix(tokens_new);
+    const size_t keep_in_slot = (lcp_in_slot == prompt.tokens.size()) ? lcp_in_slot : 0;
+
+    SRV_TRC(" - looking for better prompt, in-slot reusable = %zu tokens\n", keep_in_slot);
+
+    auto it_best = find_best_identity_it(tokens_new);
+
+    if (it_best == states.end() || it_best->prompt.tokens.size() <= keep_in_slot) {
+        // nothing strictly better than the slot content; launch trims by LCP
+        return true;
+    }
+
+    SRV_TRC(" - found identity prompt with %zu tokens\n", it_best->prompt.tokens.size());
+
+    {
+        auto & data = it_best->data.main;
+
+        const size_t size = data.size();
+        const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+        if (n != size) {
+            SRV_ERR("failed to restore state with size %zu\n", size);
+
+            return false;
+        }
+
+        data.clear();
+        data.shrink_to_fit();
+    }
+
+    {
+        auto & data = it_best->data.drft;
+
+        if (!data.empty()) {
+            GGML_ASSERT(ctx_dft);
 
             const size_t size = data.size();
-            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+            const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.data(), size, id_slot, 0);
             if (n != size) {
-                SRV_ERR("failed to restore state with size %zu\n", size);
+                SRV_WRN("failed to restore state with size %zu\n", size);
 
                 return false;
             }
@@ -1839,30 +1876,11 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             data.clear();
             data.shrink_to_fit();
         }
-
-        {
-            auto & data = it_best->data.drft;
-
-            if (!data.empty()) {
-                GGML_ASSERT(ctx_dft);
-
-                const size_t size = data.size();
-                const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.data(), size, id_slot, 0);
-                if (n != size) {
-                    SRV_WRN("failed to restore state with size %zu\n", size);
-
-                    return false;
-                }
-
-                data.clear();
-                data.shrink_to_fit();
-            }
-        }
-
-        prompt = std::move(it_best->prompt);
-
-        states.erase(it_best);
     }
+
+    prompt = std::move(it_best->prompt);
+
+    states.erase(it_best);
 
     return true;
 }

@@ -598,6 +598,10 @@ struct server_prompt_cache_state {
     server_prompt prompt;
     server_prompt_data data;
 
+    // slot this conversation was last parked from; used to resume it on the
+    // same physical slot instead of hopping slots every round. -1 = unknown.
+    int32_t id_slot_last = -1;
+
     size_t size() const {
         size_t res = data.size();
 
@@ -615,8 +619,6 @@ struct server_prompt_cache {
         this->limit_tokens = limit_tokens;
     }
 
-    std::list<server_prompt_cache_state> states;
-
     // in bytes, 0 = no limit
     size_t limit_size = 0;
 
@@ -627,11 +629,19 @@ struct server_prompt_cache {
 
     size_t n_tokens() const;
 
-    server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
+    server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft, int32_t id_slot);
+
+    // find the parked state that is fully re-sent by tokens_new (identity match)
+    server_prompt_cache_state * find_best_identity(const server_tokens & tokens_new);
 
     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot);
 
     void update();
+
+private:
+    std::list<server_prompt_cache_state> states;
+
+    std::list<server_prompt_cache_state>::iterator find_best_identity_it(const server_tokens & tokens_new);
 };
 
 // used exclusively by router mode
