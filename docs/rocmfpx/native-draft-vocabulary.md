@@ -1,10 +1,12 @@
 # Native draft vocabulary
 
-This opt-in Flash Next path adds a draft-vocabulary selector, its state, and graph integration. Enable it with `ROCMFPX_DRAFT_VOCAB=16384`. Target verification still evaluates the full vocabulary. The feature currently supports one MTP driver per model and one sequence; concurrent driver ownership is rejected.
+This Flash Next path adds a draft-vocabulary selector, its state, and graph integration. It is on by default for qwen4exp MTP draft contexts with 16384 candidate rows; `ROCMFPX_DRAFT_VOCAB=<rows>` changes the budget and `ROCMFPX_DRAFT_VOCAB=0` turns it off. Target verification still evaluates the full vocabulary, so accepted output is the target's; the candidate rows only change which tokens get proposed.
+
+Each MTP draft context owns its candidate state, so independent draft drivers (for example two server instances on one model) never share candidates. Candidates are kept per sequence: with `-np > 1` every slot selects from its own last target logits, and the draft graph uploads the rows of the sequence it decodes. The candidate-row head runs for single-row draft steps; when several sequences draft in one step the full head is used.
 
 The selector uses a sampled cutoff, SIMD screening, exact comparison-based partitioning, and ordered bitset emission. Sampling only reduces work: if the candidate pool is too small, a complete scan supplies the exact partition. Scratch storage is reused between decode steps. Signed zero, equal scores, NaNs, infinities, and token-ID tie order have explicit compatibility tests.
 
-The draft driver holds an ownership lease and shared candidate state. Graph inputs retain the state while graphs exist. The model registry holds only weak references. Updated row IDs are uploaded into fixed-shape graph inputs, which support graph reuse for one-token decoding. Indirect ggml matrix multiplication computes selected head rows; masked scattering preserves the full-vocabulary output interface. Tied or non-finite winning logits use the existing sampler.
+The draft context owns the candidate state; the draft driver holds an ownership lease on it and graph inputs retain it while graphs exist. Updated row IDs are uploaded into fixed-shape graph inputs, which support graph reuse for one-token decoding. Indirect ggml matrix multiplication computes selected head rows; masked scattering preserves the full-vocabulary output interface. Tied or non-finite winning logits use the existing sampler.
 
 ## Provenance and scope
 
@@ -14,13 +16,13 @@ The implementation and tests were written with AI assistance and require normal 
 
 ## Validation
 
-`test-rocmfpx-draft-select` compares selection with a complete-sort oracle across deterministic fixtures, changing sizes, ties, adversarial score layouts, and unusual IEEE values. `test-rocmfpx-draft-vocab` checks F32/BF16/Q8_0 selected projection, masks across updates, graph reuse eligibility, winner mapping, fallback behavior, driver ownership, and resource lifetime. The latter test is registered only for builds with a directly linked CPU backend.
+`test-rocmfpx-draft-select` compares selection with a complete-sort oracle across deterministic fixtures, changing sizes, ties, adversarial score layouts, and unusual IEEE values. `test-rocmfpx-draft-vocab` checks F32/BF16/Q8_0 selected projection, masks across updates, per-sequence candidates and reset, graph reuse eligibility, winner mapping, fallback behavior, driver ownership, and resource lifetime. The latter test is registered only for builds with a directly linked CPU backend.
 
 A faster selector microbenchmark is not an end-to-end decoding measurement.
 
 ## Enabling the fast Qwen3.8 Flash Next path
 
-Every switch defaults off. A normal build and the existing ROCmFP4 v2 launcher keep their current kernels and draft behavior on RDNA 3, RDNA 3.5, and RDNA 4.
+Every switch below except `ROCMFPX_DRAFT_VOCAB` defaults off. A normal build and the existing ROCmFP4 v2 launcher keep their current kernels on RDNA 3, RDNA 3.5, and RDNA 4.
 
 Set these only for the measured Flash Next server:
 

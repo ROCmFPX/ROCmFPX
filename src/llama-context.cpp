@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "rocmfpx-draft-vocab.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -128,6 +129,14 @@ llama_context::llama_context(
     embd_layer_inp.resize(hparams.n_layer() + 1);
 
     cparams.ctx_type          = params.ctx_type;
+
+    if (cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
+        const int budget = rocmfpx::draft_vocabulary_budget(&model);
+        if (budget > 0) {
+            cparams.draft_vocab = std::make_shared<rocmfpx::draft_vocabulary>(model.vocab.n_tokens(), budget);
+            LLAMA_LOG_INFO("%s: MTP draft head over %d candidate rows (ROCMFPX_DRAFT_VOCAB=0 disables)\n", __func__, budget);
+        }
+    }
     cparams.rope_scaling_type = params.rope_scaling_type;
     cparams.pooling_type      = params.pooling_type;
 

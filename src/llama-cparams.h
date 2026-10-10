@@ -3,7 +3,10 @@
 #include "llama.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
+
+namespace rocmfpx { class draft_vocabulary; }
 
 #define LLAMA_MAX_SEQ 256
 
@@ -65,4 +68,7 @@ struct llama_cparams {
     void * cb_eval_user_data;
 
     llama_context * ctx_other;
+
+    // MTP draft contexts: candidate rows for the draft head (rocmfpx-draft-vocab.h), nullptr when off
+    std::shared_ptr<rocmfpx::draft_vocabulary> draft_vocab;
 };

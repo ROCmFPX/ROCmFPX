@@ -964,9 +964,12 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
         GGML_ASSERT(head_w && "QWEN4EXP MTP: the target model has no LM head to borrow");
     }
 
-    auto draft_vocabulary = rocmfpx::draft_vocabulary_for(&model);
-    if (draft_vocabulary && ggml_nrows(cur) == 1) {
-        GGML_ASSERT(!head_s && "native draft vocabulary requires an unscaled head");
+    // candidate-row draft head (one row, plain head only); otherwise the Q4_0 copy of the head
+    // (ROCMFPX_DRAFT_VOCAB=0, see qwen4exp_draft_head_quant) or the full head
+    auto draft_vocabulary = cparams.draft_vocab;
+    if (draft_vocabulary && ggml_nrows(cur) == 1 && head_s == nullptr && loras->empty() &&
+            ggml_is_matrix(head_w) && ggml_is_contiguous(head_w) && ggml_is_contiguous(cur) &&
+            head_w->ne[1] == draft_vocabulary->vocabulary_size()) {
         auto projection = rocmfpx::build_draft_projection(ctx0, std::move(draft_vocabulary), head_w, cur);
         cur = projection.logits;
         res->add_input(std::move(projection.input));
