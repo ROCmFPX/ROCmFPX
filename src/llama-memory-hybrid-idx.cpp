@@ -1532,8 +1532,11 @@ bool llama_memory_hybrid_idx_context::qsa_position_prefix(const llama_ubatch & u
 uint32_t llama_memory_hybrid_idx_context::qsa_n_kv_window() const {
     const uint32_t n_kv = get_idx() ? get_idx()->get_n_kv() : 0;
     if (!mem || !mem->get_mem_idx()) { return n_kv; }
+    // sequence ids are below n_seq_max; with one stream per sequence (non-unified KV) get_cells()
+    // only accepts those ids
     llama_pos pos_max = -1;
-    for (llama_seq_id s = 0; s < (llama_seq_id) LLAMA_MAX_SEQ; ++s) {
+    const llama_seq_id n_seq = (llama_seq_id) std::min<uint32_t>(mem->get_mem_idx()->get_n_seq_max(), LLAMA_MAX_SEQ);
+    for (llama_seq_id s = 0; s < n_seq; ++s) {
         pos_max = std::max(pos_max, mem->get_mem_idx()->get_cells(s).seq_pos_max(s));
     }
     if (pos_max < 0) { return n_kv; }
