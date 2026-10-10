@@ -9597,6 +9597,30 @@ struct test_hc_post_norm_q8 : test_case {
     }
 };
 
+// HC gate projection (Q8_0) feeding the gated stream mix; HIP fuses the pair into one kernel
+struct test_hc_up_pre : test_case {
+    const int tokens;
+    explicit test_hc_up_pre(int tokens) : tokens(tokens) {}
+    std::string op_desc(ggml_tensor *) override { return "HC_UP_PRE"; }
+    std::string vars() override { return VAR_TO_STR(tokens); }
+    bool run_whole_graph() override { return true; }
+    bool use_scheduler_allocation() override { return true; }
+    double max_nmse_err() override { return 5e-4; }
+    void initialize_tensors(ggml_context * ctx) override {
+        for (auto * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->op == GGML_OP_NONE) init_tensor_uniform(t);
+        }
+    }
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int embd = 2560, hc = 4, lr = 320;
+        auto * xn = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, embd, hc, tokens);
+        auto * lo = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, lr, tokens);
+        auto * up = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, lr, embd*hc);
+        auto * gate = ggml_mul_mat(ctx, up, lo);
+        return ggml_dsv4_hc_pre_gated(ctx, xn, ggml_reshape_3d(ctx, gate, embd, hc, tokens), 1.0f / hc);
+    }
+};
+
 struct test_ple_conv : test_case {
     const ggml_type type;
     const int channels, tokens, slots, escape;
@@ -9650,6 +9674,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (int tokens : {1, 33, 512, 513}) {
         test_cases.emplace_back(new test_hc_post_norm(tokens));
         test_cases.emplace_back(new test_hc_post_norm_q8(tokens));
+    }
+    for (int tokens : {1, 9, 64, 65, 512, 513}) {
+        test_cases.emplace_back(new test_hc_up_pre(tokens));
     }
     for (auto type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
         for (int tokens : {255,256,257,383,384,385}) test_cases.emplace_back(new test_ple_conv(type,256,tokens));

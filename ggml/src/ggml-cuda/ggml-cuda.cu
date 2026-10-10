@@ -7,6 +7,7 @@
 #include "expand.cuh"
 #include <array>
 #include "hc-cn.cuh"
+#include "hc-up-pre.cuh"
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
@@ -4049,6 +4050,42 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
             return 1;
         }
     }
+
+#if defined(GGML_USE_HIP)
+    if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_Q8_0 && ggml_node_has_n_uses(cgraph, i, 1) &&
+            GGML_CUDA_CC_IS_RDNA3(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+        // HC gate projection whose only consumer is the gated stream mix: one kernel, gate never stored
+        static const bool hc_up_pre = [] {
+            const char * v = getenv("GGML_CUDA_HC_UP_PRE");
+            return v == nullptr || atoi(v) != 0;
+        }();
+        int k = i + 1;
+        while (hc_up_pre && k < cgraph->n_nodes && k < i + 4 &&
+                (cgraph->nodes[k]->op == GGML_OP_RESHAPE || cgraph->nodes[k]->op == GGML_OP_VIEW)) {
+            ++k;
+        }
+        if (hc_up_pre && k < cgraph->n_nodes && cgraph->nodes[k]->op == GGML_OP_DSV4_HC_PRE) {
+            ggml_tensor * pre = cgraph->nodes[k];
+            const ggml_tensor * g = pre->src[1];
+            const bool reads_gate = g == node || (g && g->view_src == node);
+            bool between_ok = true;
+            for (int m = i + 1; m < k; ++m) {
+                const ggml_tensor * t = cgraph->nodes[m];
+                // only views of the gate itself or of other tensors (no compute) may sit in between
+                if (t->view_src == node && t != g) { between_ok = false; }
+            }
+            // only where the unfused gate GEMM would run on MMQ: the kernel reproduces MMQ's int8 arithmetic
+            const int64_t ntok = ggml_nrows(node->src[1]);
+            const bool mmq_path = ntok > MMVQ_MAX_BATCH_SIZE &&
+                ggml_cuda_should_use_mmq(GGML_TYPE_Q8_0, ggml_cuda_info().devices[cuda_ctx->device].cc, ntok, 0) &&
+                !ggml_cuda_mmb_supported_mm(node->src[0], node->src[1], node);
+            if (reads_gate && between_ok && mmq_path && ggml_cuda_hc_up_pre_supported(node->src[0], node->src[1], node, pre)) {
+                ggml_cuda_hc_up_pre(*cuda_ctx, node->src[0], node->src[1], pre);
+                return k - i;
+            }
+        }
+    }
+#endif // defined(GGML_USE_HIP)
 
     if (node->op == GGML_OP_MUL_MAT && ggml_cuda_mmb_gatemix() && i + 1 < cgraph->n_nodes && GGML_CUDA_CC_IS_RDNA3_5(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
         // HC gate GEMM [320 -> 10240] whose only consumer is the fused stream mix: run GEMM + sigmoid + mix in one kernel
