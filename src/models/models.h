@@ -7,6 +7,8 @@
 // note: almost all graphs require at least sqrtf, so include cmath globally
 #include <cmath>
 #include <map>
+#include <mutex>
+#include <vector>
 
 class llama_memory_hybrid_idx_context;
 
@@ -2399,6 +2401,19 @@ struct llama_model_qwen4exp : public llama_model_base {
     // --lazy-mode on-direct: pread() the lazy PLE table rows
     // host-side instead of faulting them in through the mmap; see qwen4exp.cpp
     const llama_lazy_reader * ple_reader = nullptr;
+
+    // Q4_0 copies of this model's LM head tensors for MTP draft steps, built on first use and freed with the
+    // model; see qwen4exp_draft_head_quant() in qwen4exp.cpp
+    struct draft_head_q {
+        const ggml_tensor *   src = nullptr;
+        ggml_context *        ctx = nullptr;
+        ggml_backend_buffer_t buf = nullptr;
+        ggml_tensor *         t   = nullptr;   // nullptr: building the copy failed, use the original head
+    };
+    mutable std::mutex                draft_head_mutex;
+    mutable std::vector<draft_head_q> draft_heads;
+
+    ~llama_model_qwen4exp() override;
 
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
