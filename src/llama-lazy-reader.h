@@ -26,6 +26,9 @@ struct llama_lazy_reader {
     void gather(const int32_t *, int64_t, float *) const {
         GGML_ABORT("lazy direct reads are not supported on this platform");
     }
+
+    // no-op: the lazy reader is never created on Windows; keeps shared call sites compiling
+    void prefetch(const int32_t *, int64_t) const {}
 #else
     struct segment {
         size_t  file_offs;
