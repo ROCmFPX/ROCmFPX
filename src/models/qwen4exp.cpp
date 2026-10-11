@@ -762,7 +762,7 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     int sections[4];
     std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
-    auto inp = std::make_unique<llm_graph_input_embd_h>(hc_dim);
+    auto inp = std::make_unique<llm_graph_input_embd_h>(hc_dim, hc_dim);
 
     inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_input(inp->tokens);
@@ -802,7 +802,7 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
             // the MTP graph has no recurrent layers, so the hybrid input's recurrent tensors are never used and the
             // allocator skips them -- set_input would then hit a null buffer. Give them a trivial use.
             auto * rs = inp_hyb->get_recr();
-            for (ggml_tensor * t : { rs->s_copy, rs->s_copy_main, rs->s_copy_extra }) {
+            for (ggml_tensor * t : { rs->s_copy, rs->s_copy_main, rs->s_copy_tail }) {
                 if (t) { ggml_build_forward_expand(gf, ggml_scale(ctx0, ggml_cast(ctx0, t, GGML_TYPE_F32), 0.0f)); }
             }
         }
@@ -2006,7 +2006,8 @@ void llm_graph_input_ple::set_input(const llama_ubatch * ubatch) {
         ? (llama_token) hp.ple_image_token_id
         : (llama_token) hp.ple_eos_token_id;
     auto tok_of = [&](int64_t k) -> llama_token {
-        return ubatch->token ? ubatch->token[k] : img_tok;
+        const bool is_embd = !ubatch->token || (ubatch->is_mixed() && ubatch->type[k]);
+        return is_embd ? img_tok : ubatch->token[k];
     };
 
     const int64_t n_tokens = ubatch->n_tokens;
