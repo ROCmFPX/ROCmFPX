@@ -2295,6 +2295,22 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
+// The fused HC combine+norm kernel only runs for prefill-sized batches (at decode widths it lowered MTP draft
+// acceptance, see the dispatch below). graph_optimize marks tensors BF16-only on the assumption that the fused
+// kernel will run, so the dispatch and every such mark must share this one predicate.
+// GGML_CUDA_HC_COMBINE_MIN_ROWS overrides the threshold (0 = always fuse).
+static int64_t ggml_cuda_hc_combine_min_rows() {
+    static const int64_t min_rows = [] {
+        const char * v = getenv("GGML_CUDA_HC_COMBINE_MIN_ROWS");
+        return v ? (int64_t) atoll(v) : (int64_t) 512;
+    }();
+    return min_rows;
+}
+
+static bool ggml_cuda_hc_combine_rows_ok(const ggml_cuda_hc_combine_norm_args & args) {
+    return ggml_nrows(args.out_xn) >= ggml_cuda_hc_combine_min_rows();
+}
+
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     if (ggml_cuda_mmb_marks_count() > 0 && dst->op != GGML_OP_MUL_MAT && dst->op != GGML_OP_MUL_MAT_ID && dst->op != GGML_OP_VIEW &&
             dst->op != GGML_OP_RESHAPE && dst->op != GGML_OP_PERMUTE && dst->op != GGML_OP_TRANSPOSE && dst->op != GGML_OP_NONE) {
@@ -4317,12 +4333,8 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         // ROCmFPX 2026-10-12: at decode/verify widths this fused kernel lowered MTP draft acceptance (3.33 vs 3.53
         // mean accepted length) and decode speed (53.5 vs 56.8 t/s) on Qwen3.8-Flash-Next after the upstream merge,
         // while prefill (>= 512 rows, where its BF16/Q8 side copies pay off) stayed bit-identical. Keep it for
-        // prefill-sized batches only; GGML_CUDA_HC_COMBINE_MIN_ROWS overrides (0 = always fuse).
-        static const int64_t hc_combine_min_rows = [] {
-            const char * v = getenv("GGML_CUDA_HC_COMBINE_MIN_ROWS");
-            return v ? (int64_t) atoll(v) : (int64_t) 512;
-        }();
-        const bool rows_ok = skip > 0 && ggml_nrows(args.out_xn) >= hc_combine_min_rows;
+        // prefill-sized batches only (ggml_cuda_hc_combine_rows_ok, shared with the BF16-only marks in graph_optimize).
+        const bool rows_ok = skip > 0 && ggml_cuda_hc_combine_rows_ok(args);
         if (skip > 0 && rows_ok && !ggml_cuda_hc_combine_norm_alias_ok(args) && ggml_cuda_mmb_is_bf16_only(args.out_xn)) {
             GGML_ABORT("hc_combine_norm: output %s is marked BF16-only but the fused kernel was refused (buffer aliasing)", args.out_xn->name);
         }
@@ -5540,7 +5552,7 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
                 const int skip = ggml_cuda_match_hc_combine_norm(cgraph, i, ggml_cuda_info().devices[cuda_ctx->device].warp_size, ca);
                 if (skip <= 0) continue;   // structure only: data pointers are not assigned yet inside graph_optimize (alias check would always fail)
                 const ggml_tensor * xn = ca.out_xn;
-                if (ggml_nrows(xn) < 512) continue;
+                if (!ggml_cuda_hc_combine_rows_ok(ca)) continue;   // the mark is only honoured when the fused kernel runs
                 bool ok = true; int nread = 0;
                 for (int n = i + 1; n < cgraph->n_nodes && ok; ++n) {
                     const ggml_tensor * t = cgraph->nodes[n];
@@ -5560,7 +5572,7 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
                 std::vector<const ggml_tensor *> blks;
                 for (int i = 0; i < cgraph->n_nodes; ++i) {
                     ggml_cuda_hc_combine_norm_args ca;
-                    if (ggml_cuda_match_hc_combine_norm(cgraph, i, ws, ca) > 0)
+                    if (ggml_cuda_match_hc_combine_norm(cgraph, i, ws, ca) > 0 && ggml_cuda_hc_combine_rows_ok(ca))
                         blks.push_back(ca.block_out->view_src ? ca.block_out->view_src : ca.block_out);
                 }
                 for (const ggml_tensor * b : blks) {
@@ -5602,7 +5614,7 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
                 std::vector<std::pair<const ggml_tensor *, const ggml_tensor *>> comb;
                 for (int i = 0; i < cgraph->n_nodes; ++i) {
                     ggml_cuda_hc_combine_norm_args ca;
-                    if (ggml_cuda_match_hc_combine_norm(cgraph, i, ws, ca) > 0) comb.emplace_back(ca.residual, ca.out_res);
+                    if (ggml_cuda_match_hc_combine_norm(cgraph, i, ws, ca) > 0 && ggml_cuda_hc_combine_rows_ok(ca)) comb.emplace_back(ca.residual, ca.out_res);
                 }
                 for (const auto & c : comb) {
                     const ggml_tensor * r = c.second;
