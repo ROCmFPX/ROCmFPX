@@ -970,6 +970,46 @@ static constexpr __device__ ggml_cuda_mmq_write_back_t ggml_cuda_mmq_get_write_b
 
 // ---------------------------------------------------------------------------------------------
 
+#if defined(RDNA3_5)
+// AMD-Ecosystem/llama.cpp #32: software-pipelined activation tile loads (global -> registers -> LDS)
+template <int nwarps, int warp_size, int nchunks>
+static __device__ __forceinline__ void mmq_tile_y_load_global(int * __restrict__ tile_y, const int * __restrict__ by) {
+#pragma unroll
+    for (int c = 0; c < nchunks; ++c) {
+        const int l = c*(nwarps*warp_size) + threadIdx.y*warp_size + threadIdx.x;
+        tile_y[l] = by[l];
+    }
+}
+
+template <int nwarps, int warp_size, int nchunks>
+static __device__ __forceinline__ void mmq_tile_y_load_global_to_regs(const int * __restrict__ by, int (&cache)[nchunks]) {
+#pragma unroll
+    for (int c = 0; c < nchunks; ++c) {
+        const int l = c*(nwarps*warp_size) + threadIdx.y*warp_size + threadIdx.x;
+        cache[c] = by[l];
+    }
+}
+
+template <int nwarps, int warp_size, int nchunks>
+static __device__ __forceinline__ void mmq_tile_y_store_regs(int * __restrict__ tile_y, const int (&cache)[nchunks]) {
+#pragma unroll
+    for (int c = 0; c < nchunks; ++c) {
+        const int l = c*(nwarps*warp_size) + threadIdx.y*warp_size + threadIdx.x;
+        tile_y[l] = cache[c];
+    }
+}
+
+// The HIP post-RA scheduler may interleave v_fma_mix between ds_load_b128 and WMMA on the hot K loop when no
+// barrier hints are present (~12% pp128 regression on gfx1151, AMD's measurement); tile-scope barriers split
+// the load_tiles / vec_dot phases into separate scheduling regions. Skipped for J <= 32 (no measured benefit).
+template <int J_val>
+static __device__ __forceinline__ void mmq_hip_tile_barrier() {
+    if constexpr (J_val > 32) {
+        __syncthreads();
+    }
+}
+#endif // RDNA3_5
+
 template <ggml_type type, int J, bool fallback, bool fixup, ggml_prec prec_src1>
 static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
@@ -1006,6 +1046,68 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
     constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
 
+#if defined(RDNA3_5) && defined(GGML_CUDA_MMQ_Y_PIPELINE)
+    // Opt-in (-DGGML_CUDA_MMQ_Y_PIPELINE): measured 2026-10-12 on gfx1151 with this tree's tile configs (nwarps 2,
+    // J up to 128) it is 13% SLOWER at pp2048 (370 vs 425 t/s, Qwen3.8-Flash-Next ROCmFP4-FAST) because the
+    // per-thread register cache of a J*MMQ_TILE_Y_K/64 ints spills; AMD's gain was measured with wider blocks.
+    // AMD-Ecosystem/llama.cpp #32 (RDNA3.5 MMQ prefill): stage the activation (y) tile loads in registers so the
+    // global loads of the next half-tile overlap the WMMA work on the current one, and split the load_tiles /
+    // vec_dot phases with tile-scope barriers so the HIP post-RA scheduler keeps ds_load and WMMA apart. The
+    // arithmetic and its order are unchanged. Only tiles whose y tile is a whole number of thread-chunks qualify.
+    constexpr int tile_y_elems       = J*MMQ_TILE_Y_K;
+    constexpr int tile_y_load_stride = nwarps*warp_size;
+    if constexpr (J <= 64 && tile_y_elems % tile_y_load_stride == 0) {
+        constexpr int tile_y_nchunks = tile_y_elems/tile_y_load_stride;
+
+        int  y0_next_cache[tile_y_nchunks];
+        bool have_y0_prefetch = false;
+
+        for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+            mmq_hip_tile_barrier<J>();
+            load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+            mmq_hip_tile_barrier<J>();
+
+            const int yk = kb0 * qk / ne_block;
+            const int * by0 = y + ncols_y * yk * sz;
+            const int * by1 = y + ncols_y * (yk + 1) * sz;
+
+            mmq_hip_tile_barrier<J>();
+
+            if (have_y0_prefetch) {
+                mmq_tile_y_store_regs<nwarps, warp_size, tile_y_nchunks>(tile_y, y0_next_cache);
+                have_y0_prefetch = false;
+            } else {
+                mmq_tile_y_load_global<nwarps, warp_size, tile_y_nchunks>(tile_y, by0);
+            }
+
+            __syncthreads();
+
+            int y1_cache[tile_y_nchunks];
+            mmq_tile_y_load_global_to_regs<nwarps, warp_size, tile_y_nchunks>(by1, y1_cache);
+
+            vec_dot(tile_x, tile_y, sum, 0);
+
+            __syncthreads();
+
+            mmq_tile_y_store_regs<nwarps, warp_size, tile_y_nchunks>(tile_y, y1_cache);
+
+            __syncthreads();
+
+            vec_dot(tile_x, tile_y, sum, MMQ_TILE_NE_K);
+
+            // prefetch the next by0 only after the WMMA completed: issuing it before vec_dot kept the cache live
+            // across the WMMA and produced wrong activations on gfx1151 (AMD's note)
+            const int kb0_next = kb0 + blocks_per_iter;
+            if (kb0_next < kb0_stop) {
+                const int * by0_next = y + ncols_y * (kb0_next * qk / ne_block) * sz;
+                mmq_tile_y_load_global_to_regs<nwarps, warp_size, tile_y_nchunks>(by0_next, y0_next_cache);
+                have_y0_prefetch = true;
+            }
+
+            mmq_hip_tile_barrier<J>();
+        }
+    } else
+#endif // RDNA3_5
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
         load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
         {

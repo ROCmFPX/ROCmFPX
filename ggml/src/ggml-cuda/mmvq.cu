@@ -1517,7 +1517,7 @@ static void mul_mat_vec_q_moe_launch(
                             fusion.x_scale != nullptr || fusion.gate_scale != nullptr;
 
 #if defined(GGML_USE_HIP)
-    if constexpr (type == GGML_TYPE_Q4_0_ROCMI4) {
+    if constexpr (type == GGML_TYPE_Q4_0_ROCMI4 || type == GGML_TYPE_Q4_0_ROCMFP4_FAST) {
         static const bool sort_experts = [] {
             const char * value = getenv("ROCMFPX_MOE_SORT_IDS");
             return value && atoi(value) == 1;

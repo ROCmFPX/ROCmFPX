@@ -220,7 +220,13 @@ void ggml_cuda_mul_mat_q(
             // Each expert only sees ne12*n_expert_used/ne02 tokens on average.
             // On RDNA3 and RDNA4 it is faster to pick the tile size against this value instead of ne12.
             if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
-                ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
+                // AMD-Ecosystem/llama.cpp #39 tiles over ~2x the per-expert average to cover routing imbalance;
+                // GGML_CUDA_MMQ_MOE_TILE_MULT selects the multiplier (default 1 = upstream behaviour)
+                static const int64_t moe_tile_mult = [] {
+                    const char * v = getenv("GGML_CUDA_MMQ_MOE_TILE_MULT");
+                    return v ? std::max<int64_t>(1, atoll(v)) : 1;
+                }();
+                ncols_opt = std::min<int64_t>(ne12, moe_tile_mult*((ne12*n_expert_used + ne02 - 1) / ne02));
             }
         }
 
