@@ -175,11 +175,14 @@ void main() {
     const uint ik = gl_WorkGroupID.x / blocks_m;
 
 #ifdef MUL_MAT_ID
-    const uint ic = gl_WorkGroupID.y;
     const uint ir = gl_WorkGroupID.x % blocks_m;
     const uint expert_idx = gl_WorkGroupID.z;
-    if (ic * BN >= data_expert_count[expert_idx]) {
-        return;
+    const uint expert_rows = data_expert_count[expert_idx];
+    // The grid provides ceil(nei1 / BN) column tiles per expert. An expert id repeated inside a token's id row
+    // gives that expert more rows than that, so the tiles are walked grid-stride; without repeats this is one pass.
+    for (uint ic = gl_WorkGroupID.y; ic * BN < expert_rows; ic += gl_NumWorkGroups.y) {
+    if (ic != gl_WorkGroupID.y) {
+        barrier(); // the previous tile may still read the shared buffers and row ids
     }
 #else
     // L2-friendly workgroup scheduling
@@ -198,6 +201,7 @@ void main() {
     const uint in_group = lin - group_id * tiles_per_group;
     const uint ir = first_m + in_group % gsize;
     const uint ic = in_group / gsize;
+    do {
 #endif
 
 #ifndef MUL_MAT_ID
@@ -257,7 +261,7 @@ void main() {
 #endif
     }
 
-    if (ic * BN >= _ne1) return;
+    if (ic * BN >= _ne1) continue;
 #endif
 
 #ifdef MUL_MAT_ID
@@ -507,4 +511,9 @@ void main() {
         }
     }
 #endif // MUL_MAT_ID
+#ifdef MUL_MAT_ID
+    } // tile loop
+#else
+    } while (false);
+#endif
 }

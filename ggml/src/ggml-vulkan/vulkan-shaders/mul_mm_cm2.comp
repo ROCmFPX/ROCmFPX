@@ -328,13 +328,21 @@ void load_row_ids_hoisted(uint expert_idx, uint ic) {
 
 void main() {
     const uint tid = gl_LocalInvocationIndex;
-    const uint ic = gl_WorkGroupID.y;
-
 #ifdef MUL_MAT_ID
     const uint expert_idx = gl_WorkGroupID.z;
-    if (ic * BN >= data_expert_count[expert_idx]) {
-        return;
+    const uint expert_rows = data_expert_count[expert_idx];
+    // The grid provides ceil(nei1 / BN) column tiles per expert. An expert id repeated inside a token's id row
+    // gives that expert more rows than that, so the tiles are walked grid-stride; without repeats this is one pass.
+    for (uint ic = gl_WorkGroupID.y; ic * BN < expert_rows; ic += gl_NumWorkGroups.y) {
+    if (ic != gl_WorkGroupID.y) {
+        barrier(); // the previous tile may still read the shared buffers and row ids
     }
+#else
+    const uint ic = gl_WorkGroupID.y;
+    do {
+#endif
+
+#ifdef MUL_MAT_ID
     // initialize to row 0 so we don't need to bounds check
     if (tid < BN) {
         row_ids[tid] = u16vec4(0);
@@ -374,7 +382,7 @@ void main() {
     }
 
     // Workgroup has no work
-    if (ic * BN >= _ne1) return;
+    if (ic * BN >= _ne1) continue;
 #endif
 
 #ifdef MUL_MAT_ID
@@ -525,7 +533,7 @@ void main() {
             coopmat<D_TYPE, gl_ScopeWorkgroup, BM, BNover4, gl_MatrixUseAccumulator> mat_d = coopmat<D_TYPE, gl_ScopeWorkgroup, BM, BNover4, gl_MatrixUseAccumulator>(sum);
 
             coopMatStoreTensorNV(mat_d, data_d, pos_d, sliceTensorLayoutNV(tensorLayoutD, ic * BN, BNover4, ir * BM, BM), tensorViewTranspose);
-            return;
+            continue;
         } else if (enable_smaller_matrices && ic * BN + BNover2 >= p.N) {
             coopmat<ACC_TYPE, gl_ScopeWorkgroup, BM, BNover2, gl_MatrixUseAccumulator> sum = coopmat<ACC_TYPE, gl_ScopeWorkgroup, BM, BNover2, gl_MatrixUseAccumulator>(0.0);
             for (uint i = 0; i < k_iters; ++i) {
@@ -568,7 +576,7 @@ void main() {
             coopmat<D_TYPE, gl_ScopeWorkgroup, BM, BNover2, gl_MatrixUseAccumulator> mat_d = coopmat<D_TYPE, gl_ScopeWorkgroup, BM, BNover2, gl_MatrixUseAccumulator>(sum);
 
             coopMatStoreTensorNV(mat_d, data_d, pos_d, sliceTensorLayoutNV(tensorLayoutD, ic * BN, BNover2, ir * BM, BM), tensorViewTranspose);
-            return;
+            continue;
         } else {
             coopmat<ACC_TYPE, gl_ScopeWorkgroup, BM, BN, gl_MatrixUseAccumulator> sum = coopmat<ACC_TYPE, gl_ScopeWorkgroup, BM, BN, gl_MatrixUseAccumulator>(0.0);
 
@@ -612,7 +620,7 @@ void main() {
             coopmat<D_TYPE, gl_ScopeWorkgroup, BM, BN, gl_MatrixUseAccumulator> mat_d = coopmat<D_TYPE, gl_ScopeWorkgroup, BM, BN, gl_MatrixUseAccumulator>(sum);
 
             coopMatStoreTensorNV(mat_d, data_d, pos_d, sliceTensorLayoutNV(tensorLayoutD, ic * BN, BN, ir * BM, BM), tensorViewTranspose);
-            return;
+            continue;
         }
     } else
 #endif // !defined(MUL_MAT_ID)
@@ -675,7 +683,7 @@ void main() {
 
             // Call callback to store each element, remapping row through shared memory
             coopMatPerElementNV(mat_d, mat_d, perElemOpD, ir, ic);
-            return;
+            continue;
         }
         if (ic * BN + BNover2 >= _ne1) {
             coopmat<ACC_TYPE, gl_ScopeWorkgroup, BM, BNover2, gl_MatrixUseAccumulator> sum;
@@ -719,7 +727,7 @@ void main() {
 
             // Call callback to store each element, remapping row through shared memory
             coopMatPerElementNV(mat_d, mat_d, perElemOpD, ir, ic);
-            return;
+            continue;
         }
 #endif
         coopmat<ACC_TYPE, gl_ScopeWorkgroup, BM, BN, gl_MatrixUseAccumulator> sum;
@@ -776,4 +784,9 @@ void main() {
         coopMatStoreTensorNV(mat_d, data_d, pos_d, sliceTensorLayoutNV(tensorLayoutD, ic * BN, BN, ir * BM, BM), tensorViewTranspose);
 #endif
     }
+#ifdef MUL_MAT_ID
+    } // tile loop
+#else
+    } while (false);
+#endif
 }

@@ -208,13 +208,18 @@ shared ACC_TYPE coopmat_stage[TM * TN * NUM_WARPS];
 #endif
 
 void main() {
-    const uint ic = gl_WorkGroupID.y;
-
 #ifdef MUL_MAT_ID
     const uint expert_idx = gl_WorkGroupID.z;
-    if (ic * BN >= data_expert_count[expert_idx]) {
-        return;
+    const uint expert_rows = data_expert_count[expert_idx];
+    // The grid provides ceil(nei1 / BN) column tiles per expert. An expert id repeated inside a token's id row
+    // gives that expert more rows than that, so the tiles are walked grid-stride; without repeats this is one pass.
+    for (uint ic = gl_WorkGroupID.y; ic * BN < expert_rows; ic += gl_NumWorkGroups.y) {
+    if (ic != gl_WorkGroupID.y) {
+        barrier(); // the previous tile may still read the shared buffers and row ids
     }
+#else
+    const uint ic = gl_WorkGroupID.y;
+    do {
 #endif
 #if defined(NEEDS_INIT_IQ_SHMEM) || defined(MULMAT_QUANT)
     init_iq_shmem(gl_WorkGroupSize);
@@ -312,7 +317,7 @@ void main() {
     }
 
     // Workgroup has no work
-    if (ic * BN >= _ne1) return;
+    if (ic * BN >= _ne1) continue;
 
     uint required_work_items = (_ne1 - ic * BN) * BK / LOAD_VEC_B_EFF / LOAD_VEC_BATCH_B;
     uint required_warp_c = (_ne1 - ic * BN + WN - 1) / WN;
@@ -556,4 +561,9 @@ void main() {
         }
     }
 #endif // COOPMAT
+#ifdef MUL_MAT_ID
+    } // tile loop
+#else
+    } while (false);
+#endif
 }
