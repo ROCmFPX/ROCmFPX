@@ -1598,7 +1598,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         // TODO: enable sparse attention when we are ready
         // ref: https://github.com/ggml-org/llama.cpp/pull/27970
         //ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, kq_mask_top_k, nullptr, nullptr, top_k->ne[0], kq_scale, il);
-        const int64_t n_kv_max = top_k->ne[0];
         ggml_tensor * cur;
         if (direct_indices) {
             GGML_ASSERT(q->ne[0] == 256 && k->type == GGML_TYPE_F16 && v->type == GGML_TYPE_F16);
