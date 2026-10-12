@@ -248,6 +248,13 @@ struct llama_moe_cache::impl {
             if (it_dev == devices.end()) {
                 continue;
             }
+            // ROCmFPX: a device that can read the host experts in place (unified memory) needs no cache; the scheduler
+            // then keeps the expert selection and the MoE op in one split, which the cache lookup cannot serve.
+            if (ggml_backend_dev_supports_buft(ggml_backend_get_device(it_dev->backend), ggml_backend_buffer_get_type(experts[0]->buffer))) {
+                LLAMA_LOG_INFO("%s: layer %zu: %s reads its host experts directly, not cached\n", __func__, il,
+                        ggml_backend_name(it_dev->backend));
+                continue;
+            }
             const int32_t id = (int32_t) (it_dev - devices.begin());
             auto it = std::find_if(groups.begin(), groups.end(), [&](const group & g) { return g.id == id && llama_moe_cache_same_layout(g.ref, experts); });
             if (it == groups.end()) {
