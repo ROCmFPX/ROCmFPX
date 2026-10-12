@@ -69,7 +69,10 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
         nchannels_y      = ids->ne[0];
     }
 
-    if (ids && ncols_dst > 16) {
+    // The compact (expert-sorted) kernel computes one column per (token, slot) row, so it is the only path that is
+    // exact when an expert id repeats inside a token's row and the slots carry distinct activations (ne11 > 1).
+    // The direct kernel keeps the small broadcast batches (ne11 == 1), where repeated slots share one result.
+    if (ids && (ncols_dst > 16 || ne11 > 1)) {
         const int64_t n_expert_used = ids->ne[0];
         const int64_t n_experts     = ne02;
         const int64_t n_tokens      = ne12;

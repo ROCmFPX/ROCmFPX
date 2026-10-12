@@ -282,11 +282,18 @@ static __global__ void mul_mat_f(
                 dst[j*stride_col_dst + row0 + i0*warp_size + threadIdx.x] = sum[i0];
             }
         } else {
-            const int slot = (j < cols_per_block) ? slot_map[j] : -1;
-            if (slot >= 0 && (col_base + j) < ncols_dst_total) {
+            const int slot_first = (j < cols_per_block) ? slot_map[j] : -1;
+            if (slot_first >= 0 && (col_base + j) < ncols_dst_total) {
+                // an expert id can repeat inside the token's id row: every matching slot gets the result
+                const int32_t * __restrict__ id_row = ids + j*stride_row_id;
+                for (int slot = 0; slot < nchannels_dst; ++slot) {
+                    if (id_row[slot*stride_col_id] != expert_idx) {
+                        continue;
+                    }
 #pragma unroll
-                for (int i0 = 0; i0 < sizeof(sum)/sizeof(sum[0]); ++i0) {
-                    dst[slot*stride_channel_dst + j*stride_col_dst + row0 + i0*warp_size + threadIdx.x] = sum[i0];
+                    for (int i0 = 0; i0 < sizeof(sum)/sizeof(sum[0]); ++i0) {
+                        dst[slot*stride_channel_dst + j*stride_col_dst + row0 + i0*warp_size + threadIdx.x] = sum[i0];
+                    }
                 }
             }
         }
@@ -357,12 +364,9 @@ static __global__ void mul_mat_f_ids(
     const int ncols_expert = expert_end - expert_start;
 
     const int tiles_for_expert = (ncols_expert + cols_per_block - 1) / cols_per_block;
-    const int tile_idx = blockIdx.z;
-    if (tile_idx >= tiles_for_expert) {
+    if (static_cast<int>(blockIdx.z) >= tiles_for_expert) {
         return;
     }
-
-    const int col_base = tile_idx * cols_per_block;
 
     GGML_UNUSED(channel_ratio);
 
@@ -377,6 +381,19 @@ static __global__ void mul_mat_f_ids(
 
     const int32_t * ids_src_expert = ids_src_compact + expert_start;
     const int32_t * ids_dst_expert = ids_dst_compact + expert_start;
+
+    // The grid provides tiles for at most ncols_dst_total rows per expert. An expert id repeated inside a token's
+    // row gives that expert more rows, so the tiles are walked grid-stride; without repeats this runs once.
+    for (int tile_idx = blockIdx.z; tile_idx < tiles_for_expert; tile_idx += gridDim.z) {
+    if (tile_idx != static_cast<int>(blockIdx.z)) {
+        if (nwarps > 1) {
+            __syncthreads(); // the previous tile's epilogue may still be reading the shared buffers
+        } else {
+            ggml_cuda_syncwarp();
+        }
+    }
+
+    const int col_base = tile_idx * cols_per_block;
 
     extern __shared__ char data_mmv[];
     char * compute_base = data_mmv;
@@ -549,7 +566,7 @@ static __global__ void mul_mat_f_ids(
         const int j = j0 + threadIdx.y;
 
         if (j0 + nwarps > cols_per_block && j >= cols_per_block) {
-            return;
+            break;
         }
 
         float sum[rows_per_block/warp_size] = {0.0f};
@@ -578,6 +595,7 @@ static __global__ void mul_mat_f_ids(
             }
         }
     }
+    } // tile loop
     }
 #else
     GGML_UNUSED_VARS(x, y, ids_src_compact, ids_dst_compact, expert_bounds, dst,
@@ -600,9 +618,9 @@ static inline void mul_mat_f_switch_ids(
         const mmf_ids_data * ids_data) {
     const bool has_ids_data = ids_data && ids_data->ids_src_compact;
 
-    // Use the compact-ids kernel only for larger tiles; for small ncols_dst (< 16)
-    // we prefer the normal mul_mat_f path with has_ids=true.
-    if (has_ids_data && ncols_dst > 16) {
+    // The caller sets ids_data when the compact-ids kernel is wanted (large tiles, or per-slot activations);
+    // otherwise the small-batch mul_mat_f path with has_ids=true is used.
+    if (has_ids_data) {
         const int max_tiles = (int) ((ncols_dst + cols_per_block - 1) / cols_per_block);
         if (max_tiles == 0) {
             return;

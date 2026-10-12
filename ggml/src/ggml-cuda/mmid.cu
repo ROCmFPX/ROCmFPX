@@ -28,16 +28,6 @@ template <>      struct mm_ids_pow2<0> { static constexpr int value = 1; };
 // ids_src1 describes how to permute the flattened column indices of src1 in order to get a compact src1 tensor sorted by expert.
 // ids_dst describes the same mapping but for the dst tensor.
 // The upper and lower bounds for the ith expert in the compact src1 tensor are stored in expert_bounds[i:i+1].
-// true when the expert at slot iex of a token's id row already appeared at a lower slot
-static __device__ __forceinline__ bool mm_ids_slot_is_repeat(const int32_t * __restrict__ ids_row, const int iex, const int expert_used) {
-    for (int j = 0; j < iex; ++j) {
-        if (ids_row[j] == expert_used) {
-            return true;
-        }
-    }
-    return false;
-}
-
 template <int n_expert_used_template>
 __launch_bounds__(ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mm_ids_helper(
@@ -59,11 +49,6 @@ static __global__ void mm_ids_helper(
             int iex_used = -1; // The index at which the expert is used, if any.
             for (int iex = threadIdx.x; iex < n_expert_used; iex += warp_size) {
                 const int expert_used = ids[it*si1 + iex];
-                // ROCmFPX: an expert repeated inside one token's row counts once (its first slot), so the
-                // expert bounds stay consistent with the compact rows and no id-map entry is left unset
-                if (mm_ids_slot_is_repeat(ids + it*si1, iex, expert_used)) {
-                    continue;
-                }
                 nex_prev += expert_used < expert;
                 if (expert_used == expert) {
                     iex_used = iex;
@@ -87,12 +72,8 @@ static __global__ void mm_ids_helper(
             const int it = it0 + threadIdx.x / neu_padded;
 
             const int iex = threadIdx.x % neu_padded; // The index at which the expert is used, if any.
-            int expert_used = (neu_padded == n_expert_used || iex < n_expert_used) && it < n_tokens ?
+            const int expert_used = (neu_padded == n_expert_used || iex < n_expert_used) && it < n_tokens ?
                 ids[it*si1 + iex] : INT_MAX;
-            // ROCmFPX: a repeated expert inside one token's row counts once (its first slot)
-            if (expert_used != INT_MAX && mm_ids_slot_is_repeat(ids + it*si1, iex, expert_used)) {
-                expert_used = INT_MAX;
-            }
             const int iex_used = expert_used == expert ? iex : -1;
             nex_prev += expert_used < expert;
 
@@ -120,32 +101,50 @@ static __global__ void mm_ids_helper(
     nex_prev = warp_reduce_sum<warp_size>(nex_prev);
     ggml_cuda_syncwarp();
 
-    for (int itc = threadIdx.x; itc < it_compact; itc += warp_size) {
-        const mm_ids_helper_store store_it = store[itc];
-        const int it       = store_it.it();
-        const int iex_used = store_it.iex_used();
-        ids_dst[nex_prev + itc] = it*n_expert_used + iex_used;
-        // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
-        if (write_inverse) {
-            // every slot of this token that routes to the expert shares the compact row, so a repeated expert
-            // cannot leave a slot's inverse entry unset (the gather would read a garbage row)
-            for (int iex = 0; iex < n_expert_used; ++iex) {
-                if (ids[it*si1 + iex] == expert) {
-                    ids_src1[it*n_expert_used + iex] = nex_prev + itc;
-                }
-            }
-        } else {
-            ids_src1[nex_prev + itc] = it*sis1 + iex_used % nchannels_y;
-        }
-    }
+    // Write the id maps. A token is stored once above, but every slot of its id row that routes to this expert
+    // gets its own compact row (an expert repeated inside one token's row is applied once per slot, so each
+    // dst row is written). nex_prev already counts lower experts per slot, so the bounds stay consistent.
+    int row_base = nex_prev; // first compact row of the next stored token (warp-uniform)
+    for (int itc0 = 0; itc0 < it_compact; itc0 += warp_size) {
+        const int  itc   = itc0 + threadIdx.x;
+        const bool valid = itc < it_compact;
+        const int  it    = valid ? static_cast<int>(store[itc].it()) : 0;
 
-    // ROCmFPX: a repeated expert leaves the tail rows of the compact layout unused; the forward-map quantizer
-    // walks every row, so give those rows a valid source instead of whatever the pool buffer held before
-    if (!write_inverse && expert == static_cast<int>(gridDim.x) - 1) {
-        for (int k = nex_prev + it_compact + threadIdx.x; k < n_tokens*n_expert_used; k += warp_size) {
-            ids_src1[k] = 0;
-            ids_dst[k]  = 0;
+        int n_match = 0;
+        if (valid) {
+            for (int iex = 0; iex < n_expert_used; ++iex) {
+                n_match += ids[it*si1 + iex] == expert;
+            }
         }
+
+        // inclusive scan of n_match over the warp: row offset of this token inside the chunk
+        int incl = n_match;
+#pragma unroll
+        for (int offset = 1; offset < warp_size; offset <<= 1) {
+            const int tmp = __shfl_up_sync(0xFFFFFFFF, incl, offset, warp_size);
+            if (threadIdx.x >= static_cast<unsigned int>(offset)) {
+                incl += tmp;
+            }
+        }
+        const int n_rows_chunk = __shfl_sync(0xFFFFFFFF, incl, warp_size - 1, warp_size);
+
+        if (valid) {
+            int row = row_base + incl - n_match;
+            for (int iex = 0; iex < n_expert_used; ++iex) {
+                if (ids[it*si1 + iex] != expert) {
+                    continue;
+                }
+                ids_dst[row] = it*n_expert_used + iex;
+                // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
+                if (write_inverse) {
+                    ids_src1[it*n_expert_used + iex] = row;
+                } else {
+                    ids_src1[row] = it*sis1 + iex % nchannels_y;
+                }
+                ++row;
+            }
+        }
+        row_base += n_rows_chunk;
     }
 
     if (threadIdx.x != 0) {
@@ -158,7 +157,7 @@ static __global__ void mm_ids_helper(
         return;
     }
 
-    expert_bounds[gridDim.x] = nex_prev + it_compact;
+    expert_bounds[gridDim.x] = row_base;
 }
 
 template <int n_expert_used_template>

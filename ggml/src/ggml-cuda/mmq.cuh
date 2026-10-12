@@ -1196,9 +1196,12 @@ static __global__ void mul_mat_q(
         const uint2 tmp2 = fast_div_modulo(blockIdx.z, nchannels_y);
         const int wt = tmp2.x;
         const int zt = tmp2.y;
-        const int jt = blockIdx.y;
         const int it = blockIdx.x;
 
+        // The grid covers ncols_max column tiles per channel. With ids_dst an expert can own more rows than that
+        // when an expert id repeats inside a token's row, so the tiles are walked grid-stride: without repeats
+        // this loop runs once per block, exactly like a plain tile.
+        for (int jt = blockIdx.y; ; jt += gridDim.y) {
         // Defaults for regular matrix multiplication:
         int col_low    = 0;
         int col_high   = ncols_dst;
@@ -1223,11 +1226,16 @@ static __global__ void mul_mat_q(
                 offset_y_scale = 0;
             }
 
-            if (jt*J >= col_diff) {
-                return;
-            }
+        }
 
-            // __syncthreads(); // There is no previous tile that could cause a race condition.
+        if (jt*J >= col_diff) {
+            return;
+        }
+
+        if (ids_dst) {
+            if (jt != static_cast<int>(blockIdx.y)) {
+                __syncthreads(); // the previous tile may still be reading ids_dst_shared and the tile buffers
+            }
 #pragma unroll
             for (int j0 = 0; j0 < J; j0 += nwarps*warp_size) {
                 const int j = j0 + threadIdx.y*warp_size + threadIdx.x;
@@ -1259,6 +1267,11 @@ static __global__ void mul_mat_q(
             (x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
              stride_row_x, ncols_y, stride_col_dst,
              tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z);
+
+        if (!ids_dst) {
+            return; // a plain matmul has exactly ncols_max columns: the grid covers every tile
+        }
+        }
         return;
     }
 
