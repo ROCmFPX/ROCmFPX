@@ -1974,6 +1974,19 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
 }
 
 static bool ggml_cuda_match_shared_expert(const ggml_cgraph * graph, int routed_idx, int shared_idx) {
+    // ROCmFPX: on HIP this fusion measured 3-7% slower MTP verify decode on gfx1151 (Qwen3.8-Flash-Next,
+    // 2026-10-11) than the fork's own MoE merge path, so it is opt-in there: GGML_CUDA_SHARED_EXPERT_FUSION=1
+    static const bool shared_expert_fusion = [] {
+        const char * v = getenv("GGML_CUDA_SHARED_EXPERT_FUSION");
+#ifdef GGML_USE_HIP
+        return v != nullptr && atoi(v) != 0;
+#else
+        return v == nullptr || atoi(v) != 0;
+#endif
+    }();
+    if (!shared_expert_fusion) {
+        return false;
+    }
     if (routed_idx + 2 >= graph->n_nodes || shared_idx + 2 >= graph->n_nodes || shared_idx < routed_idx + 3) {
         return false;
     }

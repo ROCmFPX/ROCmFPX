@@ -646,7 +646,8 @@ static int test_qwen4exp_split_ple(const size_t seed, const float stdev) {
         std::memcpy(hidden.data(), llama_get_embeddings_nextn_ith(target.second.get(), 0), n_embd * sizeof(float));
         common_batch batch(draft.second.get());
         const int32_t idx = batch.add(tokens[1], 0, 0, true);
-        batch.set_embd(idx, { hidden.data(), 1, (size_t) n_embd });
+        // the MTP head reads the target's hidden state through the batch's state embedding (upstream #29622 API)
+        batch.set_embd_state(idx, { hidden.data(), 1, (size_t) n_embd });
         const int status = llama_process(draft.second.get(), LLAMA_PROCESS_TYPE_DECODE, batch.get());
         if (status != 0) {
             throw std::runtime_error("qwen4exp MTP fixture decode failed");
