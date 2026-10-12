@@ -1016,6 +1016,7 @@ struct ggml_backend_sched {
     } * graph_input_slots; // [graph_inputs_capacity]
 
     bool needs_rotate;
+    bool uma_ring;    // n_copies > 1 comes from the graph input ring, not from pipeline parallelism
 
     struct ggml_context * ctx;
 
@@ -1102,6 +1103,13 @@ static void ggml_backend_sched_reinit_view(struct ggml_tensor * t) {
 
     t->buffer = t->view_src->buffer;
     t->data   = (char *) t->view_src->data + t->view_offs;
+}
+
+// The graph input ring rotates only the storage of the graph inputs (ggml_backend_sched_point_inputs): the split
+// copies are bound into the split graphs when the graph is split and are not re-pointed on rotation, so with the
+// ring they must live at one fixed position. Pipeline parallelism keeps a full set of copies per in-flight graph.
+static int ggml_backend_sched_split_copy(ggml_backend_sched_t sched) {
+    return sched->uma_ring ? 0 : sched->cur_copy;
 }
 
 // returns the priority of the backend, lower id is higher priority
@@ -1679,7 +1687,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                     // create a copy of the input in the split's backend
                     if (tensor_id_copy(src_id, cur_backend_id, 0) == NULL) {
                         ggml_backend_t backend = sched->backends[cur_backend_id];
-                        for (int c = 0; c < sched->n_copies; c++) {
+                        const int n_split_copies = sched->uma_ring ? 1 : sched->n_copies;
+                        for (int c = 0; c < n_split_copies; c++) {
                             struct ggml_tensor * tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
                             ggml_format_name(tensor_copy, "%s#%s#%d", ggml_backend_name(backend), src->name, c);
                             if (sched->n_copies > 1) {
@@ -1695,7 +1704,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                         }
                         split->inputs[n_inputs] = src;
                     }
-                    node->src[j] = tensor_id_copy(src_id, cur_backend_id, sched->cur_copy);
+                    node->src[j] = tensor_id_copy(src_id, cur_backend_id, ggml_backend_sched_split_copy(sched));
                 }
             }
         }
@@ -1782,7 +1791,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
             struct ggml_tensor * input = split->inputs[j];
             const size_t input_id = hash_id(input);
-            struct ggml_tensor * input_cpy = tensor_id_copy(input_id, split->backend_id, sched->cur_copy);
+            struct ggml_tensor * input_cpy = tensor_id_copy(input_id, split->backend_id, ggml_backend_sched_split_copy(sched));
 
             // add a dependency to the input source so that it is not freed before the copy is done
             struct ggml_tensor * input_dep = ggml_view_tensor(sched->ctx, input);
@@ -1839,13 +1848,15 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             }
         }
 
+        // split copies: one per ring position with the graph input ring, otherwise one per in-flight graph
+        const int n_split_copies = sched->uma_ring ? 1 : sched->n_copies;
         for (int i = 0; i < sched->n_splits; i++) {
             struct ggml_backend_sched_split * split = &sched->splits[i];
             int backend_id = split->backend_id;
             for (int j = 0; j < split->n_inputs; j++) {
                 struct ggml_tensor * input = split->inputs[j];
                 size_t id = hash_id(input);
-                for (int c = 0; c < sched->n_copies; c++) {
+                for (int c = 0; c < n_split_copies; c++) {
                     struct ggml_tensor * input_cpy = tensor_id_copy(id, backend_id, c);
                     sched->leaf_backend_ids[graph_copy->n_leafs] = backend_id;
                     assert(graph_copy->size > graph_copy->n_leafs);
@@ -1934,11 +1945,15 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     const int split_backend_id = split->backend_id;
     ggml_backend_t split_backend = sched->backends[split_backend_id];
     ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, input);
-    struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
+    struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, ggml_backend_sched_split_copy(sched));
+
+    // with the graph input ring the split copy is shared by every ring position, so the per-copy event of the
+    // current position does not cover the previous graph's reads of it: wait for all earlier work on the backend
+    const bool shared_copy = sched->uma_ring;
 
     if (input->flags & GGML_TENSOR_FLAG_INPUT) {
         // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
-        if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+        if (!shared_copy && sched->events[split_backend_id][sched->cur_copy] != NULL) {
             ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
         } else {
             ggml_backend_synchronize(split_backend);
@@ -1948,7 +1963,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     }
 
     // wait for the split backend to finish using the input before overwriting it
-    if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+    if (!shared_copy && sched->events[split_backend_id][sched->cur_copy] != NULL) {
         ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
     } else {
         ggml_backend_synchronize(split_backend);
@@ -2126,6 +2141,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
     }
 
     sched->n_copies = parallel ? GGML_SCHED_MAX_COPIES : n_copies_uma;
+    sched->uma_ring = !parallel && n_copies_uma > 1;
 
     // initialize hash table
     // FIXME: needs to be size*2 to account for leafs (do it in graph_split instead)
