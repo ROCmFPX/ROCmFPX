@@ -4699,3 +4699,16 @@ llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * c
 llama_context * llama_get_ctx_other(struct llama_context * ctx) {
     return ctx->get_cparams().ctx_other;
 }
+
+// ROCmFPX: per-layer-embedding row prefetch for tokens known ahead of their decode (sampled token, drafts)
+void llama_lazy_prefetch_window(llama_context * ctx, const llama_token * window, int32_t n, int32_t first) {
+    extern void qwen4exp_ple_prefetch(const llama_model & model, const llama_token * tokens, int32_t n_tokens, int32_t first);
+    if (ctx == nullptr || window == nullptr || n <= 0 || first < 0 || first >= n) {
+        return;
+    }
+    const llama_model & model = ctx->get_model();
+    if (model.arch != LLM_ARCH_QWEN4EXP) {
+        return;
+    }
+    qwen4exp_ple_prefetch(model, window, n, first);
+}

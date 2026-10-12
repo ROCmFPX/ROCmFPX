@@ -1,3 +1,4 @@
+#include "../../src/llama-ext.h" // staging API: llama_lazy_prefetch_window (ROCmFPX)
 #include "server-context.h"
 #include "server-chat.h"
 #include "server-common.h"
@@ -3473,6 +3474,32 @@ private:
             queue_tasks.yield_to_queue([&]() {
                 common_speculative_draft(spec.get());
             });
+
+            // ROCmFPX: the verify batch gathers the per-layer-embedding rows of the sampled token and the drafts
+            // from disk when --lazy-mode is on; their n-gram keys are known now, so warm the page cache while the
+            // batch is assembled (no-op for models without lazy per-layer embeddings)
+            // opt-in (LLAMA_LAZY_PREFETCH_DRAFT=1): measured 2026-10-12 on Qwen3.8-Flash-Next the row reads are
+            // ~13 us each on NVMe, so with a warm page cache this buys nothing; kept for cold-cache/slow-disk setups
+            static const bool lazy_prefetch = [] {
+                const char * v = getenv("LLAMA_LAZY_PREFETCH_DRAFT");
+                return v != nullptr && atoi(v) != 0;
+            }();
+            if (lazy_prefetch) {
+                iterate(drafting, [&](server_slot & slot) {
+                    const auto & toks = slot.prompt.tokens;
+                    const size_t n_ctx_toks = toks.size();
+                    if (n_ctx_toks < 2) {
+                        return;
+                    }
+                    llama_tokens window;
+                    window.reserve(3 + slot.spec_draft.size());
+                    window.push_back(toks[n_ctx_toks - 2]);
+                    window.push_back(toks[n_ctx_toks - 1]);
+                    window.push_back(slot.sampled);
+                    window.insert(window.end(), slot.spec_draft.begin(), slot.spec_draft.end());
+                    llama_lazy_prefetch_window(slot.ctx_tgt, window.data(), (int32_t) window.size(), 2);
+                });
+            }
         }
 
         // make checkpoints if needed

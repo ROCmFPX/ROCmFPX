@@ -146,3 +146,8 @@ LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_mode
 // if out is nullptr, returns the number of tokens without writing to out
 // caller must allocate enough memory for out before calling
 LLAMA_API uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out);
+
+// ROCmFPX: warm the page cache for the lazily-read per-layer-embedding rows of window[first..n), where the
+// rows of token i are keyed on window[i-1], window[i-2] (n-gram hash). posix_fadvise only: a wrong prediction
+// costs readahead and nothing else. No-op for models without lazy per-layer embeddings.
+LLAMA_API void llama_lazy_prefetch_window(struct llama_context * ctx, const llama_token * window, int32_t n, int32_t first);

@@ -1801,13 +1801,25 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     const char * env = std::getenv("ROCMFPX_MTP_CUM_P");
                     return (env && env[0]) ? std::strtof(env, nullptr) : 0.0f;
                 }();
+                // ROCMFPX_MTP_CUM_MIN / ROCMFPX_MTP_CUM_MAX bound the adaptive length (default 1 / 5): the cutoff
+                // can only stop after CUM_MIN tokens and always stops at CUM_MAX
+                static const int rocmfpx_cum_min = [] {
+                    const char * env = std::getenv("ROCMFPX_MTP_CUM_MIN");
+                    return (env && env[0]) ? std::max(1, atoi(env)) : 1;
+                }();
+                static const int rocmfpx_cum_max = [] {
+                    const char * env = std::getenv("ROCMFPX_MTP_CUM_MAX");
+                    return (env && env[0]) ? std::max(1, atoi(env)) : 5;
+                }();
                 if (rocmfpx_cum_p > 0.0f) {
                     float & cum = cum_hold[seq_id];
                     if (cum <= 0.0f) {
                         cum = 1.0f;
                     }
                     cum *= p_top;
-                    if (cum < rocmfpx_cum_p || result.size() >= 5) {
+                    // never exceed the depth the caller reserved outputs for (the server sizes n_outputs_max by n_max)
+                    const int cum_max = std::min(rocmfpx_cum_max, params.n_max);
+                    if ((cum < rocmfpx_cum_p && (int) result.size() >= rocmfpx_cum_min) || (int) result.size() >= cum_max) {
                         drafting[seq_id] = false;
                         n_drafting--;
                         continue;
