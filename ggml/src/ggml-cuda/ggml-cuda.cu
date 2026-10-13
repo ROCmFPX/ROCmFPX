@@ -5424,10 +5424,111 @@ const void * ggml_cuda_q8_mmq_cache_lookup(ggml_backend_cuda_context & ctx, cons
     return s.ptr;
 }
 
+// Graph-scoped cache of q8_1-quantized matvec inputs.
+//
+// At decode width most matvecs of a layer read one of a few activations (the hyper-connection mix feeds the qkv,
+// gate, alpha, beta, router and shared-expert projections). Quantizing that activation once per consumer costs a
+// kernel launch each; the quantized rows are identical, so they are produced once per graph and shared. Entries are
+// keyed by the source tensor object, its data pointer and layout and are only reused on the stream that produced
+// them, which orders the quantize before every read. The device buffers persist for the process so that kernels
+// captured into a HIP graph keep valid addresses across replays; the table is reset when a graph compute starts.
+namespace {
+
+struct mmvq_q8_cache_entry {
+    const ggml_tensor * src1;
+    const void *        data;
+    int64_t             ne[4];
+    size_t              nb[4];
+    int64_t             ne10_padded;
+    cudaStream_t        stream;
+    char *              buf;
+};
+
+struct mmvq_q8_cache_buffer {
+    char * ptr;
+    size_t size;
+};
+
+struct mmvq_q8_cache {
+    std::vector<mmvq_q8_cache_entry>  entries;      // valid for the current graph only
+    std::vector<mmvq_q8_cache_buffer> buffers;      // never freed: captured graphs may reference them
+    size_t                            next_buffer = 0;
+    size_t                            total_bytes = 0;
+};
+
+constexpr size_t MMVQ_Q8_CACHE_MAX_BYTES  = 64u << 20; // beyond this the matvec falls back to the pool
+constexpr size_t MMVQ_Q8_CACHE_GRANULARITY = 64u << 10;
+
+mmvq_q8_cache g_mmvq_q8_cache[GGML_CUDA_MAX_DEVICES];
+
+bool mmvq_q8_cache_enabled() {
+    static const bool enabled = [] {
+        const char * v = getenv("GGML_CUDA_MMVQ_Q8_CACHE");
+        return v == nullptr || atoi(v) != 0;
+    }();
+    return enabled;
+}
+
+} // namespace
+
+void ggml_cuda_mmvq_q8_cache_begin_graph(int device) {
+    mmvq_q8_cache & c = g_mmvq_q8_cache[device];
+    c.entries.clear();
+    c.next_buffer = 0;
+}
+
+char * ggml_cuda_mmvq_q8_cache_get(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, int64_t ne10_padded, size_t nbytes, bool & hit) {
+    hit = false;
+    if (!mmvq_q8_cache_enabled()) {
+        return nullptr;
+    }
+    mmvq_q8_cache & c = g_mmvq_q8_cache[ctx.device];
+    cudaStream_t stream = ctx.stream();
+
+    for (const mmvq_q8_cache_entry & e : c.entries) {
+        if (e.src1 != src1 || e.data != src1->data || e.ne10_padded != ne10_padded || e.stream != stream) {
+            continue;
+        }
+        if (memcmp(e.ne, src1->ne, sizeof(e.ne)) != 0 || memcmp(e.nb, src1->nb, sizeof(e.nb)) != 0) {
+            continue;
+        }
+        hit = true;
+        return e.buf;
+    }
+
+    // take the next unused buffer of this graph, growing it when the request is larger
+    if (c.next_buffer == c.buffers.size() || c.buffers[c.next_buffer].size < nbytes) {
+        const size_t size = GGML_PAD(nbytes, MMVQ_Q8_CACHE_GRANULARITY);
+        if (c.total_bytes + size > MMVQ_Q8_CACHE_MAX_BYTES) {
+            return nullptr;
+        }
+        void * ptr = nullptr;
+        if (ggml_cuda_device_malloc(&ptr, size, ctx.device) != cudaSuccess) {
+            (void) cudaGetLastError();
+            return nullptr;
+        }
+        c.total_bytes += size;
+        // a buffer that became too small keeps its slot (a captured graph may still use it) and the larger one
+        // is inserted in front of it
+        c.buffers.insert(c.buffers.begin() + c.next_buffer, mmvq_q8_cache_buffer{ (char *) ptr, size });
+    }
+    mmvq_q8_cache_entry e;
+    e.src1 = src1;
+    e.data = src1->data;
+    memcpy(e.ne, src1->ne, sizeof(e.ne));
+    memcpy(e.nb, src1->nb, sizeof(e.nb));
+    e.ne10_padded = ne10_padded;
+    e.stream      = stream;
+    e.buf         = c.buffers[c.next_buffer++].ptr;
+    c.entries.push_back(e);
+    return e.buf;
+}
+
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_cuda_mmb_begin_graph();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_cuda_q8_mmq_cache_begin_graph(cuda_ctx->device);
+    ggml_cuda_mmvq_q8_cache_begin_graph(cuda_ctx->device);
 
     ggml_cuda_set_device(cuda_ctx->device);
 
