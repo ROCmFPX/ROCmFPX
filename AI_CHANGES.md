@@ -193,3 +193,15 @@ byte 2: v2[5:4] | v3[5:0]<<2
 *(Repeat per file. Keep entries factual. Do not remove or rewrite earlier sessions.)*
 
 -->
+
+---
+
+## Session 003 - 2026-09-30
+
+**Scope:** Fix Windows build failure: `llama_lazy_reader` had no `prefetch()` member in its `#ifdef _WIN32` branch.
+
+### `src/llama-lazy-reader.h`
+
+| Fix | Line(s) | Detail |
+|-----|---------|--------|
+| Windows stub | 31 | Added no-op `void prefetch(const int32_t *, int64_t) const {}` next to the existing `gather()` stub. `prefetch()` existed only in the POSIX branch, so Windows builds failed at the `ple_reader->prefetch(...)` call in `src/models/qwen4exp.cpp`. Runtime is unaffected: both `load_lazy_reader` overloads return `nullptr` on Windows (`#ifndef _WIN32` guard in `src/llama-model.cpp`), so `ple_reader` is never created and `qwen4exp_ple_prefetch()` returns at its `!ple_reader` guard. |
