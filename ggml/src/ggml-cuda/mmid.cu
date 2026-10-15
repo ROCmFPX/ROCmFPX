@@ -37,9 +37,6 @@ static __global__ void mm_ids_helper(
     const int n_expert_used = n_expert_used_template == 0 ? n_expert_used_var : n_expert_used_template;
     const int expert = blockIdx.x;
 
-    // token slots per warp lane group, padded to a power of 2 so a warp divides evenly
-    constexpr int neu_padded = mm_ids_pow2<n_expert_used_template>::value;
-
     extern __shared__ char data_mm_ids_helper[];
     mm_ids_helper_store * store = (mm_ids_helper_store *) data_mm_ids_helper;
 
@@ -69,6 +66,7 @@ static __global__ void mm_ids_helper(
     } else {
         // Implementation optimized for specific numbers of experts used:
         // a warp holds a whole number of token slots, so the slot count is padded to a power of 2
+        constexpr int neu_padded = mm_ids_pow2<n_expert_used_template>::value;
         static_assert(neu_padded <= warp_size && warp_size % neu_padded == 0, "bad n_expert_used");
         for (int it0 = 0; it0 < n_tokens; it0 += warp_size/neu_padded) {
             const int it = it0 + threadIdx.x / neu_padded;
@@ -103,17 +101,50 @@ static __global__ void mm_ids_helper(
     nex_prev = warp_reduce_sum<warp_size>(nex_prev);
     ggml_cuda_syncwarp();
 
-    for (int itc = threadIdx.x; itc < it_compact; itc += warp_size) {
-        const mm_ids_helper_store store_it = store[itc];
-        const int it       = store_it.it();
-        const int iex_used = store_it.iex_used();
-        ids_dst[nex_prev + itc] = it*n_expert_used + iex_used;
-        // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
-        if (write_inverse) {
-            ids_src1[it*n_expert_used + iex_used] = nex_prev + itc;
-        } else {
-            ids_src1[nex_prev + itc] = it*sis1 + iex_used % nchannels_y;
+    // Write the id maps. A token is stored once above, but every slot of its id row that routes to this expert
+    // gets its own compact row (an expert repeated inside one token's row is applied once per slot, so each
+    // dst row is written). nex_prev already counts lower experts per slot, so the bounds stay consistent.
+    int row_base = nex_prev; // first compact row of the next stored token (warp-uniform)
+    for (int itc0 = 0; itc0 < it_compact; itc0 += warp_size) {
+        const int  itc   = itc0 + threadIdx.x;
+        const bool valid = itc < it_compact;
+        const int  it    = valid ? static_cast<int>(store[itc].it()) : 0;
+
+        int n_match = 0;
+        if (valid) {
+            for (int iex = 0; iex < n_expert_used; ++iex) {
+                n_match += ids[it*si1 + iex] == expert;
+            }
         }
+
+        // inclusive scan of n_match over the warp: row offset of this token inside the chunk
+        int incl = n_match;
+#pragma unroll
+        for (int offset = 1; offset < warp_size; offset <<= 1) {
+            const int tmp = __shfl_up_sync(0xFFFFFFFF, incl, offset, warp_size);
+            if (threadIdx.x >= static_cast<unsigned int>(offset)) {
+                incl += tmp;
+            }
+        }
+        const int n_rows_chunk = __shfl_sync(0xFFFFFFFF, incl, warp_size - 1, warp_size);
+
+        if (valid) {
+            int row = row_base + incl - n_match;
+            for (int iex = 0; iex < n_expert_used; ++iex) {
+                if (ids[it*si1 + iex] != expert) {
+                    continue;
+                }
+                ids_dst[row] = it*n_expert_used + iex;
+                // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
+                if (write_inverse) {
+                    ids_src1[it*n_expert_used + iex] = row;
+                } else {
+                    ids_src1[row] = it*sis1 + iex % nchannels_y;
+                }
+                ++row;
+            }
+        }
+        row_base += n_rows_chunk;
     }
 
     if (threadIdx.x != 0) {
@@ -126,7 +157,7 @@ static __global__ void mm_ids_helper(
         return;
     }
 
-    expert_bounds[gridDim.x] = nex_prev + it_compact;
+    expert_bounds[gridDim.x] = row_base;
 }
 
 template <int n_expert_used_template>

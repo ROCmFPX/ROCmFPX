@@ -111,13 +111,18 @@ block_b_cache cache_b;
 #include "mul_mmq_funcs.glsl"
 
 void main() {
-    const uint ic = gl_WorkGroupID.y;
-
 #ifdef MUL_MAT_ID
     const uint expert_idx = gl_WorkGroupID.z;
-    if (ic * BN >= data_expert_count[expert_idx]) {
-        return;
+    const uint expert_rows = data_expert_count[expert_idx];
+    // The grid provides ceil(nei1 / BN) column tiles per expert. An expert id repeated inside a token's id row
+    // gives that expert more rows than that, so the tiles are walked grid-stride; without repeats this is one pass.
+    for (uint ic = gl_WorkGroupID.y; ic * BN < expert_rows; ic += gl_NumWorkGroups.y) {
+    if (ic != gl_WorkGroupID.y) {
+        barrier(); // the previous tile may still read the shared buffers and row ids
     }
+#else
+    const uint ic = gl_WorkGroupID.y;
+    do {
 #endif
 #ifdef NEEDS_INIT_IQ_SHMEM
     init_iq_shmem(gl_WorkGroupSize);
@@ -188,7 +193,7 @@ void main() {
     }
 
     // Workgroup has no work
-    if (ic * BN >= _ne1) return;
+    if (ic * BN >= _ne1) continue;
 #endif
 
 #ifdef MUL_MAT_ID
@@ -316,4 +321,9 @@ void main() {
             }
         }
     }
+#ifdef MUL_MAT_ID
+    } // tile loop
+#else
+    } while (false);
+#endif
 }

@@ -1538,10 +1538,18 @@ struct ggml_cuda_stream_context {
     }
 };
 
+struct ggml_cuda_q8_mmq_slot;
+struct ggml_cuda_mmvq_q8_cache;
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
     cudaEvent_t copy_event = nullptr;
+
+    // ROCmFPX: per-context q8 activation caches (ggml-cuda.cu). Contexts on one device may compute concurrently
+    // from different threads, so these must not be per-device globals. Allocated on first use, freed with the context.
+    ggml_cuda_q8_mmq_slot *   q8_mmq_slot   = nullptr;
+    ggml_cuda_mmvq_q8_cache * mmvq_q8_cache = nullptr;
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
@@ -1601,6 +1609,10 @@ struct ggml_backend_cuda_context {
         return false;
     }
 #endif // USE_CUDA_GRAPH
+
+    // never copied: the context owns streams, handles, captured graphs and the q8 caches by raw pointer
+    ggml_backend_cuda_context(const ggml_backend_cuda_context &) = delete;
+    ggml_backend_cuda_context & operator=(const ggml_backend_cuda_context &) = delete;
 
     explicit ggml_backend_cuda_context(int device) :
         device(device),
@@ -1666,6 +1678,9 @@ struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * gate_scale = nullptr;
     ggml_glu_op glu_op;
     float glu_limit = 0.0f;
+    const ggml_tensor * shared_up = nullptr;
+    const ggml_tensor * shared_gate = nullptr;
+    ggml_tensor * shared_dst = nullptr;
 };
 struct ggml_cuda_mm_fusion_args_device {
     const void * x_bias = nullptr;
@@ -1675,6 +1690,10 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * gate_scale = nullptr;
     ggml_glu_op glu_op;
     float glu_limit = 0.0f;
+    const void * shared_up = nullptr;
+    const void * shared_gate = nullptr;
+    float * shared_dst = nullptr;
+    uint32_t shared_stride_col_dst = 0;
 };
 
 struct ggml_cuda_kernel_launch_params {

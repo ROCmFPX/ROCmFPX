@@ -53,7 +53,13 @@ static bool rows_shape_ok(const ggml_tensor * x, const ggml_tensor * w, const gg
     if (x->type != GGML_TYPE_F32 || w->type != GGML_TYPE_F32 || out->type != GGML_TYPE_F32) return false;
     if (x->ne[0] > 256 || x->ne[0] % 32 != 0 || x->nb[0] != 4 || !ggml_is_contiguous(w) || !ggml_is_contiguous(out)) return false;
     if (w->ne[0] != x->ne[0] || w->ne[1] != 1 || w->ne[2] != 1 || w->ne[3] != 1) return false;
-    if (x->ne[1] * x->ne[2] * x->ne[3] < 4096) return false;
+    // GGML_CUDA_NORM_GATED_MIN_ROWS: decode/verify batches have n_head*n_tokens rows (48-432 on Qwen3.8-Flash-Next)
+    // and never reached the 4096-row floor; lower it to fuse the norm->gate chain there as well
+    static const int64_t min_rows = [] {
+        const char * v = getenv("GGML_CUDA_NORM_GATED_MIN_ROWS");
+        return v ? (int64_t) atoll(v) : (int64_t) 4096;
+    }();
+    if (x->ne[1] * x->ne[2] * x->ne[3] < min_rows) return false;
     return ggml_nelements(out) == ggml_nelements(x);
 }
 

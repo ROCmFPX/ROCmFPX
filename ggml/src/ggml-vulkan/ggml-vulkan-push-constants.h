@@ -63,7 +63,7 @@ struct vk_mat_mat_id_push_constants {
     uint32_t batch_stride_a; uint32_t batch_stride_b; uint32_t batch_stride_d;
     uint32_t nei0; uint32_t nei1; uint32_t nbi1; uint32_t ne11;
     uint32_t n_experts;
-    uint32_t hoist_row_ids;
+    uint32_t row_ids_offset;
 };
 
 struct vk_mat_vec_id_push_constants {
@@ -683,9 +683,7 @@ struct vk_op_lightning_indexer_push_constants {
     uint32_t n_kv;
     uint32_t n_heads;
     uint32_t n_tokens;
-    uint32_t n_streams;
     uint32_t n_masks;
-    uint32_t dispatch_x;
     uint32_t q_nb1;
     uint32_t q_nb2;
     uint32_t q_nb3;
