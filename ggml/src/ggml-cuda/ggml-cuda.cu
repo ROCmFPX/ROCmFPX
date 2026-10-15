@@ -5914,10 +5914,13 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
             }
             ggml_cuda_topk_moe_match topk;
             if (ggml_cuda_match_topk_moe(cgraph, i, topk)) {
-                if (ggml_nrows(cgraph->nodes[i]) > TOPK_MOE_ROWS_PER_BLOCK) {
-                    params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(topk.logits), topk.ids);
-                    params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(topk.logits), topk.weights);
-                }
+                // graph_optimize must register the same alloc deps for every ubatch size: only the > TOPK_MOE_ROWS_PER_BLOCK
+                // kernel needs logits kept alive, but gating the dep on the row count made a 1-token graph and a 16-token graph
+                // allocate differently, so the scheduler re-reserved on every switch between them (test-recurrent-state-rollback
+                // aborts under GGML_SCHED_DEBUG_REALLOC=1 on qwen35moe). The dep only keeps a [n_expert, n_tokens] f32 tensor
+                // alive a little longer.
+                params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(topk.logits), topk.ids);
+                params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(topk.logits), topk.weights);
                 if (topk.bias != nullptr) {
                     params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(topk.bias), topk.ids);
                     params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(topk.bias), topk.weights);
