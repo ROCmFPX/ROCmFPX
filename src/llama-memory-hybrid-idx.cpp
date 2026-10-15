@@ -1561,7 +1561,7 @@ bool llama_memory_hybrid_idx::qsa_prefix_matches(const llama_ubatch & u) const {
         u.pos[0] != qsa_prefix.begin || int64_t(u.n_tokens) != qsa_prefix.end-qsa_prefix.begin) { return false; }
     for (uint32_t i=0; i<u.n_tokens; ++i) {
         if (u.n_seq_id[i] != 1 || !u.seq_id[i] || u.seq_id[i][0] != qsa_prefix.sequence || u.pos[i] != u.pos[0]+int32_t(i)) { return false; }
-        for (uint32_t a=1; a<u.n_pos; ++a) { if (u.pos[i+a*u.n_tokens] != u.pos[i]) { return false; } }
+        if (!qsa_pos_row_is_scalar(u, i)) { return false; }
     }
     return true;
 }
