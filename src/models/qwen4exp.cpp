@@ -1061,6 +1061,20 @@ static std::vector<int64_t> qwen4exp_score_key_limits(const llama_memory_hybrid_
     return limits;
 }
 
+// Decode-sized ubatches (fewer than 128 tokens, cell-expanded selection) read the pooled-key cache as well: without
+// it every decode step gathers, pools, normalizes and rotates every indexer block of the context again, which grows
+// linearly with the context (~15 ms per token at 48k on gfx1151). The cache rows are the prefix's logical blocks and
+// qsa_decode_cacheable guarantees the generic block ids coincide with them. ROCMFPX_QWEN4_QSA_DECODE_CACHE=0 disables it.
+static bool qwen4exp_qsa_decode_cached(const llama_memory_hybrid_idx_context * mctx, const llama_ubatch & ubatch,
+        uint32_t ratio, bool compact, int64_t n_stream) {
+    static const bool enabled = [] {
+        const char * v = getenv("ROCMFPX_QWEN4_QSA_DECODE_CACHE");
+        return !v || strcmp(v, "0") != 0;
+    }();
+    return enabled && ratio == 4 && !compact && n_stream == 1 && ubatch.n_tokens < 128 &&
+        mctx->qsa_decode_cacheable(ubatch);
+}
+
 class llama_model_qwen4exp::llm_graph_input_qsa : public llm_graph_input_i {
 public:
     llm_graph_input_qsa(const llama_memory_hybrid_idx_context * mctx, uint32_t ratio, bool blk_bias, bool causal_attn) :
@@ -1089,6 +1103,7 @@ public:
         const int64_t n_blocks = ((int64_t) mctx->qsa_n_kv_window() + ratio - 1)/ratio;
 
         bool res = incremental_prefix == (ratio == 4 && mctx->qsa_prefix_matches(params.ubatch));
+        res &= decode_cached == qwen4exp_qsa_decode_cached(mctx, params.ubatch, ratio, compact, n_stream);
 
         res &= params.ubatch.n_tokens % n_stream == 0;
 
@@ -1125,6 +1140,7 @@ public:
 
     ggml_tensor * tail_idxs = nullptr;
     bool incremental_prefix = false;
+    bool decode_cached = false;
     bool compact = false;
     bool maskless = false;
     int64_t score_strip = 0;
@@ -1286,6 +1302,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
             cparams.causal_attn && hparams.n_swa==0 && mctx_hyb->qsa_scalar_visibility(ubatch);
         qsa->incremental_prefix = r == 4 && mctx_hyb->qsa_prefix_matches(ubatch);
         qsa->compact = scalar;
+        qsa->decode_cached = qwen4exp_qsa_decode_cached(mctx_hyb, ubatch, (uint32_t) r, scalar, n_stream);
         qsa->maskless = scalar;
         qsa->score_strip=qwen4exp_query_strip(n_tps,n_stream);
         qsa->score_key_limits=qwen4exp_score_key_limits(mctx_hyb,ubatch,n_blocks,qsa->score_strip,r,
@@ -1323,7 +1340,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     ggml_tensor * k_all = mctx_idx->get_k(ctx0, il);
     k_all = ggml_view_3d(ctx0, k_all, idx_dim, n_kv, n_stream, k_all->nb[2], k_all->nb[3], 0);
 
-    ggml_tensor * cached = r == 4 && inp->compact && mctx_hyb->qsa_prefix_matches(ubatch)
+    ggml_tensor * cached = r == 4 && (inp->compact || inp->decode_cached) && mctx_hyb->qsa_prefix_matches(ubatch)
             ? mctx_hyb->qsa_cache(ctx0, il) : nullptr;
     const bool fast_cache = cached && mctx_hyb->qsa_fast(il, ubatch);
     const int64_t prep_blocks = fast_cache ? (n_tokens+3)/4+1 : n_blocks;
