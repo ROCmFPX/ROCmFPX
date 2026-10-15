@@ -1479,6 +1479,18 @@ uint32_t llama_memory_hybrid_idx_context::qsa_n_kv_window() const {
     return std::max(n_kv, window);
 }
 
+// A 1-D (text) position row: the M-RoPE h/w sections equal the time section. Since upstream #29622 the batch
+// allocator writes every section for token batches too, with the fourth (the text-only slot) set to 0, so a
+// zero in sections >= 3 is still a scalar position and must not disable the maskless/packed-key QSA layout
+// (that fallback cost HC-Q8 pp8192 prefill 1156 -> 1046 t/s at -ub 2048 and 1347 -> 1011 at -ub 8192).
+static bool qsa_pos_row_is_scalar(const llama_ubatch & u, uint32_t i) {
+    for (uint32_t axis = 1; axis < u.n_pos; ++axis) {
+        const llama_pos p = u.pos[i + axis*u.n_tokens];
+        if (p != u.pos[i] && !(axis >= 3 && p == 0)) { return false; }
+    }
+    return true;
+}
+
 bool llama_memory_hybrid_idx_context::qsa_scalar_visibility(const llama_ubatch & ubatch) const {
     if (qsa_prefix_matches(ubatch)) { return true; }
     if (get_n_stream()!=1 || !get_idx() || !ubatch.token || !ubatch.pos || !ubatch.n_tokens ||
@@ -1488,9 +1500,7 @@ bool llama_memory_hybrid_idx_context::qsa_scalar_visibility(const llama_ubatch &
     for (uint32_t i=0;i<ubatch.n_tokens;++i) {
         if (ubatch.n_seq_id[i]<1 || !ubatch.seq_id[i] || ubatch.seq_id[i][0]!=seq ||
                 ubatch.pos[i]<0 || ubatch.pos[i]>=16777216) { return false; }
-        for (uint32_t axis=1;axis<ubatch.n_pos;++axis) {
-            if (ubatch.pos[i+axis*ubatch.n_tokens]!=ubatch.pos[i]) { return false; }
-        }
+        if (!qsa_pos_row_is_scalar(ubatch, i)) { return false; }
     }
     if (ubatch.is_pos_2d()) {
         const auto & cells=mem->get_mem_idx()->get_cells(seq);
@@ -1539,9 +1549,7 @@ void llama_memory_hybrid_idx::qsa_apply(const llama_ubatch & u, const llama_kv_c
         if (u.n_seq_id[i] != 1 || !u.seq_id[i] || u.seq_id[i][0] != seq || int64_t(u.pos[i]) != int64_t(u.pos[0])+i) {
             reject(); return;
         }
-        for (uint32_t axis=1; axis<u.n_pos; ++axis) {
-            if (u.pos[i+axis*u.n_tokens] != u.pos[i]) { reject(); return; }
-        }
+        if (!qsa_pos_row_is_scalar(u, i)) { reject(); return; }
     }
     if (!qsa_prefix.valid && (!qsa_recover_pending || !qsa_recover(seq))) { qsa_recover_pending = false; return; }
     qsa_recover_pending = false;
