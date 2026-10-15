@@ -1538,10 +1538,18 @@ struct ggml_cuda_stream_context {
     }
 };
 
+struct ggml_cuda_q8_mmq_slot;
+struct ggml_cuda_mmvq_q8_cache;
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
     cudaEvent_t copy_event = nullptr;
+
+    // ROCmFPX: per-context q8 activation caches (ggml-cuda.cu). Contexts on one device may compute concurrently
+    // from different threads, so these must not be per-device globals. Allocated on first use, freed with the context.
+    ggml_cuda_q8_mmq_slot *   q8_mmq_slot   = nullptr;
+    ggml_cuda_mmvq_q8_cache * mmvq_q8_cache = nullptr;
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};

@@ -722,6 +722,9 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     if (copy_event != nullptr) {
         CUDA_CHECK(cudaEventDestroy(copy_event));
     }
+    // per-context q8 caches (device buffers referenced by this context's captured graphs)
+    ggml_cuda_q8_mmq_cache_free(*this);
+    ggml_cuda_mmvq_q8_cache_free(*this);
     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
             if (streams[i][j] != nullptr) {
@@ -5382,8 +5385,9 @@ static const void * g_gt_first_split   = nullptr;
 
 // Q8_1 (MMQ D4 layout) copy of an activation written by a fused producer (hc_combine_norm) for the
 // MMQ that reads that activation next. Producer and consumer run back to back on the stream, so one
-// buffer per device is enough. It only grows with the ubatch; an outgrown buffer is not freed
-// because a captured graph may still reference it.
+// buffer per context is enough. It only grows with the ubatch; an outgrown buffer is not freed
+// because a captured graph may still reference it. The slot lives in the backend context: contexts
+// on one device can compute concurrently (one per thread), so they must not share it.
 struct ggml_cuda_q8_mmq_slot {
     void *       ptr    = nullptr;
     size_t       size   = 0;
@@ -5391,14 +5395,30 @@ struct ggml_cuda_q8_mmq_slot {
     int64_t      ne     = 0;
     size_t       nbytes = 0;
 };
-static ggml_cuda_q8_mmq_slot g_q8_mmq_slot[GGML_CUDA_MAX_DEVICES];
 
-void ggml_cuda_q8_mmq_cache_begin_graph(int device) {
-    g_q8_mmq_slot[device].src = nullptr;
+void ggml_cuda_q8_mmq_cache_begin_graph(ggml_backend_cuda_context & ctx) {
+    if (ctx.q8_mmq_slot != nullptr) {
+        ctx.q8_mmq_slot->src = nullptr;
+    }
+}
+
+void ggml_cuda_q8_mmq_cache_free(ggml_backend_cuda_context & ctx) {
+    if (ctx.q8_mmq_slot == nullptr) {
+        return;
+    }
+    if (ctx.q8_mmq_slot->ptr != nullptr) {
+        ggml_cuda_set_device(ctx.device);
+        CUDA_CHECK(cudaFree(ctx.q8_mmq_slot->ptr));
+    }
+    delete ctx.q8_mmq_slot;
+    ctx.q8_mmq_slot = nullptr;
 }
 
 void * ggml_cuda_q8_mmq_cache_reserve(ggml_backend_cuda_context & ctx, const ggml_tensor * t, size_t nbytes) {
-    ggml_cuda_q8_mmq_slot & s = g_q8_mmq_slot[ctx.device];
+    if (ctx.q8_mmq_slot == nullptr) {
+        ctx.q8_mmq_slot = new ggml_cuda_q8_mmq_slot();
+    }
+    ggml_cuda_q8_mmq_slot & s = *ctx.q8_mmq_slot;
     s.src = nullptr;
     if (s.size < nbytes) {
         void * p = nullptr;
@@ -5416,7 +5436,10 @@ void * ggml_cuda_q8_mmq_cache_reserve(ggml_backend_cuda_context & ctx, const ggm
 }
 
 const void * ggml_cuda_q8_mmq_cache_lookup(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, size_t nbytes_min) {
-    ggml_cuda_q8_mmq_slot & s = g_q8_mmq_slot[ctx.device];
+    if (ctx.q8_mmq_slot == nullptr) {
+        return nullptr;
+    }
+    ggml_cuda_q8_mmq_slot & s = *ctx.q8_mmq_slot;
     if (s.src == nullptr || s.src != src1->data || s.ne != ggml_nelements(src1) || s.nbytes < nbytes_min) {
         return nullptr;
     }
@@ -5426,12 +5449,15 @@ const void * ggml_cuda_q8_mmq_cache_lookup(ggml_backend_cuda_context & ctx, cons
 
 // Graph-scoped cache of q8_1-quantized matvec inputs.
 //
-// At decode width most matvecs of a layer read one of a few activations (the hyper-connection mix feeds the qkv,
-// gate, alpha, beta, router and shared-expert projections). Quantizing that activation once per consumer costs a
-// kernel launch each; the quantized rows are identical, so they are produced once per graph and shared. Entries are
-// keyed by the source tensor object, its data pointer and layout and are only reused on the stream that produced
-// them, which orders the quantize before every read. The device buffers persist for the process so that kernels
-// captured into a HIP graph keep valid addresses across replays; the table is reset when a graph compute starts.
+// At decode width most matvecs of a layer read one of a few activations (on Qwen3.8 Flash Next the hyper-connection
+// mix feeds the qkv, gate, alpha, beta, router and shared-expert projections). Quantizing that activation once per
+// consumer costs a kernel launch each; the quantized rows are identical, so they are produced once per graph and
+// shared. Entries are keyed by the source tensor object, its data pointer and layout and are only reused on the
+// stream that produced them, which orders the quantize before every read. The device buffers persist for the life
+// of the context so that kernels captured into a HIP graph keep valid addresses across replays; the table is reset
+// when a graph compute starts. The cache lives in the backend context, not in a per-device global: two contexts on
+// one device can compute at the same time from different threads (test-thread-safety), and a shared table was
+// corrupted by that (free() aborting inside ggml_cuda_mmvq_q8_cache_get).
 namespace {
 
 struct mmvq_q8_cache_entry {
@@ -5449,17 +5475,8 @@ struct mmvq_q8_cache_buffer {
     size_t size;
 };
 
-struct mmvq_q8_cache {
-    std::vector<mmvq_q8_cache_entry>  entries;      // valid for the current graph only
-    std::vector<mmvq_q8_cache_buffer> buffers;      // never freed: captured graphs may reference them
-    size_t                            next_buffer = 0;
-    size_t                            total_bytes = 0;
-};
-
 constexpr size_t MMVQ_Q8_CACHE_MAX_BYTES  = 64u << 20; // beyond this the matvec falls back to the pool
 constexpr size_t MMVQ_Q8_CACHE_GRANULARITY = 64u << 10;
-
-mmvq_q8_cache g_mmvq_q8_cache[GGML_CUDA_MAX_DEVICES];
 
 bool mmvq_q8_cache_enabled() {
     static const bool enabled = [] {
@@ -5471,10 +5488,32 @@ bool mmvq_q8_cache_enabled() {
 
 } // namespace
 
-void ggml_cuda_mmvq_q8_cache_begin_graph(int device) {
-    mmvq_q8_cache & c = g_mmvq_q8_cache[device];
-    c.entries.clear();
-    c.next_buffer = 0;
+struct ggml_cuda_mmvq_q8_cache {
+    std::vector<mmvq_q8_cache_entry>  entries;      // valid for the current graph only
+    std::vector<mmvq_q8_cache_buffer> buffers;      // freed with the context: captured graphs may reference them
+    size_t                            next_buffer = 0;
+    size_t                            total_bytes = 0;
+};
+
+void ggml_cuda_mmvq_q8_cache_begin_graph(ggml_backend_cuda_context & ctx) {
+    if (ctx.mmvq_q8_cache != nullptr) {
+        ctx.mmvq_q8_cache->entries.clear();
+        ctx.mmvq_q8_cache->next_buffer = 0;
+    }
+}
+
+void ggml_cuda_mmvq_q8_cache_free(ggml_backend_cuda_context & ctx) {
+    if (ctx.mmvq_q8_cache == nullptr) {
+        return;
+    }
+    if (!ctx.mmvq_q8_cache->buffers.empty()) {
+        ggml_cuda_set_device(ctx.device);
+        for (const mmvq_q8_cache_buffer & b : ctx.mmvq_q8_cache->buffers) {
+            CUDA_CHECK(cudaFree(b.ptr));
+        }
+    }
+    delete ctx.mmvq_q8_cache;
+    ctx.mmvq_q8_cache = nullptr;
 }
 
 char * ggml_cuda_mmvq_q8_cache_get(ggml_backend_cuda_context & ctx, const ggml_tensor * src1, int64_t ne10_padded, size_t nbytes, bool & hit) {
@@ -5482,7 +5521,10 @@ char * ggml_cuda_mmvq_q8_cache_get(ggml_backend_cuda_context & ctx, const ggml_t
     if (!mmvq_q8_cache_enabled()) {
         return nullptr;
     }
-    mmvq_q8_cache & c = g_mmvq_q8_cache[ctx.device];
+    if (ctx.mmvq_q8_cache == nullptr) {
+        ctx.mmvq_q8_cache = new ggml_cuda_mmvq_q8_cache();
+    }
+    ggml_cuda_mmvq_q8_cache & c = *ctx.mmvq_q8_cache;
     cudaStream_t stream = ctx.stream();
 
     for (const mmvq_q8_cache_entry & e : c.entries) {
@@ -5527,8 +5569,8 @@ char * ggml_cuda_mmvq_q8_cache_get(ggml_backend_cuda_context & ctx, const ggml_t
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_cuda_mmb_begin_graph();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
-    ggml_cuda_q8_mmq_cache_begin_graph(cuda_ctx->device);
-    ggml_cuda_mmvq_q8_cache_begin_graph(cuda_ctx->device);
+    ggml_cuda_q8_mmq_cache_begin_graph(*cuda_ctx);
+    ggml_cuda_mmvq_q8_cache_begin_graph(*cuda_ctx);
 
     ggml_cuda_set_device(cuda_ctx->device);
 
