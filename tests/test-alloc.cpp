@@ -710,6 +710,8 @@ static void test_pinned_view_root_no_inplace() {
     ggml_gallocr_pin_tensor(galloc.get(), root);
     GGML_ASSERT(ggml_gallocr_alloc_graph(galloc.get(), graph));
     GGML_ASSERT(!memory_overlap(root, child));
+}
+
 // Check that the size reported by ggml_backend_alloc_ctx_tensors_from_buft_size
 // matches the actual size of the buffer allocated for the ctx tensors
 static ggml_backend_buffer_ptr check_size_matches(ggml_backend_buffer_type_t buft, ggml_context * ctx) {
