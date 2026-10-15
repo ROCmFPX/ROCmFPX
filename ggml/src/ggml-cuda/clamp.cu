@@ -27,8 +27,24 @@ static __global__ void op_clamp_kernel(const T * x, T * dst, const T min, const 
 }
 
 template <class T>
+static __global__ void op_clamp_kernel_contiguous(const T * x, T * dst, const T min, const T max, const uint32_t k) {
+    const uint32_t i = blockDim.x*blockIdx.x + threadIdx.x;
+    if (i >= k) {
+        return;
+    }
+    dst[i] = (T)op_clamp((float)x[i], (float)min, (float)max);
+}
+
+template <class T>
 static void clamp_cuda(const T * x, T * dst, const T min, const T max, const ggml_tensor * src0, const ggml_tensor * t, cudaStream_t stream) {
     const int64_t k  = ggml_nelements(src0);
+    // ROCmFPX: the common case needs no per-element index math
+    if (ggml_is_contiguous(src0) && ggml_is_contiguous(t)) {
+        GGML_ASSERT(k <= std::numeric_limits<uint32_t>::max());
+        const int64_t num_blocks = (k + CUDA_CLAMP_BLOCK_SIZE - 1) / CUDA_CLAMP_BLOCK_SIZE;
+        op_clamp_kernel_contiguous<<<num_blocks, CUDA_CLAMP_BLOCK_SIZE, 0, stream>>>(x, dst, min, max, (uint32_t) k);
+        return;
+    }
     const size_t  ts = sizeof(T);
     GGML_ASSERT(k <= std::numeric_limits<uint32_t>::max());
 
