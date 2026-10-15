@@ -1610,6 +1610,10 @@ struct ggml_backend_cuda_context {
     }
 #endif // USE_CUDA_GRAPH
 
+    // never copied: the context owns streams, handles, captured graphs and the q8 caches by raw pointer
+    ggml_backend_cuda_context(const ggml_backend_cuda_context &) = delete;
+    ggml_backend_cuda_context & operator=(const ggml_backend_cuda_context &) = delete;
+
     explicit ggml_backend_cuda_context(int device) :
         device(device),
         name(GGML_CUDA_NAME + std::to_string(device)) {

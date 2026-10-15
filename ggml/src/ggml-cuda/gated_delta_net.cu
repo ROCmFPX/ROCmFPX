@@ -725,8 +725,8 @@ static void launch_gated_delta_net(
         float scale, int64_t state_slot_stride, int K, cudaStream_t stream) {
     //TODO: Add chunked kernel for even faster pre-fill
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
-    // four columns per warp (see the kernel); shrink the CTA when the wider CTA would leave
-    // SMs without a CTA, so small head counts keep the device filled
+    // gdn_cols_per_warp columns per warp (four on CUDA, one on HIP; see the kernel); shrink the CTA when the
+    // wider CTA would leave SMs without a CTA, so small head counts keep the device filled
     const int nsm = ggml_cuda_info().devices[ggml_cuda_get_device()].nsm;
     const int cols_per_warp = gdn_cols_per_warp;
     int num_warps = 4;

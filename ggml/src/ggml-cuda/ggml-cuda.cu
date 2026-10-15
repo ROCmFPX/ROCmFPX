@@ -5389,11 +5389,12 @@ static const void * g_gt_first_split   = nullptr;
 // because a captured graph may still reference it. The slot lives in the backend context: contexts
 // on one device can compute concurrently (one per thread), so they must not share it.
 struct ggml_cuda_q8_mmq_slot {
-    void *       ptr    = nullptr;
-    size_t       size   = 0;
-    const void * src    = nullptr;
-    int64_t      ne     = 0;
-    size_t       nbytes = 0;
+    void *              ptr    = nullptr;
+    size_t              size   = 0;
+    const void *        src    = nullptr;
+    int64_t             ne     = 0;
+    size_t              nbytes = 0;
+    std::vector<void *> retired; // outgrown buffers: a captured graph may still reference them, freed with the context
 };
 
 void ggml_cuda_q8_mmq_cache_begin_graph(ggml_backend_cuda_context & ctx) {
@@ -5406,9 +5407,14 @@ void ggml_cuda_q8_mmq_cache_free(ggml_backend_cuda_context & ctx) {
     if (ctx.q8_mmq_slot == nullptr) {
         return;
     }
-    if (ctx.q8_mmq_slot->ptr != nullptr) {
+    if (ctx.q8_mmq_slot->ptr != nullptr || !ctx.q8_mmq_slot->retired.empty()) {
         ggml_cuda_set_device(ctx.device);
-        CUDA_CHECK(cudaFree(ctx.q8_mmq_slot->ptr));
+        if (ctx.q8_mmq_slot->ptr != nullptr) {
+            CUDA_CHECK(cudaFree(ctx.q8_mmq_slot->ptr));
+        }
+        for (void * p : ctx.q8_mmq_slot->retired) {
+            CUDA_CHECK(cudaFree(p));
+        }
     }
     delete ctx.q8_mmq_slot;
     ctx.q8_mmq_slot = nullptr;
@@ -5425,6 +5431,9 @@ void * ggml_cuda_q8_mmq_cache_reserve(ggml_backend_cuda_context & ctx, const ggm
         if (ggml_cuda_device_malloc(&p, nbytes, ctx.device) != cudaSuccess) {
             (void) cudaGetLastError();
             return nullptr;
+        }
+        if (s.ptr != nullptr) {
+            s.retired.push_back(s.ptr);
         }
         s.ptr  = p;
         s.size = nbytes;
