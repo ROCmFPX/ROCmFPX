@@ -128,6 +128,9 @@ public:
     void qsa_invalidate();
     bool qsa_prefix_matches(const llama_ubatch & ubatch) const;
     bool qsa_fast(int il, const llama_ubatch & ubatch) const;
+    // the cell-expanded (decode-sized) scorer addresses blocks by set_input_qsa_impl's ids, which equal the prefix's
+    // logical blocks (position/ratio) only while the indexer cache holds exactly the prefix sequence's cells
+    bool qsa_decode_cacheable(const llama_ubatch & ubatch) const;
     ggml_tensor * qsa_cache(ggml_context * ctx, int il, int64_t blocks) const;
     void qsa_fill_updates(ggml_tensor * members, ggml_tensor * positions, ggml_tensor * rows) const;
     void qsa_commit(int il) const;
@@ -224,6 +227,7 @@ public:
     const llama_kv_cache_context * get_idx() const;
     bool qsa_prefix_matches(const llama_ubatch & u) const { return mem && mem->qsa_prefix_matches(u); }
     bool qsa_fast(int il, const llama_ubatch & u) const { return mem && mem->qsa_fast(il, u); }
+    bool qsa_decode_cacheable(const llama_ubatch & u) const { return mem && mem->qsa_decode_cacheable(u); }
     // cells the block metadata must cover: the KV view is sized by occupied cells, but a cache whose positions
     // run ahead of its cells (an MTP draft never receives the image cells an M-RoPE image pins to one position)
     // has blocks past that view. Never below get_n_kv(), padded like it so graph reuse keeps its cadence.

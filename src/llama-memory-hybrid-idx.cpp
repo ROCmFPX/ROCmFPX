@@ -422,8 +422,14 @@ void llama_memory_hybrid_idx::set_input_qsa_impl(
     const int64_t n_tps = n_tokens/n_ns;             // tokens per stream
 
     int32_t * dst_cell_blk  = tail_idxs ? nullptr : (int32_t *) cell_blk->data;
+    // the pooled-key fast path (qwen4exp build_qsa_top_k) gathers its block members and positions through its own
+    // inputs, so the graph leaves these two unreachable and unallocated; the grouping is still needed for cell_blk
+    // and the bias, so build them in scratch space then
+    std::vector<int32_t> scratch_cells, scratch_pos;
     int32_t * dst_blk_cells = (int32_t *) blk_cells->data;
     int32_t * dst_blk_pos   = (int32_t *) blk_pos->data;
+    if (!dst_blk_cells) { scratch_cells.assign(ggml_nelements(blk_cells), 0); dst_blk_cells = scratch_cells.data(); }
+    if (!dst_blk_pos)   { scratch_pos.assign(ggml_nelements(blk_pos), 0);     dst_blk_pos   = scratch_pos.data(); }
     const bool compact = bias->type == GGML_TYPE_I32;
     float * dst_bias = compact ? nullptr : (float *) bias->data;
     int32_t * limits = compact ? (int32_t *) bias->data : nullptr;
@@ -614,6 +620,16 @@ void llama_memory_hybrid_idx::set_input_qsa_impl(
 
         GGML_ASSERT(n_bid <= n_blocks);
 
+        // the decode-sized scorer may read the pooled-key cache (qwen4exp build_qsa_top_k), whose rows are the
+        // prefix's logical blocks: when that is allowed the ids assigned above must coincide with them
+        if (!tail_idxs && n_ns == 1 && !ranked && qsa_decode_cacheable(*ubatch)) {
+            const int64_t complete = qsa_prefix.cells.size()/4;
+            GGML_ASSERT(r == 4 && n_bid == complete && "qsa: generic block ids diverge from the pooled-key cache rows");
+            for (int32_t b = 0; b < n_bid; ++b) {
+                GGML_ASSERT(bid_idx[b] == 4*b && "qsa: generic block order diverges from the pooled-key cache rows");
+            }
+        }
+
         for (int32_t b = 0; b < n_bid; ++b) {
             int32_t sec_pos[4] = { bid_idx[b], bid_idx[b], bid_idx[b], bid_idx[b] };
 
@@ -650,6 +666,11 @@ void llama_memory_hybrid_idx::set_input_qsa_impl(
             }
 
             if (cur_cell_blk) { cur_cell_blk[j] = blk_of[j] < 0 ? dead_bid : blk_of[j]; }
+        }
+
+        if (!tail_idxs && n_ns == 1 && !ranked && qsa_decode_cacheable(*ubatch)) {
+            GGML_ASSERT(std::equal(qsa_prefix.cells.begin(), qsa_prefix.cells.begin() + n_bid*r, cur_blk_cells) &&
+                "qsa: generic block members diverge from the pooled-key cache rows");
         }
 
         std::vector<int32_t> group_members;
@@ -1570,6 +1591,18 @@ bool llama_memory_hybrid_idx::qsa_fast(int il, const llama_ubatch & u) const {
     return qsa_prefix_matches(u) && u.n_tokens <= 8 && qsa_keys.at(il) &&
         qsa_ready.at(il) >= int64_t(qsa_prefix.previous_size/4) &&
         qsa_prefix.cells.size()/4 >= (u.n_tokens+3)/4+1;
+}
+
+bool llama_memory_hybrid_idx::qsa_decode_cacheable(const llama_ubatch & u) const {
+    if (!qsa_prefix_matches(u) || !mem_idx || mem_idx->get_n_stream() != 1) { return false; }
+    const auto & cells = mem_idx->get_cells(qsa_prefix.sequence);
+    // every used cell is a prefix cell, so the generic grouping sees one sequence at positions 0..n-1 without holes:
+    // its complete groups are exactly the prefix's complete blocks, numbered in position order
+    if (size_t(cells.get_used()) != qsa_prefix.cells.size()) { return false; }
+    for (llama_seq_id sq = 0; sq < (llama_seq_id) LLAMA_MAX_SEQ; ++sq) {
+        if (sq != qsa_prefix.sequence && cells.seq_pos_min(sq) >= 0) { return false; }
+    }
+    return true;
 }
 
 ggml_tensor * llama_memory_hybrid_idx::qsa_cache(ggml_context * ctx, int il, int64_t blocks) const {
