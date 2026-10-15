@@ -1029,10 +1029,39 @@ ggml_tensor * llama_model_qwen4exp::graph::build_norm_gated(
 // The original `!ubatch.embd` guard was aimed at pure-embedding (vision) batches, which are already
 // excluded by requiring ubatch.token; keeping it shut the draft out of block selection, and with it out of
 // the maskless/packed-key layout and the qsa3 attention kernel.
+// Decode-sized ubatches (1..8 tokens) go to the bounded sparse decode kernel (ggml-cuda/qsa-decode.cuh) when
+// ROCMFPX_QWEN4_QSA_DECODE=1; build_qsa_top_k and build_attn_qsa must agree on it, so both ask here.
+static bool qwen4exp_qsa_decode_direct(int64_t n_tokens, int64_t n_query, int64_t n_kv) {
+#if defined(GGML_USE_HIP)
+    static const bool enabled = [] {
+        const char * v = getenv("ROCMFPX_QWEN4_QSA_DECODE");
+        return v && strcmp(v, "1") == 0;
+    }();
+    return enabled && n_tokens >= 1 && n_tokens <= 8 && n_query >= 1 && n_query <= 8 && n_kv >= 8192;
+#else
+    GGML_UNUSED(n_tokens); GGML_UNUSED(n_query); GGML_UNUSED(n_kv);
+    return false;
+#endif
+}
+
+// Block selection for those decode ubatches as well: the decode kernel skips the -1 sentinels of the complete-block
+// list, so it can take the same top-k-of-blocks selection prefill uses instead of the per-cell top-k over the whole
+// context (per-cell score expansion, mask add and a top-k over n_kv cells per layer, plus the O(n_kv) CPU block scan
+// per ubatch; ~18 ms per token at 165k on gfx1151). The masked dense attention path cannot (set_rows on -1), so this
+// is tied to the decode kernel. ROCMFPX_QWEN4_QSA_DECODE_BLOCKS=0 keeps the per-cell selection.
+static bool qwen4exp_qsa_decode_blocks(int64_t n_tokens, int64_t n_stream, int64_t n_kv) {
+    static const bool enabled = [] {
+        const char * v = getenv("ROCMFPX_QWEN4_QSA_DECODE_BLOCKS");
+        return !v || strcmp(v, "0") != 0;
+    }();
+    return enabled && n_stream == 1 && qwen4exp_qsa_decode_direct(n_tokens, n_tokens, n_kv);
+}
+
 static bool qwen4exp_use_block_selection(bool blk_bias, int64_t n_stream, int64_t ratio, int64_t n_kv,
         const llama_ubatch & ubatch, const llama_cparams & cparams, const llama_hparams & hparams) {
     return blk_bias && n_stream==1 && ratio>1 && hparams.indexer_top_k%ratio==0 &&
-        n_kv>hparams.indexer_top_k+ratio-1 && n_kv<=16777216 && ubatch.token && ubatch.n_tokens >= 128 &&
+        n_kv>hparams.indexer_top_k+ratio-1 && n_kv<=16777216 && ubatch.token &&
+        (ubatch.n_tokens >= 128 || qwen4exp_qsa_decode_blocks(ubatch.n_tokens, n_stream, n_kv)) &&
         cparams.flash_attn && cparams.offload_kqv && hparams.f_max_alibi_bias==0.0f &&
         !hparams.attn_soft_cap && hparams.n_embd_head_k()==256 && hparams.n_embd_head_v()==256;
 }
@@ -1565,17 +1594,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         // unsupported shapes below. Keep the original path for short caches:
         // the sparse WMMA path changes rounding and only benefits longer scans.
         // The default path is unchanged.
-        bool decode_direct = false;
-#if defined(GGML_USE_HIP)
-        const char * decode_direct_env = getenv("ROCMFPX_QWEN4_QSA_DECODE");
-        decode_direct = decode_direct_env && strcmp(decode_direct_env, "1") == 0 &&
-            n_tokens >= 1 && n_tokens <= 8 && n_query <= 8 &&
-            kq_mask->ne[0] >= 8192;
-#endif
+        const bool decode_direct = qwen4exp_qsa_decode_direct(n_tokens, n_query, kq_mask->ne[0]);
         const bool direct_indices =
             (n_tokens >= 128 || decode_direct) &&
             n_stream == 1 && cparams.flash_attn && cparams.offload_kqv &&
             hparams.f_max_alibi_bias == 0.0f && !hparams.attn_soft_cap;
+        // a complete-block list (compact selection) carries -1 sentinels that only the index-consuming kernels skip
+        GGML_ASSERT(direct_indices || shared_qsa == qsa_inps.end() || !shared_qsa->second->compact);
         ggml_tensor * kq_mask_top_k = kq_mask;
         if (!direct_indices) {
         // prepare new kq mask - starts filled with -INFINITY
