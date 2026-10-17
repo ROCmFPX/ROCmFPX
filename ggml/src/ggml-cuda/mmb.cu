@@ -22,6 +22,30 @@ __device__ __forceinline__ uint32_t mmb_pack2(float a, float b) { return (uint32
 __constant__ int8_t mmb_kv_iq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 __device__ __forceinline__ float mmb_h2f(uint16_t h) { return (float) __builtin_bit_cast(_Float16, h); }
 
+
+// MMB is written for the gfx11 (RDNA3/RDNA3.5) wave32 WMMA builtins. Other AMD targets, RDNA4 included (its gfx12
+// WMMA takes different operand vectors), compile a trap here and never run it: mmb_enabled() admits RDNA3 devices only.
+template <typename V, typename A>
+static __device__ __forceinline__ A mmb_wmma_bf16(const V a, const V b, const A c) {
+#if defined(RDNA3)
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
+#else
+    NO_DEVICE_CODE;
+    return c;
+#endif // defined(RDNA3)
+}
+
+// f16 variant, same rule
+template <typename V, typename A>
+static __device__ __forceinline__ A mmb_wmma_f16(const V a, const V b, const A c) {
+#if defined(RDNA3)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#else
+    NO_DEVICE_CODE;
+    return c;
+#endif // defined(RDNA3)
+}
+
 __global__ void mmb_cvt_f32_bf16(const float * __restrict__ x, uint16_t * __restrict__ y, const size_t n) {
     size_t i = ((size_t)blockIdx.x * blockDim.x + threadIdx.x) * 8;
     if (i + 8 <= n) {
@@ -252,7 +276,7 @@ __device__ __forceinline__ void mmb_tile_gemm(const uint8_t * __restrict__ Wbase
 #pragma unroll
             for (int i = 0; i < TM; ++i)
 #pragma unroll
-                for (int j = 0; j < TN; ++j) { if constexpr (TAIL) { if (!jact[j]) continue; } acc[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b[j], a[i], acc[i][j]); }
+                for (int j = 0; j < TN; ++j) { if constexpr (TAIL) { if (!jact[j]) continue; } acc[i][j] = mmb_wmma_bf16(b[j], a[i], acc[i][j]); }
         }
         __syncthreads();
         if (ks + 1 < nks) store_lds();
@@ -357,7 +381,7 @@ hc_gate_mix_kernel(const uint8_t * __restrict__ W, const uint16_t * __restrict__
 #pragma unroll
             for (int c = 0; c < HC; ++c)
 #pragma unroll
-                for (int j = 0; j < 2; ++j) acc[c][j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b[j], a[c], acc[c][j]);
+                for (int j = 0; j < 2; ++j) acc[c][j] = mmb_wmma_bf16(b[j], a[c], acc[c][j]);
         }
         __syncthreads();
         if (ks + 1 < nks) store_lds();
@@ -528,8 +552,8 @@ __device__ __forceinline__ void mmb_tile_gemm_glu(const uint8_t * __restrict__ W
 #pragma unroll
                 for (int j = 0; j < TN; ++j) {
                     if constexpr (TAIL) { if (!jact[j]) continue; }
-                    accg[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b[j], ag[i], accg[i][j]);
-                    accu[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(b[j], au[i], accu[i][j]);
+                    accg[i][j] = mmb_wmma_bf16(b[j], ag[i], accg[i][j]);
+                    accu[i][j] = mmb_wmma_bf16(b[j], au[i], accu[i][j]);
                 }
         }
         __syncthreads();
@@ -619,9 +643,9 @@ mmb_f32split_kernel(const float * __restrict__ W, const float * __restrict__ X, 
             for (int i = 0; i < TM; ++i)
 #pragma unroll
                 for (int j = 0; j < TN; ++j) {
-                    acc[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(bh[j], ah[i], acc[i][j]);
-                    acc[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(bl[j], ah[i], acc[i][j]);
-                    if constexpr (!TWO) acc[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(bh[j], al[i], acc[i][j]);
+                    acc[i][j] = mmb_wmma_f16(bh[j], ah[i], acc[i][j]);
+                    acc[i][j] = mmb_wmma_f16(bl[j], ah[i], acc[i][j]);
+                    if constexpr (!TWO) acc[i][j] = mmb_wmma_f16(bh[j], al[i], acc[i][j]);
                 }
         }
         __syncthreads();
@@ -742,7 +766,18 @@ static const uint16_t * mmb_shadow_lookup(const ggml_tensor * w) {
     auto it = g_mmb_shadow.find(w->data); return it == g_mmb_shadow.end() ? nullptr : it->second;
 }
 
-bool mmb_enabled() { return true; }
+// The kernels below are gfx11-only (see mmb_wmma_bf16); other devices keep MMQ / the BLAS path.
+bool mmb_enabled() {
+    // decided once: every visible device must be RDNA3/RDNA3.5, so mixed systems keep MMQ everywhere
+    static const bool enabled = [] {
+        const auto & info = ggml_cuda_info();
+        for (int i = 0; i < info.device_count; ++i) {
+            if (!GGML_CUDA_CC_IS_RDNA3(info.devices[i].cc)) { return false; }
+        }
+        return info.device_count > 0;
+    }();
+    return enabled;
+}
 int  mmb_min_t()   { return 512; }
 int  mmb_f32split_mode(){ return 2; }
 bool mmb_f32split() { return true; }
