@@ -3,6 +3,18 @@
 typedef short qd_half16 __attribute__((ext_vector_type(16)));
 typedef float qd_float8 __attribute__((ext_vector_type(8)));
 
+// gfx11 wave32 WMMA only: ggml_cuda_flash_attn_ext_qsa_decode_supported() admits RDNA3.5, so other AMD targets
+// (RDNA4 has a different gfx12 WMMA encoding) compile a trap here that never runs.
+template <typename V, typename A>
+static __device__ __forceinline__ A qd_wmma_f16(const V a, const V b, const A c) {
+#if defined(RDNA3)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#else
+    NO_DEVICE_CODE;
+    return c;
+#endif // defined(RDNA3)
+}
+
 static __global__ __launch_bounds__(256) void qsa_decode_wmma_partial(
         const char * q, const char * k, const char * v, const char * mask, const char * ids,
         size_t q1, size_t q2, size_t k1, size_t k2, size_t v1, size_t v2, size_t m1, size_t i1,
@@ -51,7 +63,7 @@ static __global__ __launch_bounds__(256) void qsa_decode_wmma_partial(
                 const uint16_t * src = (const uint16_t *) (k + key*k1 + kvh*k2) + 32*w+16*t;
                 kf = __builtin_bit_cast(qd_half16, (uint4[2]){*(const uint4 *)src, *(const uint4 *)(src+8)});
             }
-            scores = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(kf, qf[t], scores);
+            scores = qd_wmma_f16(kf, qf[t], scores);
         }
         shared.scores[w][lane*2] = make_float4(scores[0],scores[1],scores[2],scores[3]);
         shared.scores[w][lane*2+1] = make_float4(scores[4],scores[5],scores[6],scores[7]);
@@ -102,7 +114,7 @@ static __global__ __launch_bounds__(256) void qsa_decode_wmma_partial(
             const qd_half16 vf = __builtin_bit_cast(qd_half16,values);
 #pragma unroll
             for (int e = 0; e < 8; ++e) { output[t][e] *= alpha; }
-            output[t] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(vf,pf,output[t]);
+            output[t] = qd_wmma_f16(vf,pf,output[t]);
         }
         __syncthreads();
     }

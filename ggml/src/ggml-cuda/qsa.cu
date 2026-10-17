@@ -20,6 +20,19 @@ static __device__ __forceinline__ float qsa3_h2f(const uint16_t h) { return (flo
 // union builder, kernel A: per query row, check that the (validity-transformed) row is non-decreasing; if not,
 // rank-sort it into srow[q] and set sflag[q]. Sentinel 0x7FFFFFFF for invalid (-1 / >= nk) entries.
 #define QSA3_SENT 0x7FFFFFFF
+
+// The QSA kernels use the gfx11 wave32 WMMA builtin; ggml_cuda_flash_attn_ext_qsa_supported() admits RDNA3.5 only, so
+// other AMD targets (RDNA4 has a different gfx12 WMMA encoding) compile a trap here that never runs.
+template <typename V, typename A>
+static __device__ __forceinline__ A qsa_wmma_f16(const V a, const V b, const A c) {
+#if defined(RDNA3)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#else
+    NO_DEVICE_CODE;
+    return c;
+#endif // defined(RDNA3)
+}
+
 __global__ __launch_bounds__(256) void qsa3_rows_kernel(
         const int * __restrict__ ids, const size_t i1, const int ns, const int nk, int * __restrict__ srow, int * __restrict__ sflag) {
     extern __shared__ int ent[];
@@ -263,7 +276,7 @@ __global__ __launch_bounds__(256) void qsa3_attn_kernel(
 #pragma unroll
             for (int e = 0; e < 8; ++e) { sc[i][e] = 0.f; }
 #pragma unroll
-            for (int t = 0; t < 2; ++t) { sc[i] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(kf[t], qf[i][t], sc[i]); }
+            for (int t = 0; t < 2; ++t) { sc[i] = qsa_wmma_f16(kf[t], qf[i][t], sc[i]); }
         }
         v16s vf[2];
         {
@@ -363,7 +376,7 @@ __global__ __launch_bounds__(256) void qsa3_attn_kernel(
         for (int i = 0; i < 3; ++i) {
             const v16s pf = __builtin_bit_cast(v16s, (uint4[2]){ptile[i][r*2+0], ptile[i][r*2+1]});
 #pragma unroll
-            for (int t = 0; t < 2; ++t) { O[i][t] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(vf[t], pf, O[i][t]); }
+            for (int t = 0; t < 2; ++t) { O[i][t] = qsa_wmma_f16(vf[t], pf, O[i][t]); }
         }
         kf[0] = kfn[0]; kf[1] = kfn[1];
         b01 = nb01; b23 = nb23; m01 = nm01; m23 = nm23;
